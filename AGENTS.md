@@ -37,3 +37,18 @@ This repository is a VS Code/Cursor extension project for Connect AI.
 - After a large task, report the current status, changed files, verification results, remaining risks, and next task.
 - Suggest updating `docs/HANDOFF.md` when useful.
 - Do not create or modify `docs/HANDOFF.md` without user approval.
+
+## GPT Escalation Rule
+
+If a task involves security, secrets, auth, tokens, sessions, deployment, destructive file operations, automatic git sync, force push, dependency/version changes, repeated failures, or unclear product direction, stop and show:
+
+### GPT 확인 요청
+
+- 멈춘 이유:
+- 현재 상태:
+- 위험 요소:
+- 선택지:
+- Codex의 추천:
+- GPT에게 확인할 질문:
+
+Do not continue until the user confirms the direction.
