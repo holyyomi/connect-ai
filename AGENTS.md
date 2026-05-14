@@ -32,9 +32,8 @@ This repository is a VS Code/Cursor extension project for Connect AI.
 - If the user asks to stop after a specific check, stop after that check.
 - Report any command that could not be run and why.
 
-## Current Intake Notes
+## Handoff Rules
 
-- `AGENTS.md` was absent before TASK-01.
-- `package.json`, `README.md`, `ARCHITECTURE.md`, `src/extension.ts`, `src/`, and `.gitignore` exist.
-- `git status --porcelain` was clean before TASK-01.
-- The repository remote is `https://github.com/holyyomi/connect-ai.git`.
+- After a large task, report the current status, changed files, verification results, remaining risks, and next task.
+- Suggest updating `docs/HANDOFF.md` when useful.
+- Do not create or modify `docs/HANDOFF.md` without user approval.
