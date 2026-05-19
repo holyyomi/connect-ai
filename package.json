@@ -252,8 +252,8 @@
         },
         "connectAiLab.streamFirstTokenTimeoutSec": {
           "type": "number",
-          "default": 240,
-          "description": "🐢 모델 첫 토큰까지 기다리는 시간 (초). 저사양 머신은 모델 로드에 시간 걸려서 60초 안에 첫 응답 못 옴. 기본 240초(4분). 600초(10분)까지 늘려도 OK."
+          "default": 600,
+          "description": "🐢 모델 첫 토큰까지 기다리는 시간 (초). 저사양 머신은 모델 로드에 시간이 걸려서 첫 응답이 늦을 수 있습니다. 기본 600초(10분). 더 무거운 모델은 900초까지 늘려도 OK."
         },
         "connectAiLab.streamIdleTimeoutSec": {
           "type": "number",

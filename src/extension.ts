@@ -240,7 +240,7 @@ function _grepFiles(pattern: string, root: string, fileGlob?: string): { file: s
 
 /* v2.89.154 — 현재 익스텐션 버전. /ping 응답에 포함시켜서 다른 인스턴스가 우리 거인지
    식별 + 옛 버전인지 판단. package.json 의 version 과 동기 유지. */
-const _CONNECT_AI_VERSION = '2.89.156';
+const _CONNECT_AI_VERSION = '2.89.157';
 
 /* v2.89.127 — semver 비교. true 이면 a < b (a 가 옛 버전). */
 function _versionLessThan(a: string, b: string): boolean {
@@ -695,6 +695,121 @@ function _isLMStudioEngine(ollamaBase: string): boolean {
        이 헬퍼를 거치니 전 라인이 마비됐었음. 원래 로직 복원: 1234 포트 또는
        /v1 경로면 LM Studio. */
     return ollamaBase.includes('1234') || ollamaBase.includes('v1');
+}
+
+function _extractLMStudioMessageText(data: any): string {
+    const msg = data?.choices?.[0]?.message;
+    return (msg?.content || msg?.reasoning_content || '').toString();
+}
+
+function _extractLMStudioStreamToken(data: any): string {
+    const delta = data?.choices?.[0]?.delta;
+    return (delta?.content || delta?.reasoning_content || '').toString();
+}
+
+function _extractApiErrorText(data: any): string {
+    const err = data?.error;
+    if (!err) return '';
+    if (typeof err === 'string') return err;
+    return (err.message || err.detail || err.error || '').toString();
+}
+
+function _isTransientModelReloadNotice(text: string): boolean {
+    return /\bmodel\s+reloaded\b/i.test(text || '');
+}
+
+function _isEmbeddingModelName(name: string): boolean {
+    return /\b(embed|embedding)\b|nomic-embed|text-embedding|bge-|e5-/i.test(name || '');
+}
+
+function _shouldTryLocalLLMFallback(err: any): boolean {
+    if (!err) return false;
+    if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED' || /aborted|canceled/i.test(err.message || '')) {
+        return false;
+    }
+    const status = Number(err.response?.status || 0);
+    if (status === 404) return true;
+    if (status >= 400) return false;
+    return ['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNABORTED'].includes(err.code || '');
+}
+
+function _trimLocalLLMBase(base: string): string {
+    return (base || '').trim().replace(/\/+$/, '');
+}
+
+function _normalizeLMStudioBase(base: string): string {
+    return _trimLocalLLMBase(base).replace(/\/v1$/i, '');
+}
+
+const DEFAULT_STREAM_FIRST_TOKEN_TIMEOUT_SEC = 600;
+
+type _LLMTarget = {
+    base: string;
+    apiUrl: string;
+    isLMStudio: boolean;
+    model: string;
+};
+
+async function _listLocalChatModels(base: string, isLMStudio: boolean): Promise<string[]> {
+    const cleanBase = isLMStudio ? _normalizeLMStudioBase(base) : _trimLocalLLMBase(base);
+    if (isLMStudio) {
+        const r = await axios.get(`${cleanBase}/v1/models`, { timeout: 5000 });
+        return ((r.data?.data || []) as Array<{ id: string }>)
+            .map(m => (m.id || '').trim())
+            .filter(Boolean)
+            .filter(id => !_isEmbeddingModelName(id));
+    }
+    const r = await axios.get(`${cleanBase}/api/tags`, { timeout: 5000 });
+    return ((r.data?.models || []) as Array<{ name: string }>)
+        .map(m => (m.name || '').trim())
+        .filter(Boolean)
+        .filter(name => !_isEmbeddingModelName(name));
+}
+
+function _sameLLMTarget(a: _LLMTarget | null | undefined, base: string, isLMStudio: boolean): boolean {
+    return !!a && a.base === base && a.isLMStudio === isLMStudio;
+}
+
+async function _resolveLocalLLMTarget(ollamaBase: string, requestedModel: string, exclude?: _LLMTarget | null): Promise<_LLMTarget> {
+    const configuredIsLM = _isLMStudioEngine(ollamaBase);
+    const requested = (requestedModel || '').trim();
+    const candidates = configuredIsLM
+        ? [
+            { base: ollamaBase, isLMStudio: true },
+            { base: 'http://127.0.0.1:11434', isLMStudio: false },
+        ]
+        : [
+            { base: ollamaBase, isLMStudio: false },
+            { base: 'http://127.0.0.1:1234', isLMStudio: true },
+        ];
+
+    for (const c of candidates) {
+        const base = c.isLMStudio ? _normalizeLMStudioBase(c.base) : _trimLocalLLMBase(c.base);
+        if (_sameLLMTarget(exclude, base, c.isLMStudio)) continue;
+        try {
+            const models = await _listLocalChatModels(base, c.isLMStudio);
+            if (models.length === 0) continue;
+            const model = (requested && models.includes(requested))
+                ? requested
+                : models[0];
+            return {
+                base,
+                isLMStudio: c.isLMStudio,
+                apiUrl: c.isLMStudio ? `${base}/v1/chat/completions` : `${base}/api/chat`,
+                model,
+            };
+        } catch { /* try the next local backend */ }
+    }
+    if (requested && !_isEmbeddingModelName(requested) && !exclude) {
+        const base = configuredIsLM ? _normalizeLMStudioBase(ollamaBase) : _trimLocalLLMBase(ollamaBase);
+        return {
+            base,
+            isLMStudio: configuredIsLM,
+            apiUrl: configuredIsLM ? `${base}/v1/chat/completions` : `${base}/api/chat`,
+            model: requested,
+        };
+    }
+    throw new Error('사용 가능한 로컬 채팅 모델을 찾지 못했습니다. Ollama의 gemma2:2b 또는 LM Studio의 google/gemma-4-e4b를 실행할 수 있는지 확인하세요.');
 }
 
 /* v2.89.66 — _getBrainDir, _isBrainDirExplicitlySet, getCompanyDir, COMPANY_SUBDIR,
@@ -2003,21 +2118,29 @@ function readToolAutonomyLevel(agentId: string): number {
 
 async function _quickLLMCall(systemPrompt: string, userMsg: string, maxTokens = 64): Promise<string> {
     const { ollamaBase, defaultModel, timeout } = getConfig();
-    const isLMStudio = _isLMStudioEngine(ollamaBase);
-    const apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMsg }
     ];
     const tmo = Math.min(timeout || 60000, 60000);
-    if (isLMStudio) {
-        const body = { model: defaultModel, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
-        const r = await axios.post(apiUrl, body, { timeout: tmo });
-        return r.data?.choices?.[0]?.message?.content?.toString().trim() || '';
+    const callTarget = async (target: _LLMTarget): Promise<string> => {
+        if (target.isLMStudio) {
+            const body = { model: target.model, messages, stream: false, max_tokens: maxTokens, temperature: 0.2 };
+            const r = await axios.post(target.apiUrl, body, { timeout: tmo });
+            return _extractLMStudioMessageText(r.data).trim() || '';
+        }
+        const body = { model: target.model, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
+        const r = await axios.post(target.apiUrl, body, { timeout: tmo });
+        return r.data?.message?.content?.toString().trim() || '';
+    };
+    const primary = await _resolveLocalLLMTarget(ollamaBase, defaultModel, null);
+    try {
+        return await callTarget(primary);
+    } catch (err) {
+        if (!_shouldTryLocalLLMFallback(err)) throw err;
+        const fallback = await _resolveLocalLLMTarget(ollamaBase, defaultModel, primary);
+        return await callTarget(fallback);
     }
-    const body = { model: defaultModel, messages, stream: false, options: { num_predict: maxTokens, temperature: 0.2 } };
-    const r = await axios.post(apiUrl, body, { timeout: tmo });
-    return r.data?.message?.content?.toString().trim() || '';
 }
 
 const CEO_CLASSIFIER_PROMPT = _loadPrompt('ceo-classifier.md');
@@ -7820,15 +7943,23 @@ function _autoPickInstalledModelIfMissing() {
             if (current) return; // 사용자가 이미 골랐음 — 절대 건드리지 않음
             const url = (cfg.get<string>('ollamaUrl') || 'http://127.0.0.1:11434').trim();
             const isLM = url.includes('1234') || url.includes('/v1');
-            if (isLM) {
+            const pickLMStudio = async (base: string, updateUrl = false): Promise<boolean> => {
+                const lmBase = _normalizeLMStudioBase(base);
                 try {
-                    const r = await axios.get(`${url}/v1/models`, { timeout: 1500 });
+                    const r = await axios.get(`${lmBase}/v1/models`, { timeout: 1500 });
                     const models = (r.data?.data || []) as Array<{ id: string }>;
-                    if (models.length > 0) {
-                        await cfg.update('defaultModel', models[0].id, vscode.ConfigurationTarget.Global);
-                        console.log(`Connect AI: auto-picked LM Studio model → ${models[0].id}`);
+                    const picked = models.find(m => m.id && !_isEmbeddingModelName(m.id)) || models.find(m => m.id);
+                    if (!picked?.id) return false;
+                    if (updateUrl) {
+                        await cfg.update('ollamaUrl', lmBase, vscode.ConfigurationTarget.Global);
                     }
-                } catch { /* LM Studio 미실행 — 다음 활성화 때 다시 시도 */ }
+                    await cfg.update('defaultModel', picked.id, vscode.ConfigurationTarget.Global);
+                    console.log(`Connect AI: auto-picked LM Studio model → ${picked.id}`);
+                    return true;
+                } catch { return false; }
+            };
+            if (isLM) {
+                await pickLMStudio(url);
             } else {
                 try {
                     const r = await axios.get(`${url}/api/tags`, { timeout: 1500 });
@@ -7838,8 +7969,12 @@ function _autoPickInstalledModelIfMissing() {
                         models.sort((a, b) => (a.size || 0) - (b.size || 0));
                         await cfg.update('defaultModel', models[0].name, vscode.ConfigurationTarget.Global);
                         console.log(`Connect AI: auto-picked Ollama model → ${models[0].name} (${(models[0].size / 1e9).toFixed(2)} GB)`);
+                    } else {
+                        await pickLMStudio('http://127.0.0.1:1234', true);
                     }
-                } catch { /* Ollama 미실행 — 다음 활성화 때 다시 시도 */ }
+                } catch {
+                    await pickLMStudio('http://127.0.0.1:1234', true);
+                }
             }
         } catch (e) {
             console.error('Connect AI: auto-pick model failed', e);
@@ -8056,7 +8191,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                         const ollamaRes = await axios.post(targetUrl, payload, { timeout: config.timeout });
                         const responseText = isLMStudio
-                            ? ollamaRes.data.choices?.[0]?.message?.content || ''
+                            ? _extractLMStudioMessageText(ollamaRes.data)
                             : ollamaRes.data.message?.content || '';
 
                         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -8115,7 +8250,7 @@ export function activate(context: vscode.ExtensionContext) {
                             }
 
                             responseText = isLMStudio
-                                ? ollamaRes.data.choices?.[0]?.message?.content || ""
+                                ? _extractLMStudioMessageText(ollamaRes.data)
                                 : ollamaRes.data.message?.content || "";
                         } catch (apiErr: any) {
                             const isTimeout = apiErr.code === 'ETIMEDOUT' || apiErr.code === 'ECONNABORTED' || apiErr.message?.includes('timeout');
@@ -8176,7 +8311,7 @@ export function activate(context: vscode.ExtensionContext) {
                         try {
                             const ollamaRes = await axios.post(targetUrl, payload, { timeout: getConfig().timeout });
                             responseText = isLMStudio
-                                ? ollamaRes.data.choices?.[0]?.message?.content || ""
+                                ? _extractLMStudioMessageText(ollamaRes.data)
                                 : ollamaRes.data.message?.content || "";
                         } catch (apiErr: any) {
                             const isTimeout = apiErr.code === 'ETIMEDOUT' || apiErr.code === 'ECONNABORTED' || apiErr.message?.includes('timeout');
@@ -17098,7 +17233,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                        already does this, but if a different caller sends raw
                        paste, we still survive. */
                     let token = String(msg.token || '').trim();
-                    token = token.replace(/[ -  ​-‍﻿]+/g, '');
+                    token = token.replace(/[\x00-\x20\u00a0\u200b-\u200d\ufeff]+/g, '');
                     if (/^bot/i.test(token)) token = token.replace(/^bot/i, '');
                     try {
                         const r = await axios.get(`https://api.telegram.org/bot${encodeURIComponent(token)}/getMe`, { timeout: 8000, validateStatus: () => true });
@@ -18694,9 +18829,11 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             try {
                                 const raw = line.startsWith('data: ') ? line.slice(6) : line;
                                 const json = JSON.parse(raw);
-                                let token = json.choices?.[0]?.delta?.content || '';
-                                if (json.error) {
-                                    token = `[API 오류] ${json.error.message || json.error}`;
+                                let token = _extractLMStudioStreamToken(json);
+                                const errorText = _extractApiErrorText(json);
+                                if (errorText) {
+                                    if (_isTransientModelReloadNotice(errorText)) continue;
+                                    token = `[API 오류] ${errorText}`;
                                 }
                                 if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
                             } catch { /* malformed JSON line, skip */ }
@@ -18732,8 +18869,10 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             try {
                                 const json = JSON.parse(line);
                                 let token = json.message?.content || '';
-                                if (json.error) {
-                                    token = `[API 오류] ${json.error}`;
+                                const errorText = _extractApiErrorText(json);
+                                if (errorText) {
+                                    if (_isTransientModelReloadNotice(errorText)) continue;
+                                    token = `[API 오류] ${errorText}`;
                                 }
                                 if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
                             } catch { /* malformed JSON line, skip */ }
@@ -18845,20 +18984,6 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 };
             }
 
-            let isLMStudio = _isLMStudioEngine(ollamaBase);
-            let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
-
-            // Auto-Failover Logic: 유저가 설정을 안 건드렸더라도 Ollama가 죽어있으면 자동으로 LM Studio를 찾아갑니다!
-            if (!isLMStudio) {
-                try {
-                    await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 });
-                } catch (err: any) {
-                    // Ollama 연결 실패 시 LM Studio 1234 포트로 강제 우회
-                    apiUrl = 'http://127.0.0.1:1234/v1/chat/completions';
-                    isLMStudio = true;
-                }
-            }
-
             // ═══ STREAMING API CALL ═══
             let aiMessage = '';
 
@@ -18868,13 +18993,37 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             this._lastModel = modelName;
             this._abortController = new AbortController();
 
-            const streamBody = {
-                model: modelName || defaultModel,
-                messages: reqMessages,
+            let llmTarget = await _resolveLocalLLMTarget(ollamaBase, modelName || defaultModel, null);
+            let isLMStudio = llmTarget.isLMStudio;
+            const buildStreamBody = (target: _LLMTarget, messages: any[]) => ({
+                model: target.model,
+                messages,
                 stream: true,
-                ...(isLMStudio
+                ...(target.isLMStudio
                     ? { max_tokens: 4096, temperature: this._temperature, top_p: this._topP }
                     : { options: { num_ctx: 8192, num_predict: 2048, temperature: this._temperature, top_p: this._topP, top_k: this._topK } }),
+            });
+            const postStreamWithFallback = async (messages: any[]) => {
+                try {
+                    const response = await axios.post(llmTarget.apiUrl, buildStreamBody(llmTarget, messages), {
+                        timeout,
+                        responseType: 'stream',
+                        signal: this._abortController?.signal
+                    });
+                    isLMStudio = llmTarget.isLMStudio;
+                    return response;
+                } catch (err) {
+                    if (!_shouldTryLocalLLMFallback(err)) throw err;
+                    const fallback = await _resolveLocalLLMTarget(ollamaBase, modelName || defaultModel, llmTarget);
+                    const response = await axios.post(fallback.apiUrl, buildStreamBody(fallback, messages), {
+                        timeout,
+                        responseType: 'stream',
+                        signal: this._abortController?.signal
+                    });
+                    llmTarget = fallback;
+                    isLMStudio = fallback.isLMStudio;
+                    return response;
+                }
             };
 
             // 🎬 Thinking Mode: notify graph panel that a session is starting
@@ -18888,11 +19037,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 });
             }
 
-            const response = await axios.post(apiUrl, streamBody, {
-                timeout,
-                responseType: 'stream',
-                signal: this._abortController.signal
-            });
+            const response = await postStreamWithFallback(reqMessages);
 
             // 🎬 Track which brain notes the AI mentions DURING streaming
             const seenBrainReads = new Set<string>();
@@ -18943,10 +19088,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             const raw = line.startsWith('data: ') ? line.slice(6) : line;
                             const json = JSON.parse(raw);
                             let token = '';
-                            if (json.error) {
-                                token = `[API 오류] ${json.error.message || json.error}`;
+                            const errorText = _extractApiErrorText(json);
+                            if (errorText) {
+                                if (_isTransientModelReloadNotice(errorText)) continue;
+                                token = `[API 오류] ${errorText}`;
                             } else if (isLMStudio) {
-                                token = json.choices?.[0]?.delta?.content || '';
+                                token = _extractLMStudioStreamToken(json);
                             } else {
                                 token = json.message?.content || '';
                             }
@@ -19018,14 +19165,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 reqMessages.push({ role: 'user', content: `[SYSTEM: The following documents and web contents were retrieved based on your actions. Use this information to provide a complete and accurate answer to the user's original question.]\n${fetchedContent}\n\nNow answer the user's question using the above knowledge. Do NOT output <read_brain> or <read_url> again. Answer directly and comprehensively.` });
 
                 // 2차 스트리밍 시작 (followUp)
-                const followUpResponse = await axios.post(apiUrl, {
-                    model: modelName || defaultModel,
-                    messages: reqMessages,
-                    stream: true, // 스트리밍 활성화
-                    ...(isLMStudio 
-                        ? { max_tokens: 4096, temperature: this._temperature, top_p: this._topP } 
-                        : { options: { num_ctx: 8192, num_predict: 2048, temperature: this._temperature, top_p: this._topP, top_k: this._topK } }),
-                }, { timeout, responseType: 'stream', signal: this._abortController?.signal });
+                const followUpResponse = await postStreamWithFallback(reqMessages);
 
                 aiMessage = cleanedResponse + uiFeedbackStr;
 
@@ -19048,8 +19188,11 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                 const raw = line.startsWith('data: ') ? line.slice(6) : line;
                                 const json = JSON.parse(raw);
                                 let token = '';
-                                if (json.error) token = `[API 오류] ${json.error.message || json.error}`;
-                                else if (isLMStudio) token = json.choices?.[0]?.delta?.content || '';
+                                const errorText = _extractApiErrorText(json);
+                                if (errorText) {
+                                    if (_isTransientModelReloadNotice(errorText)) continue;
+                                    token = `[API 오류] ${errorText}`;
+                                } else if (isLMStudio) token = _extractLMStudioStreamToken(json);
                                 else token = json.message?.content || '';
 
                                 if (token) {
@@ -20686,19 +20829,12 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
            특정 에이전트에 다른 모델 할당했으면 그걸 사용. 없으면 기존 로직대로. */
         const overrideModel = getAgentModel(agentId, '');
         if (overrideModel) modelName = overrideModel;
-        let isLMStudio = _isLMStudioEngine(ollamaBase);
-        let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
-        if (!isLMStudio) {
-            try { await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 }); }
-            catch { apiUrl = 'http://127.0.0.1:1234/v1/chat/completions'; isLMStudio = true; }
-        }
 
         const messages = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMsg }
         ];
 
-        let result = '';
         const broadcast_fn = (chunk: string) => this._broadcastCorporate({ type: 'agentChunk', agent: agentId, value: chunk });
 
         const signal = this._abortController?.signal;
@@ -20711,76 +20847,85 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
            - jsonMode=true면 양쪽 다 JSON 강제(format/response_format) — 닫는 } 만나면
              즉시 stop이라 cap 해제해도 무한 생성 위험 없음. 안전장치는
              기존 first-token / idle timeout(line 16910)이 그대로 막아줌. */
-        if (isLMStudio) {
-            const body: any = {
-                model: modelName || defaultModel,
-                messages,
-                stream: true,
-                temperature: this._temperature,
-                top_p: this._topP
-            };
-            if (opts?.jsonMode) body.response_format = { type: 'json_object' };
-            /* v2.89.100 — 일부 LM Studio 빌드(예: 0.3.x 일부)는 response_format에 'json_object'를
-               거부하고 'json_schema' 또는 'text' 만 허용 → 400 에러. 그럴 땐 response_format을
-               빼고 재시도. 시스템 프롬프트가 이미 JSON-only를 강제하고 있어서 안전. */
-            let response;
-            try {
-                response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
-            } catch (err: any) {
-                const status = err?.response?.status;
-                const isStreamErr = err?.response?.data?.on;
-                let detail = '';
-                if (isStreamErr) {
-                    try {
-                        detail = await new Promise<string>((resolve) => {
-                            let acc = '';
-                            err.response.data.on('data', (c: Buffer) => { acc += c.toString(); });
-                            err.response.data.on('end', () => resolve(acc));
-                            err.response.data.on('error', () => resolve(acc));
-                        });
-                    } catch { /* ignore */ }
-                } else if (typeof err?.response?.data === 'string') {
-                    detail = err.response.data;
-                } else if (err?.response?.data) {
-                    try { detail = JSON.stringify(err.response.data); } catch { /* ignore */ }
+        const runTarget = async (target: _LLMTarget): Promise<string> => {
+            let result = '';
+            if (target.isLMStudio) {
+                const body: any = {
+                    model: target.model,
+                    messages,
+                    stream: true,
+                    temperature: this._temperature,
+                    top_p: this._topP
+                };
+                if (opts?.jsonMode) body.response_format = { type: 'json_object' };
+                let response;
+                try {
+                    response = await axios.post(target.apiUrl, body, { timeout, responseType: 'stream', signal });
+                } catch (err: any) {
+                    const status = err?.response?.status;
+                    const isStreamErr = err?.response?.data?.on;
+                    let detail = '';
+                    if (isStreamErr) {
+                        try {
+                            detail = await new Promise<string>((resolve) => {
+                                let acc = '';
+                                err.response.data.on('data', (c: Buffer) => { acc += c.toString(); });
+                                err.response.data.on('end', () => resolve(acc));
+                                err.response.data.on('error', () => resolve(acc));
+                            });
+                        } catch { /* ignore */ }
+                    } else if (typeof err?.response?.data === 'string') {
+                        detail = err.response.data;
+                    } else if (err?.response?.data) {
+                        try { detail = JSON.stringify(err.response.data); } catch { /* ignore */ }
+                    }
+                    const isFormatErr = status === 400 && /response_format|json_schema|json_object/i.test(detail || err?.message || '');
+                    if (isFormatErr && body.response_format) {
+                        delete body.response_format;
+                        response = await axios.post(target.apiUrl, body, { timeout, responseType: 'stream', signal });
+                    } else {
+                        throw err;
+                    }
                 }
-                const isFormatErr = status === 400 && /response_format|json_schema|json_object/i.test(detail || err?.message || '');
-                if (isFormatErr && body.response_format) {
-                    delete body.response_format;
-                    response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
-                } else {
-                    throw err;
-                }
+                let firstTokenFired = false;
+                await this._consumeLLMStream(response.data, signal, true, (token) => {
+                    if (!firstTokenFired && token) {
+                        firstTokenFired = true;
+                        try { opts?.onFirstToken?.(); } catch { /* ignore */ }
+                    }
+                    result += token;
+                    if (broadcast) broadcast_fn(token);
+                });
+            } else {
+                const body: any = {
+                    model: target.model,
+                    messages,
+                    stream: true,
+                    options: { num_ctx: 8192, num_predict: -1, temperature: this._temperature, top_p: this._topP, top_k: this._topK }
+                };
+                if (opts?.jsonMode) body.format = 'json';
+                const response = await axios.post(target.apiUrl, body, { timeout, responseType: 'stream', signal });
+                let firstTokenFired = false;
+                await this._consumeLLMStream(response.data, signal, false, (token) => {
+                    if (!firstTokenFired && token) {
+                        firstTokenFired = true;
+                        try { opts?.onFirstToken?.(); } catch { /* ignore */ }
+                    }
+                    result += token;
+                    if (broadcast) broadcast_fn(token);
+                });
             }
-            let firstTokenFired = false;
-            await this._consumeLLMStream(response.data, signal, true, (token) => {
-                if (!firstTokenFired && token) {
-                    firstTokenFired = true;
-                    try { opts?.onFirstToken?.(); } catch { /* ignore */ }
-                }
-                result += token;
-                if (broadcast) broadcast_fn(token);
-            });
-        } else {
-            const body: any = {
-                model: modelName || defaultModel,
-                messages,
-                stream: true,
-                options: { num_ctx: 8192, num_predict: -1, temperature: this._temperature, top_p: this._topP, top_k: this._topK }
-            };
-            if (opts?.jsonMode) body.format = 'json';
-            const response = await axios.post(apiUrl, body, { timeout, responseType: 'stream', signal });
-            let firstTokenFired = false;
-            await this._consumeLLMStream(response.data, signal, false, (token) => {
-                if (!firstTokenFired && token) {
-                    firstTokenFired = true;
-                    try { opts?.onFirstToken?.(); } catch { /* ignore */ }
-                }
-                result += token;
-                if (broadcast) broadcast_fn(token);
-            });
+            return result;
+        };
+
+        const primary = await _resolveLocalLLMTarget(ollamaBase, modelName || defaultModel, null);
+        try {
+            return await runTarget(primary);
+        } catch (err) {
+            if (!_shouldTryLocalLLMFallback(err)) throw err;
+            const fallback = await _resolveLocalLLMTarget(ollamaBase, modelName || defaultModel, primary);
+            return await runTarget(fallback);
         }
-        return result;
     }
 
     /* v2.89.38 — LLM 스트림 소비 + 유휴 타임아웃 + 안전 종료. 이전엔 stream.on('end')가
@@ -20792,14 +20937,14 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         isLMStudio: boolean,
         onToken: (token: string) => void,
     ): Promise<void> {
-        /* v2.89.75 — 2단계 timeout. 저사양 머신은 모델 첫 로드에 30-90초 걸려서 60초 단일
+        /* v2.89.75 — 2단계 timeout. 저사양 머신은 모델 첫 로드에 수 분 걸릴 수 있어 60초 단일
            timeout이 첫 토큰 도착 전에 끊김 (사용자 "60초 벽" 컴플레인). 이제:
-           - FIRST_TOKEN_TIMEOUT (디폴트 240초): 모델 첫 토큰까지 기다리는 시간
+           - FIRST_TOKEN_TIMEOUT (디폴트 600초): 모델 첫 토큰까지 기다리는 시간
            - IDLE_TIMEOUT (디폴트 60초): 첫 토큰 이후 chunk 사이 대기 시간
            둘 다 settings.json `connectAiLab.streamFirstTokenTimeoutSec`,
            `connectAiLab.streamIdleTimeoutSec` 로 사용자 조정 가능. */
         const cfg = vscode.workspace.getConfiguration('connectAiLab');
-        const FIRST_TOKEN_TIMEOUT_MS = (cfg.get<number>('streamFirstTokenTimeoutSec', 240) || 240) * 1000;
+        const FIRST_TOKEN_TIMEOUT_MS = (cfg.get<number>('streamFirstTokenTimeoutSec', DEFAULT_STREAM_FIRST_TOKEN_TIMEOUT_SEC) || DEFAULT_STREAM_FIRST_TOKEN_TIMEOUT_SEC) * 1000;
         const IDLE_TIMEOUT_MS = (cfg.get<number>('streamIdleTimeoutSec', 60) || 60) * 1000;
         await new Promise<void>((resolve, reject) => {
             let buffer = '';
@@ -20822,7 +20967,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                     finish(new Error(
                         `LLM ${stage} ${sec}초 초과. 저사양 머신이면 ` +
                         `settings.json에서 connectAiLab.streamFirstTokenTimeoutSec 값을 ` +
-                        `늘리거나 (예: 600), 더 작은 모델로 변경하세요 (gemma2:2b 1.6GB 등).`
+                        `늘리거나 (예: 900), 더 작은 모델로 변경하세요 (gemma2:2b 1.6GB 등).`
                     ));
                 }
             }, 5_000);
@@ -20839,8 +20984,14 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                     try {
                         const raw = isLMStudio && line.startsWith('data: ') ? line.slice(6) : line;
                         const json = JSON.parse(raw);
+                        const errorText = _extractApiErrorText(json);
+                        if (errorText) {
+                            if (_isTransientModelReloadNotice(errorText)) continue;
+                            finish(new Error(errorText));
+                            return;
+                        }
                         const token = isLMStudio
-                            ? (json.choices?.[0]?.delta?.content || '')
+                            ? _extractLMStudioStreamToken(json)
                             : (json.message?.content || '');
                         if (token) {
                             firstTokenReceived = true;  /* v2.89.75 — 첫 토큰 도착 마킹 */
