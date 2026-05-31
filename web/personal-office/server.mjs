@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, watch } from "node:fs";
 import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -12,6 +12,7 @@ const assetsRoot = path.join(projectRoot, "assets");
 const workflowConfigPath = path.join(webRoot, "workflow.json");
 const skillsConfigPath = path.join(webRoot, "skills.json");
 const connectionsConfigPath = path.join(webRoot, "connections.json");
+const automationTriggersConfigPath = path.join(webRoot, "automation-triggers.json");
 const styleProfilePath = path.join(webRoot, "style-profile.json");
 
 function loadDotEnv(filePath) {
@@ -86,6 +87,13 @@ const defaultAutomationRules = {
   keywords: ["자산", "저장", "정리", "계획", "결정", "절차", "아이디어", "자동화", "프롬프트", "RAG", "옵시디언"]
 };
 let automationRules = { ...defaultAutomationRules, keywords: [...defaultAutomationRules.keywords] };
+const automationTriggerRuntime = {
+  initialized: false,
+  schedulerTimer: null,
+  watchers: new Map(),
+  pendingWatchTimers: new Map(),
+  running: new Set()
+};
 
 const defaultStyleProfile = {
   label: "YOMI 기본 개인 톤",
@@ -2641,6 +2649,356 @@ function updateAutomationRules(input = {}) {
   return publicAutomationRules();
 }
 
+function defaultAutomationTriggersConfig() {
+  return {
+    triggers: [
+      {
+        id: "daily-ai-trend",
+        title: "매일 오전 AI 트렌드 요약",
+        type: "schedule",
+        enabled: false,
+        message: "/업무 오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인사이트, 실행 아이디어, 저장할 키워드로 정리해줘",
+        schedule: { kind: "daily", time: "09:00" },
+        watch: { folder: "", patterns: [] },
+        lastRunAt: "",
+        nextRunAt: "",
+        lastEventAt: "",
+        lastResult: null
+      },
+      {
+        id: "vault-inbox-watch",
+        title: "Vault 00_Inbox 새 파일 정리",
+        type: "folder_watch",
+        enabled: false,
+        message: "/업무 Vault에 새로 들어온 파일을 읽고 요약, 태그 후보, 다음 행동을 정리해줘: {{file}}",
+        schedule: { kind: "manual", time: "" },
+        watch: { folder: "00_Inbox", patterns: ["*.md"], debounceSeconds: 20 },
+        lastRunAt: "",
+        nextRunAt: "",
+        lastEventAt: "",
+        lastResult: null
+      }
+    ]
+  };
+}
+
+function normalizeTriggerTime(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return "09:00";
+  const hour = Math.max(0, Math.min(23, Number(match[1]) || 0));
+  const minute = Math.max(0, Math.min(59, Number(match[2]) || 0));
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeAutomationTrigger(input = {}, index = 0) {
+  const type = String(input.type || "schedule") === "folder_watch" ? "folder_watch" : "schedule";
+  const title = compactLine(input.title || input.name || (type === "schedule" ? "예약 작업" : "폴더 감시"), 64);
+  const id = slugId(input.id || title || `trigger-${index + 1}`);
+  const schedule = input.schedule && typeof input.schedule === "object" ? input.schedule : {};
+  const watchConfig = input.watch && typeof input.watch === "object" ? input.watch : {};
+  const watchFolder = String(watchConfig.folder || input.folder || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  return {
+    id,
+    title,
+    type,
+    enabled: input.enabled === true,
+    message: String(input.message || "").trim(),
+    schedule: {
+      kind: String(schedule.kind || input.scheduleKind || "daily") === "interval" ? "interval" : (type === "schedule" ? "daily" : "manual"),
+      time: normalizeTriggerTime(schedule.time || input.time),
+      everyMinutes: Math.max(15, Math.min(1440, Number(schedule.everyMinutes || input.everyMinutes || 60) || 60))
+    },
+    watch: {
+      folder: watchFolder || "00_Inbox",
+      patterns: normalizeStringList(watchConfig.patterns || input.patterns || ["*.md"]).length ? normalizeStringList(watchConfig.patterns || input.patterns || ["*.md"]) : ["*.md"],
+      debounceSeconds: Math.max(5, Math.min(300, Number(watchConfig.debounceSeconds || input.debounceSeconds || 20) || 20))
+    },
+    lastRunAt: String(input.lastRunAt || ""),
+    nextRunAt: String(input.nextRunAt || ""),
+    lastEventAt: String(input.lastEventAt || ""),
+    lastResult: input.lastResult && typeof input.lastResult === "object" ? input.lastResult : null
+  };
+}
+
+function normalizeAutomationTriggersConfig(config = defaultAutomationTriggersConfig()) {
+  const fallback = defaultAutomationTriggersConfig();
+  const source = Array.isArray(config.triggers) ? config.triggers : fallback.triggers;
+  const triggers = source.map(normalizeAutomationTrigger);
+  return { triggers };
+}
+
+async function readAutomationTriggersConfig() {
+  if (!(await exists(automationTriggersConfigPath))) return normalizeAutomationTriggersConfig(defaultAutomationTriggersConfig());
+  return normalizeAutomationTriggersConfig(await readJson(automationTriggersConfigPath, defaultAutomationTriggersConfig()));
+}
+
+function dailyRunAt(time, base = new Date()) {
+  const [hour, minute] = normalizeTriggerTime(time).split(":").map(Number);
+  const next = new Date(base);
+  next.setHours(hour, minute, 0, 0);
+  if (next.getTime() <= base.getTime()) next.setDate(next.getDate() + 1);
+  return next.toISOString();
+}
+
+function intervalRunAt(minutes, base = new Date()) {
+  return new Date(base.getTime() + Math.max(15, Math.min(1440, Number(minutes) || 60)) * 60000).toISOString();
+}
+
+function computeAutomationNextRunAt(trigger, base = new Date()) {
+  if (trigger.type !== "schedule") return "";
+  if (trigger.schedule?.kind === "interval") return intervalRunAt(trigger.schedule.everyMinutes, base);
+  return dailyRunAt(trigger.schedule?.time, base);
+}
+
+function automationTriggerStatusLabel(status = "") {
+  return {
+    disabled: "비활성",
+    scheduled: "예약됨",
+    watching: "감시 중",
+    ready: "준비",
+    running: "실행 중",
+    blocked: "확인 필요",
+    failed: "실패"
+  }[status] || status || "대기";
+}
+
+function globToRegExp(pattern) {
+  const source = String(pattern || "*").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${source}$`, "i");
+}
+
+function matchesWatchPattern(fileName, patterns = []) {
+  const base = path.basename(String(fileName || ""));
+  if (!base) return false;
+  return (patterns.length ? patterns : ["*.md"]).some((pattern) => globToRegExp(pattern).test(base));
+}
+
+async function resolveTriggerWatchFolder(trigger) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return { ok: false, reason: "Vault 경로를 찾지 못했습니다." };
+  const folder = String(trigger.watch?.folder || "00_Inbox").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!folder || folder.includes("..") || path.isAbsolute(folder)) return { ok: false, reason: "감시 폴더는 Vault 내부 상대 경로만 허용합니다." };
+  const fullPath = path.resolve(vaultRoot, folder);
+  const vaultPath = path.resolve(vaultRoot);
+  if (fullPath !== vaultPath && !fullPath.startsWith(`${vaultPath}${path.sep}`)) return { ok: false, reason: "감시 폴더가 Vault 밖을 가리킵니다." };
+  if (!(await exists(fullPath))) return { ok: false, reason: `폴더 없음: ${folder}` };
+  return { ok: true, folder, fullPath, vaultRoot };
+}
+
+function renderAutomationMessage(trigger, context = {}) {
+  const timestamp = new Date().toISOString();
+  return String(trigger.message || "")
+    .replace(/\{\{file\}\}/g, context.file || "")
+    .replace(/\{\{path\}\}/g, context.file || "")
+    .replace(/\{\{event\}\}/g, context.event || "")
+    .replace(/\{\{timestamp\}\}/g, timestamp)
+    .trim();
+}
+
+async function executeAutomationTrigger(trigger, context = {}) {
+  if (!trigger?.id) throw new Error("트리거 ID가 없습니다");
+  if (!trigger.enabled && !context.manual) return { ok: false, skipped: true, reason: "비활성 트리거" };
+  if (automationTriggerRuntime.running.has(trigger.id)) return { ok: false, skipped: true, reason: "이미 실행 중" };
+  const message = renderAutomationMessage(trigger, context);
+  if (!message) throw new Error("실행할 메시지가 없습니다");
+  automationTriggerRuntime.running.add(trigger.id);
+  trigger.lastEventAt = context.event ? new Date().toISOString() : trigger.lastEventAt;
+  try {
+    const result = await runChatMessage({ message });
+    const jobId = result.officeJob?.id || result.codexJob?.id || "";
+    trigger.lastRunAt = new Date().toISOString();
+    trigger.nextRunAt = computeAutomationNextRunAt(trigger, new Date(trigger.lastRunAt));
+    trigger.lastResult = {
+      ok: true,
+      intent: result.intent || "",
+      modeLabel: result.modeLabel || "",
+      jobId,
+      event: context.event || (context.manual ? "manual" : "schedule"),
+      file: context.file || "",
+      ranAt: trigger.lastRunAt
+    };
+    return trigger.lastResult;
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : String(error);
+    trigger.lastRunAt = new Date().toISOString();
+    trigger.nextRunAt = computeAutomationNextRunAt(trigger, new Date(trigger.lastRunAt));
+    trigger.lastResult = { ok: false, error: messageText, event: context.event || "trigger", ranAt: trigger.lastRunAt };
+    recordWorkflowError("자동화 트리거", `${trigger.title}: ${messageText}`);
+    return trigger.lastResult;
+  } finally {
+    automationTriggerRuntime.running.delete(trigger.id);
+  }
+}
+
+async function writeAutomationTriggersConfig(config, options = {}) {
+  const normalized = normalizeAutomationTriggersConfig(config);
+  await writeFile(automationTriggersConfigPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  if (options.syncWatchers !== false) await syncFolderWatchers(normalized);
+  return normalized;
+}
+
+async function publicAutomationTrigger(trigger) {
+  const running = automationTriggerRuntime.running.has(trigger.id);
+  let status = trigger.enabled ? "ready" : "disabled";
+  let detail = trigger.enabled ? "실행 조건 대기" : "설정에서 켜면 실행됩니다.";
+  let nextRunAt = trigger.nextRunAt;
+  if (running) {
+    status = "running";
+    detail = "백그라운드 실행 중";
+  } else if (trigger.type === "schedule") {
+    nextRunAt = trigger.enabled ? (trigger.nextRunAt || computeAutomationNextRunAt(trigger)) : "";
+    status = trigger.enabled ? "scheduled" : "disabled";
+    detail = trigger.enabled ? `${trigger.schedule.kind === "interval" ? `${trigger.schedule.everyMinutes}분 간격` : `매일 ${trigger.schedule.time}`} 실행` : detail;
+  } else if (trigger.type === "folder_watch" && trigger.enabled) {
+    const resolved = await resolveTriggerWatchFolder(trigger);
+    status = resolved.ok ? (automationTriggerRuntime.watchers.has(trigger.id) ? "watching" : "ready") : "blocked";
+    detail = resolved.ok ? `${resolved.folder} · ${trigger.watch.patterns.join(", ")}` : resolved.reason;
+  }
+  return {
+    ...trigger,
+    status,
+    statusLabel: automationTriggerStatusLabel(status),
+    detail,
+    nextRunAt,
+    running
+  };
+}
+
+async function buildAutomationTriggersState() {
+  const config = await readAutomationTriggersConfig();
+  await syncFolderWatchers(config);
+  const triggers = await Promise.all(config.triggers.map(publicAutomationTrigger));
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      total: triggers.length,
+      enabled: triggers.filter((trigger) => trigger.enabled).length,
+      running: triggers.filter((trigger) => trigger.running).length,
+      attention: triggers.filter((trigger) => ["blocked", "failed"].includes(trigger.status)).length
+    },
+    triggers
+  };
+}
+
+async function updateAutomationTriggersConfig(input = {}) {
+  const config = await readAutomationTriggersConfig();
+  const action = String(input.action || "save");
+  if (action === "save") {
+    const next = normalizeAutomationTrigger(input.trigger || input, config.triggers.length);
+    if (next.enabled && next.type === "schedule" && !next.nextRunAt) next.nextRunAt = computeAutomationNextRunAt(next);
+    const ids = new Set(config.triggers.map((item) => item.id));
+    if (ids.has(next.id)) config.triggers = config.triggers.map((item) => item.id === next.id ? { ...item, ...next, updatedAt: new Date().toISOString() } : item);
+    else config.triggers.push({ ...next, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await writeAutomationTriggersConfig(config);
+  } else if (action === "toggle") {
+    const id = String(input.id || "");
+    config.triggers = config.triggers.map((item) => {
+      if (item.id !== id) return item;
+      const enabled = input.enabled !== false;
+      return {
+        ...item,
+        enabled,
+        nextRunAt: enabled && item.type === "schedule" ? (item.nextRunAt || computeAutomationNextRunAt(item)) : "",
+        updatedAt: new Date().toISOString()
+      };
+    });
+    await writeAutomationTriggersConfig(config);
+  } else if (action === "delete") {
+    const id = String(input.id || "");
+    config.triggers = config.triggers.filter((item) => item.id !== id);
+    await writeAutomationTriggersConfig(config);
+  } else if (action === "run") {
+    const id = String(input.id || "");
+    const trigger = config.triggers.find((item) => item.id === id);
+    if (!trigger) throw new Error("자동화 트리거를 찾을 수 없습니다");
+    await executeAutomationTrigger(trigger, { manual: true, event: "manual" });
+    await writeAutomationTriggersConfig(config);
+  } else {
+    throw new Error("Unknown automation trigger action");
+  }
+  return await buildAutomationTriggersState();
+}
+
+function scheduleFolderTrigger(triggerId, fileName, eventType, debounceSeconds = 20) {
+  if (!fileName) return;
+  const timerKey = `${triggerId}:${fileName}`;
+  if (automationTriggerRuntime.pendingWatchTimers.has(timerKey)) clearTimeout(automationTriggerRuntime.pendingWatchTimers.get(timerKey));
+  const timeout = setTimeout(async () => {
+    automationTriggerRuntime.pendingWatchTimers.delete(timerKey);
+    const config = await readAutomationTriggersConfig();
+    const trigger = config.triggers.find((item) => item.id === triggerId);
+    if (!trigger || !trigger.enabled || trigger.type !== "folder_watch") return;
+    if (!matchesWatchPattern(fileName, trigger.watch.patterns)) return;
+    const resolved = await resolveTriggerWatchFolder(trigger);
+    if (!resolved.ok) return;
+    const fullPath = path.resolve(resolved.fullPath, String(fileName));
+    if (!(fullPath === resolved.fullPath || fullPath.startsWith(`${resolved.fullPath}${path.sep}`))) return;
+    const relPath = path.relative(resolved.vaultRoot, fullPath).replace(/\\/g, "/");
+    await executeAutomationTrigger(trigger, { event: eventType || "change", file: relPath });
+    await writeAutomationTriggersConfig(config);
+  }, Math.max(5, Math.min(300, Number(debounceSeconds) || 20)) * 1000);
+  automationTriggerRuntime.pendingWatchTimers.set(timerKey, timeout);
+}
+
+async function syncFolderWatchers(config = null) {
+  const nextConfig = config || await readAutomationTriggersConfig();
+  const activeIds = new Set();
+  for (const trigger of nextConfig.triggers) {
+    if (!trigger.enabled || trigger.type !== "folder_watch") continue;
+    const resolved = await resolveTriggerWatchFolder(trigger);
+    if (!resolved.ok) continue;
+    activeIds.add(trigger.id);
+    const current = automationTriggerRuntime.watchers.get(trigger.id);
+    if (current?.path === resolved.fullPath) continue;
+    if (current?.watcher) current.watcher.close();
+    try {
+      const watcher = watch(resolved.fullPath, { persistent: false }, (eventType, fileName) => {
+        if (!fileName) return;
+        scheduleFolderTrigger(trigger.id, String(fileName), eventType, trigger.watch.debounceSeconds);
+      });
+      automationTriggerRuntime.watchers.set(trigger.id, { watcher, path: resolved.fullPath });
+    } catch (error) {
+      recordWorkflowError("폴더 감시", error instanceof Error ? error.message : String(error));
+    }
+  }
+  for (const [id, current] of automationTriggerRuntime.watchers.entries()) {
+    if (activeIds.has(id)) continue;
+    current.watcher.close();
+    automationTriggerRuntime.watchers.delete(id);
+  }
+}
+
+async function tickAutomationTriggers() {
+  const config = await readAutomationTriggersConfig();
+  const now = new Date();
+  let dirty = false;
+  for (const trigger of config.triggers) {
+    if (!trigger.enabled || trigger.type !== "schedule") continue;
+    const nextRunAt = trigger.nextRunAt || computeAutomationNextRunAt(trigger, now);
+    if (!trigger.nextRunAt) {
+      trigger.nextRunAt = nextRunAt;
+      dirty = true;
+    }
+    if (!nextRunAt || new Date(nextRunAt).getTime() > now.getTime()) continue;
+    await executeAutomationTrigger(trigger, { event: "schedule" });
+    dirty = true;
+  }
+  if (dirty) await writeAutomationTriggersConfig(config);
+}
+
+function startAutomationTriggerRuntime() {
+  if (automationTriggerRuntime.initialized) return;
+  automationTriggerRuntime.initialized = true;
+  syncFolderWatchers().catch((error) => recordWorkflowError("폴더 감시 시작", error instanceof Error ? error.message : String(error)));
+  automationTriggerRuntime.schedulerTimer = setInterval(() => {
+    tickAutomationTriggers().catch((error) => recordWorkflowError("예약 트리거", error instanceof Error ? error.message : String(error)));
+  }, 30000);
+  setTimeout(() => {
+    tickAutomationTriggers().catch((error) => recordWorkflowError("예약 트리거 초기 확인", error instanceof Error ? error.message : String(error)));
+  }, 1500);
+}
+
 async function readJsonBody(request) {
   const chunks = [];
   let total = 0;
@@ -2709,6 +3067,15 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       return sendJson(response, 200, { ok: true, rules: updateAutomationRules(body.rules || body) });
     }
+    if (request.method === "GET" && url.pathname === "/api/automation-triggers") return sendJson(response, 200, await buildAutomationTriggersState());
+    if (request.method === "POST" && url.pathname === "/api/automation-triggers") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateAutomationTriggersConfig(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/recent-reports") return sendJson(response, 200, await listRecentReports(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-overview") return sendJson(response, 200, await buildVaultOverview(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-search") return sendJson(response, 200, { ok: true, ...(await searchVaultMarkdown(String(url.searchParams.get("q") || ""), 6)) });
@@ -2753,4 +3120,5 @@ const server = createServer(async (request, response) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`YOMI AI: http://127.0.0.1:${port}`);
   console.log(`저장소: ${path.resolve(explicitVaultPath)}`);
+  startAutomationTriggerRuntime();
 });

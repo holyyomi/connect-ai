@@ -94,6 +94,19 @@ const nodes = {
   connectionEnabled: document.getElementById("connectionEnabled"),
   connectionResetBtn: document.getElementById("connectionResetBtn"),
   connectionCandidates: document.getElementById("connectionCandidates"),
+  automationTriggerSummary: document.getElementById("automationTriggerSummary"),
+  automationTriggerStatus: document.getElementById("automationTriggerStatus"),
+  automationTriggerList: document.getElementById("automationTriggerList"),
+  automationTriggerForm: document.getElementById("automationTriggerForm"),
+  automationTriggerId: document.getElementById("automationTriggerId"),
+  automationTriggerTitle: document.getElementById("automationTriggerTitle"),
+  automationTriggerType: document.getElementById("automationTriggerType"),
+  automationTriggerTime: document.getElementById("automationTriggerTime"),
+  automationTriggerFolder: document.getElementById("automationTriggerFolder"),
+  automationTriggerPatterns: document.getElementById("automationTriggerPatterns"),
+  automationTriggerMessage: document.getElementById("automationTriggerMessage"),
+  automationTriggerEnabled: document.getElementById("automationTriggerEnabled"),
+  automationTriggerResetBtn: document.getElementById("automationTriggerResetBtn"),
   harnessScopeList: document.getElementById("harnessScopeList"),
   braveKeyGuide: document.getElementById("braveKeyGuide"),
   braveKeyStatus: document.getElementById("braveKeyStatus"),
@@ -115,6 +128,7 @@ let officeEndTimer = null;
 let officeMoveTimers = [];
 let skillsState = { agents: [], tools: [] };
 let connectionsState = { connections: [], candidates: [] };
+let automationTriggersState = { triggers: [], summary: {} };
 let latestOfficeTask = "";
 let skillUpdateBusy = false;
 let officeJobPollTimer = null;
@@ -777,6 +791,166 @@ async function handleConnectionClick(event) {
     if (action === "delete") await updateConnectionConfig({ action: "delete", id });
   } catch (error) {
     if (nodes.connectionStatus) nodes.connectionStatus.textContent = `변경 실패: ${error.message}`;
+  }
+}
+
+function formatTriggerDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderAutomationTriggerCard(trigger) {
+  const typeLabel = trigger.type === "folder_watch" ? "폴더 감시" : "예약";
+  const nextText = trigger.nextRunAt ? `다음: ${formatTriggerDate(trigger.nextRunAt)}` : "";
+  const lastText = trigger.lastRunAt ? `최근: ${formatTriggerDate(trigger.lastRunAt)}` : "실행 기록 없음";
+  const resultText = trigger.lastResult?.ok === false
+    ? `실패: ${trigger.lastResult.error || "오류"}`
+    : trigger.lastResult?.jobId
+      ? `작업: ${trigger.lastResult.jobId}`
+      : trigger.lastResult?.modeLabel || "";
+  return `
+    <article class="automation-trigger-item ${escapeHtml(trigger.status || "")}">
+      <div>
+        <strong>${escapeHtml(trigger.title || trigger.id)}</strong>
+        <span>${escapeHtml(typeLabel)} · ${escapeHtml(trigger.statusLabel || trigger.status || "대기")}</span>
+        <small>${escapeHtml(trigger.detail || "")}</small>
+        <small>${escapeHtml([nextText, lastText, resultText].filter(Boolean).join(" · "))}</small>
+      </div>
+      <div class="connection-row-actions">
+        <button type="button" data-trigger-action="toggle" data-trigger-id="${escapeHtml(trigger.id)}" data-enabled="${trigger.enabled ? "false" : "true"}">${trigger.enabled ? "끄기" : "켜기"}</button>
+        <button type="button" data-trigger-action="run" data-trigger-id="${escapeHtml(trigger.id)}">수동 실행</button>
+        <button type="button" data-trigger-action="edit" data-trigger-id="${escapeHtml(trigger.id)}">수정</button>
+        <button type="button" data-trigger-action="delete" data-trigger-id="${escapeHtml(trigger.id)}">삭제</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderAutomationTriggersState(state = automationTriggersState) {
+  automationTriggersState = state || { triggers: [], summary: {} };
+  const triggers = automationTriggersState.triggers || [];
+  const summary = automationTriggersState.summary || {};
+  if (nodes.automationTriggerSummary) {
+    nodes.automationTriggerSummary.textContent = summary.running
+      ? `${summary.running}개 실행`
+      : summary.enabled
+        ? `${summary.enabled}/${summary.total || triggers.length} 활성`
+        : "대기";
+  }
+  if (nodes.automationTriggerStatus) {
+    nodes.automationTriggerStatus.textContent = summary.attention
+      ? `확인 필요 ${summary.attention}개`
+      : summary.enabled
+        ? "자동화 준비"
+        : "필요할 때 켜기";
+  }
+  if (!nodes.automationTriggerList) return;
+  nodes.automationTriggerList.innerHTML = triggers.length
+    ? triggers.map(renderAutomationTriggerCard).join("")
+    : '<div class="empty">등록된 자동화 트리거가 없습니다.</div>';
+}
+
+function resetAutomationTriggerForm() {
+  if (!nodes.automationTriggerForm) return;
+  nodes.automationTriggerId.value = "";
+  nodes.automationTriggerTitle.value = "";
+  nodes.automationTriggerType.value = "schedule";
+  nodes.automationTriggerTime.value = "09:00";
+  nodes.automationTriggerFolder.value = "00_Inbox";
+  nodes.automationTriggerPatterns.value = "*.md";
+  nodes.automationTriggerMessage.value = "";
+  nodes.automationTriggerEnabled.checked = false;
+  nodes.automationTriggerForm.classList.remove("editing");
+}
+
+function fillAutomationTriggerForm(trigger) {
+  if (!nodes.automationTriggerForm || !trigger) return;
+  nodes.automationTriggerId.value = trigger.id || "";
+  nodes.automationTriggerTitle.value = trigger.title || "";
+  nodes.automationTriggerType.value = trigger.type || "schedule";
+  nodes.automationTriggerTime.value = trigger.schedule?.time || "09:00";
+  nodes.automationTriggerFolder.value = trigger.watch?.folder || "00_Inbox";
+  nodes.automationTriggerPatterns.value = (trigger.watch?.patterns || ["*.md"]).join(", ");
+  nodes.automationTriggerMessage.value = trigger.message || "";
+  nodes.automationTriggerEnabled.checked = trigger.enabled === true;
+  nodes.automationTriggerForm.classList.add("editing");
+  nodes.automationTriggerTitle.focus();
+}
+
+async function updateAutomationTriggerConfig(payload) {
+  if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 저장 중";
+  const response = await fetch("/api/automation-triggers", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || "자동화 설정 저장 실패");
+  renderAutomationTriggersState(data);
+  if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 반영됨";
+  return data;
+}
+
+async function loadAutomationTriggersState() {
+  if (!nodes.automationTriggerList) return;
+  try {
+    const response = await fetch("/api/automation-triggers", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    renderAutomationTriggersState(data);
+  } catch (error) {
+    if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "로드 실패";
+    nodes.automationTriggerList.innerHTML = `<div class="empty">자동화 트리거 로드 실패: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function handleAutomationTriggerSubmit(event) {
+  event.preventDefault();
+  try {
+    await updateAutomationTriggerConfig({
+      action: "save",
+      trigger: {
+        id: nodes.automationTriggerId.value,
+        title: nodes.automationTriggerTitle.value,
+        type: nodes.automationTriggerType.value,
+        enabled: nodes.automationTriggerEnabled.checked,
+        message: nodes.automationTriggerMessage.value,
+        schedule: { kind: "daily", time: nodes.automationTriggerTime.value || "09:00" },
+        watch: {
+          folder: nodes.automationTriggerFolder.value || "00_Inbox",
+          patterns: nodes.automationTriggerPatterns.value || "*.md",
+          debounceSeconds: 20
+        }
+      }
+    });
+    resetAutomationTriggerForm();
+  } catch (error) {
+    if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = `저장 실패: ${error.message}`;
+  }
+}
+
+async function handleAutomationTriggerClick(event) {
+  const button = event.target.closest("button[data-trigger-action]");
+  if (!button || !nodes.automationTriggerList?.contains(button)) return;
+  const action = button.dataset.triggerAction;
+  const id = button.dataset.triggerId || "";
+  const trigger = (automationTriggersState.triggers || []).find((item) => item.id === id);
+  if (action === "edit") return fillAutomationTriggerForm(trigger);
+  button.disabled = true;
+  try {
+    if (action === "toggle") await updateAutomationTriggerConfig({ action: "toggle", id, enabled: button.dataset.enabled === "true" });
+    if (action === "delete") await updateAutomationTriggerConfig({ action: "delete", id });
+    if (action === "run") {
+      await updateAutomationTriggerConfig({ action: "run", id });
+      await loadTaskQueue({ resume: false });
+      if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "수동 실행을 큐에 등록했습니다.";
+    }
+  } catch (error) {
+    if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = `실행 실패: ${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1712,6 +1886,9 @@ if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkill
 if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handleConnectionSubmit);
 if (nodes.connectionResetBtn) nodes.connectionResetBtn.addEventListener("click", resetConnectionForm);
 if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleConnectionClick);
+if (nodes.automationTriggerForm) nodes.automationTriggerForm.addEventListener("submit", handleAutomationTriggerSubmit);
+if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventListener("click", resetAutomationTriggerForm);
+if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);
 if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
 if (nodes.humanLoopPanel) nodes.humanLoopPanel.addEventListener("click", handleHumanLoopClick);
 nodes.chatForm.addEventListener("submit", submitChat);
@@ -1727,6 +1904,8 @@ renderAgentsList();
 refreshState();
 loadRecentReports();
 loadConnectionsState();
+loadAutomationTriggersState();
 loadTaskQueue({ resume: true });
 setInterval(refreshState, 15000);
+setInterval(loadAutomationTriggersState, 10000);
 setInterval(() => loadTaskQueue({ resume: false }), 5000);

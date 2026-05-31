@@ -174,6 +174,7 @@
           <article class="setting-card"><span>Codex 실행</span><strong id="codexStatus">확인 중</strong><small>대화/라우팅/업무 실행</small></article>
           <article class="setting-card"><span>Claude 수동호출</span><strong id="claudeStatus">확인 중</strong><small>/cc, /claude 전용</small></article>
           <article class="setting-card"><span>개인화</span><strong id="styleProfileStatus">확인 중</strong><small id="styleProfileMeta">Vault RAG와 톤 프로필</small></article>
+          <article class="setting-card"><span>자동화</span><strong id="automationTriggerSummary">확인 중</strong><small>예약/폴더 감시</small></article>
           <article class="setting-card wide"><span>Vault</span><strong id="settingsVaultPath">경로 확인 중</strong><small>마크다운 저장 위치</small></article>
         </div>
         <section id="braveKeyGuide" class="brave-key-guide" hidden aria-hidden="true">
@@ -203,6 +204,21 @@
             <div class="card-head"><strong id="harnessScopeTitle">직원 하네스 권한 스코프</strong><span>안전모드</span></div>
             <div class="harness-scope-list" id="harnessScopeList"></div>
           </section>
+        </section>
+        <section class="work-card automation-trigger-card">
+          <div class="card-head"><strong>예약/폴더 자동화</strong><span id="automationTriggerStatus">확인 중</span></div>
+          <div class="automation-trigger-list" id="automationTriggerList"></div>
+          <form id="automationTriggerForm" class="automation-trigger-form">
+            <input id="automationTriggerId" type="hidden" />
+            <label>이름<input id="automationTriggerTitle" type="text" aria-label="자동화 트리거 이름" placeholder="예: 매일 오전 트렌드 리서치" autocomplete="off" /></label>
+            <label>종류<select id="automationTriggerType" aria-label="자동화 트리거 종류"><option value="schedule">예약</option><option value="folder_watch">폴더 감시</option></select></label>
+            <label>실행 시간<input id="automationTriggerTime" type="time" aria-label="예약 실행 시간" value="09:00" /></label>
+            <label>감시 폴더<input id="automationTriggerFolder" type="text" aria-label="감시 폴더" placeholder="Vault 상대 경로: 00_Inbox" autocomplete="off" /></label>
+            <label>파일 패턴<input id="automationTriggerPatterns" type="text" aria-label="감시 파일 패턴" placeholder="*.md, *.txt" autocomplete="off" /></label>
+            <label class="wide">실행 메시지<textarea id="automationTriggerMessage" rows="3" aria-label="자동화 실행 메시지" placeholder="/업무 ... {{file}}"></textarea></label>
+            <label class="connection-check"><input id="automationTriggerEnabled" type="checkbox" aria-label="자동화 트리거 활성화" /> 활성화</label>
+            <div class="connection-actions"><button type="submit">저장</button><button id="automationTriggerResetBtn" type="button">새 트리거</button></div>
+          </form>
         </section>
         <section class="work-card tool-settings-card">
           <div class="card-head"><strong>스킬/도구 연결 상태</strong><span id="skillStatusSummary">확인 중</span></div>

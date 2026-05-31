@@ -282,6 +282,20 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .harness-scope-item strong { color: var(--bright); font-size: 12px; }
 .harness-scope-item span, .harness-scope-item small { margin-top: 5px; color: var(--dim); font-size: 11px; line-height: 1.4; }
 .harness-scope-item .warn { color: var(--warn); }
+.automation-trigger-card { margin-top: 10px; }
+.automation-trigger-list { display: grid; gap: 8px; }
+.automation-trigger-item { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 10px; align-items: start; border: 1px solid rgba(65,242,122,.14); border-radius: 8px; background: rgba(65,242,122,.04); padding: 10px; }
+.automation-trigger-item strong, .automation-trigger-item span, .automation-trigger-item small { display: block; overflow-wrap: anywhere; }
+.automation-trigger-item strong { color: var(--bright); font-size: 13px; }
+.automation-trigger-item span, .automation-trigger-item small { margin-top: 4px; color: var(--dim); font-size: 11px; line-height: 1.45; }
+.automation-trigger-item.running, .automation-trigger-item.watching, .automation-trigger-item.scheduled { border-color: rgba(65,242,122,.23); background: rgba(65,242,122,.065); }
+.automation-trigger-item.blocked, .automation-trigger-item.failed { border-color: rgba(255,191,77,.24); background: rgba(255,191,77,.05); }
+.automation-trigger-item.disabled { opacity: .76; }
+.automation-trigger-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(0,0,0,.18); padding: 10px; }
+.automation-trigger-form label { display: grid; gap: 5px; color: var(--dim); font-size: 11px; font-weight: 900; }
+.automation-trigger-form label.wide { grid-column: 1 / -1; }
+.automation-trigger-form input, .automation-trigger-form select, .automation-trigger-form textarea { width: 100%; min-width: 0; border: 1px solid rgba(255,255,255,.11); border-radius: 8px; background: rgba(0,0,0,.28); color: var(--text); padding: 9px; }
+.automation-trigger-form textarea { resize: vertical; }
 .tool-settings-card { margin-top: 10px; }
 .brave-key-guide { display: none !important; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; border: 1px solid rgba(255,191,77,.26); border-radius: 8px; background: rgba(255,191,77,.07); padding: 12px; }
 .brave-key-guide[hidden] { display: none; }
@@ -335,7 +349,7 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
   .dashboard-focus-grid { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .office-main, .chat-browser, .dashboard-split, .vault-page-grid, .vault-meta-grid { grid-template-columns: 1fr; }
-  .connection-layout, .connection-candidates, .harness-scope-list { grid-template-columns: 1fr; }
+  .connection-layout, .connection-candidates, .harness-scope-list, .automation-trigger-form { grid-template-columns: 1fr; }
   .chat-workspace { height: auto; min-height: 0; grid-template-rows: auto auto; }
   .chat-browser { min-height: 520px; }
   .agent-list, .settings-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }

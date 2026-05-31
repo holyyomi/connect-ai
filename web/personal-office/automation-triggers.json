@@ -1,0 +1,50 @@
+{
+  "triggers": [
+    {
+      "id": "daily-ai-trend",
+      "title": "매일 오전 AI 트렌드 요약",
+      "type": "schedule",
+      "enabled": false,
+      "message": "/업무 오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인사이트, 실행 아이디어, 저장할 키워드로 정리해줘",
+      "schedule": {
+        "kind": "daily",
+        "time": "09:00",
+        "everyMinutes": 60
+      },
+      "watch": {
+        "folder": "00_Inbox",
+        "patterns": [
+          "*.md"
+        ],
+        "debounceSeconds": 20
+      },
+      "lastRunAt": "",
+      "nextRunAt": "",
+      "lastEventAt": "",
+      "lastResult": null
+    },
+    {
+      "id": "vault-inbox-watch",
+      "title": "Vault 00_Inbox 새 파일 정리",
+      "type": "folder_watch",
+      "enabled": false,
+      "message": "/업무 Vault에 새로 들어온 파일을 읽고 요약, 태그 후보, 다음 행동을 정리해줘: {{file}}",
+      "schedule": {
+        "kind": "manual",
+        "time": "09:00",
+        "everyMinutes": 60
+      },
+      "watch": {
+        "folder": "00_Inbox",
+        "patterns": [
+          "*.md"
+        ],
+        "debounceSeconds": 20
+      },
+      "lastRunAt": "",
+      "nextRunAt": "",
+      "lastEventAt": "",
+      "lastResult": null
+    }
+  ]
+}
