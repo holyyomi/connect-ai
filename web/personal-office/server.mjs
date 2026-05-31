@@ -1257,6 +1257,206 @@ async function saveReportToVault(task, report, assigned, options = {}) {
   return { ok: true, relPath, fullPath };
 }
 
+async function resolveVaultMarkdownDocument(relPath) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) throw new Error("Vault 경로를 찾지 못했습니다");
+  const cleanRelPath = String(relPath || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!cleanRelPath || cleanRelPath.includes("..") || path.isAbsolute(cleanRelPath)) throw new Error("Vault 내부 문서만 내보낼 수 있습니다");
+  if (!cleanRelPath.toLowerCase().endsWith(".md")) throw new Error("마크다운 문서만 내보낼 수 있습니다");
+  if (isSensitiveVaultPath(cleanRelPath)) throw new Error("비밀값이 포함될 수 있는 경로는 내보낼 수 없습니다");
+  const vaultPath = path.resolve(vaultRoot);
+  let finalRelPath = cleanRelPath;
+  let fullPath = path.resolve(vaultRoot, cleanRelPath);
+  if (fullPath !== vaultPath && !fullPath.startsWith(`${vaultPath}${path.sep}`)) throw new Error("Vault 밖의 파일은 내보낼 수 없습니다");
+  if (!(await exists(fullPath))) {
+    const normalizedTarget = cleanRelPath.normalize("NFKC").toLowerCase();
+    const match = (await collectMarkdownFiles(vaultRoot, vaultRoot))
+      .filter((file) => !isSensitiveVaultPath(file.relPath))
+      .find((file) => file.relPath.normalize("NFKC").toLowerCase() === normalizedTarget);
+    if (!match) throw new Error("문서를 찾을 수 없습니다");
+    finalRelPath = match.relPath;
+    fullPath = match.fullPath;
+  }
+  const content = await readFile(fullPath, "utf8");
+  return { vaultRoot, relPath: finalRelPath, fullPath, content };
+}
+
+function stripMarkdownFrontmatter(content) {
+  return String(content || "").replace(/^---\s*[\s\S]*?\s*---\s*/m, "").trim();
+}
+
+function markdownTitle(content, fallback = "YOMI AI 문서") {
+  const body = stripMarkdownFrontmatter(content);
+  const heading = body.match(/^#\s+(.+)$/m);
+  return compactLine(heading?.[1] || fallback, 80);
+}
+
+function plainMarkdownText(content, maxLength = 1200) {
+  return stripMarkdownFrontmatter(content)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[[^\]]+]\([^)]+\)/g, (match) => match.replace(/^\[|\]\([^)]+\)$/g, ""))
+    .replace(/[#>*_`|[\]-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function markdownExcerpt(content, maxLength = 420) {
+  const source = plainMarkdownText(content, maxLength + 80);
+  return source.length > maxLength ? `${source.slice(0, maxLength).trim()}...` : source;
+}
+
+function exportFormatMeta(format) {
+  return {
+    blog: { label: "블로그 초안", type: "yomi_ai_blog_export", tags: ["blog", "draft"] },
+    sns: { label: "SNS 패키지", type: "yomi_ai_sns_export", tags: ["sns", "content-package"] },
+    pdf: { label: "PDF용 마크다운", type: "yomi_ai_pdf_markdown_export", tags: ["pdf", "markdown"] }
+  }[format] || null;
+}
+
+function buildBlogExport({ title, relPath, content }) {
+  const body = stripMarkdownFrontmatter(content);
+  return [
+    `# ${title}`,
+    "",
+    "## 도입",
+    markdownExcerpt(content, 360) || "핵심 문제와 결론을 먼저 제시합니다.",
+    "",
+    "## 핵심 메시지",
+    "- 독자가 바로 얻어갈 한 문장 결론",
+    "- 실행에 옮길 수 있는 구체적 포인트",
+    "- 다음 행동으로 연결되는 제안",
+    "",
+    "## 본문 초안",
+    body || "원문 내용이 비어 있습니다.",
+    "",
+    "## 발행 전 체크",
+    "- 제목이 독자의 문제를 직접 말하는가",
+    "- 첫 문단에 결론이 있는가",
+    "- 사례, 수치, 링크 등 근거를 보강할 위치가 보이는가",
+    "- 마지막에 다음 행동이 있는가",
+    "",
+    "## 원본",
+    `- ${relPath}`
+  ].join("\n");
+}
+
+function buildSnsExport({ title, relPath, content }) {
+  const excerpt = markdownExcerpt(content, 520);
+  return [
+    `# ${title} SNS 패키지`,
+    "",
+    "## 한 줄 훅",
+    `${title}를 지금 다시 봐야 하는 이유.`,
+    "",
+    "## 인스타/스레드 캐러셀",
+    "1. 문제 제기",
+    "2. 왜 지금 중요한가",
+    "3. 핵심 인사이트 1",
+    "4. 핵심 인사이트 2",
+    "5. 바로 적용할 행동",
+    "6. 저장할 체크리스트",
+    "7. 댓글 질문",
+    "",
+    "## 짧은 영상 스크립트",
+    "- 0-3초: 훅",
+    "- 3-15초: 핵심 상황 설명",
+    "- 15-35초: 해결 관점 2개",
+    "- 35-45초: 저장/공유 유도",
+    "",
+    "## X/Threads 초안",
+    excerpt || "원문에서 핵심 메시지를 한 문단으로 압축합니다.",
+    "",
+    "## 해시태그 후보",
+    "#YOMI_AI #개인AI #업무자동화 #AI자산화 #생산성",
+    "",
+    "## 원본",
+    `- ${relPath}`
+  ].join("\n");
+}
+
+function buildPdfMarkdownExport({ title, relPath, content }) {
+  const body = stripMarkdownFrontmatter(content);
+  return [
+    `# ${title}`,
+    "",
+    "> PDF 변환용 마크다운",
+    "",
+    "## 요약",
+    markdownExcerpt(content, 500) || "요약할 원문 내용이 비어 있습니다.",
+    "",
+    "## 목차",
+    "1. 배경",
+    "2. 핵심 내용",
+    "3. 실행 체크리스트",
+    "4. 부록",
+    "",
+    "## 배경",
+    "- 이 문서가 다루는 문제",
+    "- 읽는 사람이 얻어야 할 결과",
+    "",
+    "## 핵심 내용",
+    body || "원문 내용이 비어 있습니다.",
+    "",
+    "## 실행 체크리스트",
+    "- [ ] 핵심 결론 확인",
+    "- [ ] 필요한 근거 보강",
+    "- [ ] 발행/공유 대상 결정",
+    "- [ ] 최종 문체 검수",
+    "",
+    "## 부록",
+    `- 원본 문서: ${relPath}`
+  ].join("\n");
+}
+
+function buildVaultExportContent(format, payload) {
+  if (format === "blog") return buildBlogExport(payload);
+  if (format === "sns") return buildSnsExport(payload);
+  if (format === "pdf") return buildPdfMarkdownExport(payload);
+  throw new Error("지원하지 않는 내보내기 형식입니다");
+}
+
+async function exportVaultDocument(input = {}) {
+  const format = String(input.format || "blog").trim();
+  const meta = exportFormatMeta(format);
+  if (!meta) throw new Error("지원하지 않는 내보내기 형식입니다");
+  const source = await resolveVaultMarkdownDocument(input.relPath || input.path);
+  const title = markdownTitle(source.content, reportTitleFromPath(source.relPath));
+  const content = buildVaultExportContent(format, { title, relPath: source.relPath, content: source.content });
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const outDir = path.join(source.vaultRoot, "50_Outputs", primaryReportFolder, "Exports", day);
+  const fullPath = path.join(outDir, `${stamp}-${slugify(title)}-${format}.md`);
+  const relPath = path.relative(source.vaultRoot, fullPath).replace(/\\/g, "/");
+  const frontmatter = [
+    "---",
+    `type: ${yamlString(meta.type)}`,
+    `created: ${now.toISOString()}`,
+    `source: ${yamlString(source.relPath)}`,
+    `format: ${yamlString(format)}`,
+    `tags: [${["yomi-ai", "personal-office", "export", ...meta.tags].map(yamlString).join(", ")}]`,
+    "---"
+  ].join("\n");
+  const output = `${frontmatter}\n\n${content}\n`;
+  if (!input.dryRun) {
+    await mkdir(outDir, { recursive: true });
+    await writeFile(fullPath, output, "utf8");
+  }
+  return {
+    ok: true,
+    dryRun: Boolean(input.dryRun),
+    format,
+    formatLabel: meta.label,
+    title,
+    sourceRelPath: source.relPath,
+    relPath,
+    fullPath,
+    preview: content.slice(0, 1600)
+  };
+}
+
 function resolveAgent(id) {
   return specialistRoles.find((agent) => agent.id === id);
 }
@@ -3079,6 +3279,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/api/recent-reports") return sendJson(response, 200, await listRecentReports(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-overview") return sendJson(response, 200, await buildVaultOverview(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-search") return sendJson(response, 200, { ok: true, ...(await searchVaultMarkdown(String(url.searchParams.get("q") || ""), 6)) });
+    if (request.method === "POST" && url.pathname === "/api/vault-export") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await exportVaultDocument(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "POST" && url.pathname === "/api/chat") {
       const body = await readJsonBody(request);
       const message = String(body.message || "").trim();

@@ -49,6 +49,7 @@ const nodes = {
   vaultGraph: document.getElementById("vaultGraph"),
   vaultGraphMeta: document.getElementById("vaultGraphMeta"),
   recentReports: document.getElementById("recentReports"),
+  vaultExportStatus: document.getElementById("vaultExportStatus"),
   refreshReportsBtn: document.getElementById("refreshReportsBtn"),
   serverStatus: document.getElementById("serverStatus"),
   aiStatus: document.getElementById("aiStatus"),
@@ -1102,6 +1103,53 @@ async function refreshState() {
   }
 }
 
+function vaultExportFormatLabel(format) {
+  return ({ blog: "블로그", sns: "SNS", pdf: "PDF용" })[format] || format || "활용";
+}
+
+function renderVaultExportActions(doc) {
+  const relPath = escapeHtml(doc.relPath || "");
+  return `
+    <div class="report-actions">
+      ${["blog", "sns", "pdf"].map((format) => `
+        <button type="button" data-vault-export="${format}" data-rel-path="${relPath}">
+          ${vaultExportFormatLabel(format)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function exportVaultReport(relPath, format) {
+  if (!relPath || !format) return;
+  if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `${vaultExportFormatLabel(format)} 변환 중`;
+  try {
+    const response = await fetch("/api/vault-export", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ relPath, format })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `${data.formatLabel || vaultExportFormatLabel(format)} 저장 완료: ${data.relPath}`;
+    addChatMessage("assistant", `${data.formatLabel || vaultExportFormatLabel(format)}로 변환해 Vault에 저장했습니다.\n${data.relPath}`, "YOMI AI", "Vault 활용");
+    await loadRecentReports();
+  } catch (error) {
+    if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `활용 실패: ${error.message}`;
+  }
+}
+
+function handleVaultExportClick(event) {
+  const button = event.target.closest("button[data-vault-export]");
+  if (!button || !nodes.recentReports?.contains(button)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const relPath = button.dataset.relPath || "";
+  const format = button.dataset.vaultExport || "";
+  button.disabled = true;
+  exportVaultReport(relPath, format).finally(() => { button.disabled = false; });
+}
+
 async function loadRecentReports() {
   nodes.recentReports.innerHTML = '<div class="empty">저장소 문서를 불러오는 중입니다.</div>';
   renderVaultChips(nodes.vaultCategoryCounts, [], "카테고리 확인 중");
@@ -1129,6 +1177,7 @@ async function loadRecentReports() {
           <span>${escapeHtml(doc.displayPath || cleanDisplayPath(doc.relPath))}</span>
           <small>${escapeHtml(doc.created || "")}</small>
           <small>${escapeHtml(doc.folder || "루트")}${doc.tags?.length ? ` · #${doc.tags.map(escapeHtml).join(" #")}` : ""}</small>
+          ${renderVaultExportActions(doc)}
         </div>
       </details>
     `).join("");
@@ -1895,6 +1944,7 @@ nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
 nodes.refreshReportsBtn.addEventListener("click", loadRecentReports);
+if (nodes.recentReports) nodes.recentReports.addEventListener("click", handleVaultExportClick);
 
 initializeStaticCopy();
 renderAgents([]);
