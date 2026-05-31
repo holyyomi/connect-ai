@@ -75,17 +75,18 @@ Check:
 - Suggest updating `docs/HANDOFF.md` when useful.
 - Do not create or modify `docs/HANDOFF.md` without user approval.
 
-## GPT Escalation Rule
+## Autonomous Safety Rule
 
-If a task involves security, secrets, auth, tokens, sessions, deployment, destructive file operations, automatic git sync, force push, dependency/version changes, repeated failures, or unclear product direction, stop and show:
+For risky or ambiguous work, do not emit a separate escalation block. Instead, run an internal safety check, choose the safest useful path, and continue when the user has already authorized the task.
 
-### GPT 확인 요청
+Use this internal checklist before acting:
 
-- 멈춘 이유:
-- 현재 상태:
-- 위험 요소:
-- 선택지:
-- Codex의 추천:
-- GPT에게 확인할 질문:
+- Confirm the action is directly related to the user's latest request.
+- Prefer read-only inspection before edits.
+- Keep file changes narrow and reversible.
+- Never print or commit secrets.
+- Avoid destructive filesystem and Git operations unless the user explicitly asked for them.
+- If a command can change external state, verify the scope first, then execute only the minimum needed command.
+- If the task is truly impossible without user input, ask one concise question in chat.
 
-Do not continue until the user confirms the direction.
+When the user explicitly asks to commit, push, install, test, or verify, proceed through the safest reasonable sequence without adding a separate GPT confirmation ceremony.

@@ -1326,6 +1326,7 @@ function inferYomiWorkType(text, intent = "office") {
   if (/(디자인|화면|ui|ux|레이아웃|피그마|시각|브랜딩)/i.test(value)) return "design";
   if (/(조사|리서치|근거|사례|자료|시장|경쟁사|최신)/i.test(value)) return "research";
   if (/(전략|사업|수익|kpi|우선순위|로드맵|방향|기획)/i.test(value)) return "strategy";
+  if (/(체크리스트|할\s*일|업무\s*목록|티켓|일정|todo|task|진행\s*관리|운영)/i.test(value)) return "general_work";
   if (/(글|문서|보고서|카피|블로그|작성|초안|정리)/i.test(value)) return "writing";
   return "general_work";
 }
@@ -1364,8 +1365,10 @@ function deliverablesForWorkType(workType) {
 function detectHumanLoopReasons(text, workType) {
   const value = String(text || "");
   const reasons = [];
+  const fileReference = /(?:\b(?:README|AGENTS|ARCHITECTURE)(?:\.md)?\b|[\w가-힣 ._\-/\\]+\.(?:md|js|ts|tsx|jsx|json|css|html|mjs|cjs|py|yml|yaml|txt|png|jpe?g|svg))/i;
+  const fileMutationVerb = /(덮어쓰|덮어써|overwrite|삭제|지워|이동|rename|replace|교체|수정|바꿔|변경|편집|write|edit|modify|change)/i;
   const checks = [
-    { id: "overwrite", pattern: /(덮어쓰기|overwrite|삭제|지워|이동|rename|replace)/i, reason: "기존 파일 변경 가능성이 있어 확인이 필요합니다." },
+    { id: "overwrite", pattern: /(덮어쓰|덮어써|overwrite|삭제|지워|이동|rename|replace|교체)/i, reason: "기존 파일 변경 가능성이 있어 확인이 필요합니다." },
     { id: "external_send", pattern: /(메일\s*보내|이메일\s*보내|업로드|전송|배포|publish|deploy|api\s*호출)/i, reason: "외부 전송 또는 배포 가능성이 있어 확인이 필요합니다." },
     { id: "cost_or_quota", pattern: /(결제|구매|유료|크레딧|대량\s*호출|비용|quota|billing)/i, reason: "비용이나 쿼터 사용 가능성이 있어 확인이 필요합니다." },
     { id: "secret_or_auth", pattern: /(\.env|토큰|세션|로그인|api\s*key|비밀키|인증|password|secret)/i, reason: "비밀키나 인증 정보가 필요할 수 있어 확인이 필요합니다." },
@@ -1374,6 +1377,9 @@ function detectHumanLoopReasons(text, workType) {
   ];
   for (const check of checks) {
     if (check.pattern.test(value)) reasons.push(check);
+  }
+  if (fileReference.test(value) && fileMutationVerb.test(value)) {
+    reasons.push({ id: "overwrite", reason: "특정 파일을 변경하는 요청이라 실행 전 확인이 필요합니다." });
   }
   if (value.replace(/\s+/g, "").length < 12 || /(알아서|대충|좋게|멋지게|적당히|제대로)\s*(해줘|만들어줘|진행해)?\s*$/i.test(value)) {
     reasons.unshift({ id: "ambiguous_instruction", reason: "목표나 완료 기준이 모호해 한 번 확인하는 편이 안전합니다." });
