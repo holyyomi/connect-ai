@@ -750,6 +750,48 @@ type _LLMTarget = {
     model: string;
 };
 
+type _LLMErrorInfo = {
+    engine: string;
+    model: string;
+    baseUrl: string;
+    apiUrl: string;
+    stage?: string;
+};
+
+function _describeLLMTarget(target: _LLMTarget | null | undefined, stage?: string): _LLMErrorInfo | null {
+    if (!target) return null;
+    return {
+        engine: target.isLMStudio ? 'LM Studio' : 'Ollama',
+        model: target.model || 'model not set',
+        baseUrl: target.base || '',
+        apiUrl: target.apiUrl || '',
+        stage,
+    };
+}
+
+function _attachLLMTargetToError(err: any, target: _LLMTarget | null | undefined, stage?: string): any {
+    const e = (err && typeof err === 'object') ? err : new Error(String(err || 'Unknown LLM error'));
+    try { e.connectAiLabLLM = _describeLLMTarget(target, stage); } catch { /* ignore */ }
+    return e;
+}
+
+function _extractLLMErrorInfo(err: any): _LLMErrorInfo | null {
+    return err?.connectAiLabLLM || null;
+}
+
+function _configuredLLMInfo(modelName?: string): _LLMErrorInfo {
+    const cfg = getConfig();
+    const base = cfg.ollamaBase || '';
+    const isLMStudio = _isLMStudioEngine(base);
+    const cleanBase = isLMStudio ? _normalizeLMStudioBase(base) : _trimLocalLLMBase(base);
+    return {
+        engine: isLMStudio ? 'LM Studio' : 'Ollama',
+        model: modelName || cfg.defaultModel || 'model not set',
+        baseUrl: cleanBase,
+        apiUrl: isLMStudio ? `${cleanBase}/v1/chat/completions` : `${cleanBase}/api/chat`,
+    };
+}
+
 async function _listLocalChatModels(base: string, isLMStudio: boolean): Promise<string[]> {
     const cleanBase = isLMStudio ? _normalizeLMStudioBase(base) : _trimLocalLLMBase(base);
     if (isLMStudio) {
@@ -964,6 +1006,7 @@ const WORLD_LAYOUT = {
     editor:    { building: 'office', localX: 18, localY: 78 },
     writer:    { building: 'office', localX: 50, localY: 78 },
     researcher:{ building: 'office', localX: 70, localY: 78 },
+    archivist: { building: 'office', localX: 86, localY: 78 },
   } as Record<string, AgentDeskRef>,
 
   // Visit-zones for idle wandering / autonomous behavior. Office-only.
@@ -975,26 +1018,21 @@ const WORLD_LAYOUT = {
 };
 
 /** Hand-tuned agent positions for the user's AI-generated office map at
- *  `assets/map.jpeg`. Coordinates are % of the world canvas — each places the
+ *  `assets/office-map.png` / `assets/map.jpeg`. Coordinates are % of the world canvas — each places the
  *  agent at a real desk/seat in their room, avoiding walls and furniture.
  *  The y values anchor agent FEET (sprite is 96px tall, feet at bottom). */
 const CUSTOM_MAP_DESKS: Record<string, DeskPos> = {
-  // Top-left CEO solo office (glass-walled, "Connect AI" sign on wall)
-  ceo:        { x: 8,  y: 22 },
-  // Front desk just outside CEO's office — Secretary station
-  secretary:  { x: 18, y: 33 },
-  // Top-right twin workstation pairs
-  youtube:    { x: 87, y: 18 },
-  instagram:  { x: 87, y: 32 },
-  // Mid-left small glass meeting pod (used as Designer's focused space)
-  designer:   { x: 13, y: 47 },
-  // Center cubicle cluster (6 desks, agents at 4 of them)
-  developer:  { x: 41, y: 53 },
-  business:   { x: 51, y: 53 },
-  editor:     { x: 41, y: 63 },
-  writer:     { x: 51, y: 63 },
-  // Bottom-center small admin desks — Researcher
-  researcher: { x: 33, y: 82 },
+  ceo:        { x: 50, y: 45 },
+  secretary:  { x: 39, y: 51 },
+  youtube:    { x: 47, y: 22 },
+  instagram:  { x: 57, y: 23 },
+  designer:   { x: 74, y: 27 },
+  developer:  { x: 46, y: 75 },
+  business:   { x: 80, y: 47 },
+  editor:     { x: 60, y: 74 },
+  writer:     { x: 22, y: 71 },
+  researcher: { x: 22, y: 31 },
+  archivist:  { x: 73, y: 79 },
 };
 
 /** Convert each agent's building-local desk into world % coords. */
@@ -1054,13 +1092,15 @@ function _migrateCompanyToSubdir() {
 }
 
 async function setCompanyDir(absPath: string) {
-  // Redirects to localBrainPath: choosing a company location now means
-  // choosing where the brain (and therefore the company) lives.
+  // Personal asset Vault: keep the user's RAG/Obsidian root and the legacy
+  // company runtime root aligned while old function names remain in place.
   try {
     const cfg = vscode.workspace.getConfiguration('connectAiLab');
+    await cfg.update('personalVaultPath', absPath, vscode.ConfigurationTarget.Global);
     await cfg.update('localBrainPath', absPath, vscode.ConfigurationTarget.Global);
   } catch {
     if (_extCtx) {
+      try { await _extCtx.globalState.update('personalVaultPath', absPath); } catch {}
       try { await _extCtx.globalState.update('localBrainPath', absPath); } catch {}
     }
   }
@@ -1241,8 +1281,8 @@ const ALWAYS_ON_AGENTS: Set<string> = new Set(['ceo']);
 /* v2.89.156 — 데모용·신규 사용자 첫 경험 회복. "유튜브 + 매출 종합 보고서" 같은 합성 명령에서
    현빈(business) 가 비활성이라 조용히 drop 되던 사고 차단. 옵션 전체를 기본 ON 으로. Luna 만 LOCKED 유지.
    사용자는 언제든 직원 패널에서 개별 OFF 가능. */
-const DEFAULT_ON_AGENTS: Set<string> = new Set(['secretary', 'youtube', 'writer', 'designer', 'instagram', 'business', 'developer', 'researcher']);
-const OPTIONAL_AGENTS_DEFAULT: Set<string> = new Set(['secretary', 'youtube', 'writer', 'designer', 'instagram', 'business', 'developer', 'researcher']);
+const DEFAULT_ON_AGENTS: Set<string> = new Set(['secretary', 'youtube', 'writer', 'designer', 'instagram', 'business', 'developer', 'researcher', 'archivist']);
+const OPTIONAL_AGENTS_DEFAULT: Set<string> = new Set(['secretary', 'youtube', 'writer', 'designer', 'instagram', 'business', 'developer', 'researcher', 'archivist']);
 
 function _hiredJsonPath(): string {
   return path.join(getCompanyDir(), '_shared', 'hired.json');
@@ -1358,6 +1398,15 @@ function readActiveAgents(): Record<string, { activatedAt: string }> {
       } else {
         try { fs.writeFileSync(p, JSON.stringify(data, null, 2)); } catch { /* ignore */ }
       }
+    }
+    /* v2.89.158 — 아카(archivist) 추가. 기존 active.json 사용자는 v3 migration이
+       이미 끝나 있어 새 에이전트가 비활성으로 남을 수 있으므로 한 번만 기본 ON. */
+    if (data._migrated && !data._migrated_v4) {
+      if (!data.archivist) {
+        data.archivist = { activatedAt: new Date().toISOString(), seeded_v4: true };
+      }
+      data._migrated_v4 = true;
+      try { fs.writeFileSync(p, JSON.stringify(data, null, 2)); } catch { /* ignore */ }
     }
     return data;
   } catch { return {}; }
@@ -1589,6 +1638,217 @@ async function listInstalledModels(): Promise<{ id: string; backend: 'ollama' | 
     if (out.length === 0) await queryLMStudio();
   }
   return out;
+}
+
+type OfficeModelCandidate = { id: string; backend: 'ollama' | 'lmstudio'; baseUrl: string };
+let _officeModelPickerCache: { key: string; expiresAt: number; promise: Promise<OfficeModelCandidate[]> } | null = null;
+
+async function listOfficeModelPickerModels(forceRefresh = false): Promise<OfficeModelCandidate[]> {
+  const cfgBase = getConfig().ollamaBase || '';
+  const cfgBackend = _isLMStudioEngine(cfgBase) ? 'lmstudio' : 'ollama';
+  const cacheKey = `${cfgBackend}:${cfgBackend === 'lmstudio' ? _normalizeLMStudioBase(cfgBase) : _trimLocalLLMBase(cfgBase)}`;
+  const now = Date.now();
+  if (!forceRefresh && _officeModelPickerCache && _officeModelPickerCache.key === cacheKey && _officeModelPickerCache.expiresAt > now) {
+    return (await _officeModelPickerCache.promise).slice();
+  }
+  const promise = (async () => {
+    const out: OfficeModelCandidate[] = [];
+    const addModels = async (baseUrl: string, backend: 'ollama' | 'lmstudio') => {
+      if (!baseUrl) return;
+      try {
+        const cleanBase = backend === 'lmstudio' ? _normalizeLMStudioBase(baseUrl) : _trimLocalLLMBase(baseUrl);
+        const models = await _listLocalChatModels(cleanBase, backend === 'lmstudio');
+        for (const id of models) {
+          if (!out.some(x => x.id === id && x.backend === backend && x.baseUrl === cleanBase)) out.push({ id, backend, baseUrl: cleanBase });
+        }
+      } catch { /* backend not running */ }
+    };
+    await Promise.all([
+      addModels(cfgBase, cfgBackend),
+      addModels('http://127.0.0.1:11434', 'ollama'),
+      addModels('http://127.0.0.1:1234', 'lmstudio'),
+    ]);
+    return out;
+  })();
+  _officeModelPickerCache = { key: cacheKey, expiresAt: now + 8000, promise };
+  try {
+    const models = await promise;
+    if (_officeModelPickerCache?.promise === promise) {
+      _officeModelPickerCache.expiresAt = Date.now() + (models.length > 0 ? 8000 : 2000);
+    }
+    return models.slice();
+  } catch (e) {
+    if (_officeModelPickerCache?.promise === promise) _officeModelPickerCache = null;
+    throw e;
+  }
+}
+
+async function buildOfficeSmokeCheck(): Promise<{ ok: boolean; warning: boolean; summary: string; markdown: string }> {
+  const lines: string[] = [];
+  const ok = (s: string) => lines.push(`✅ ${s}`);
+  const warn = (s: string) => lines.push(`⚠️ ${s}`);
+  const err = (s: string) => lines.push(`❌ ${s}`);
+  const info = (s: string) => lines.push(`ℹ️ ${s}`);
+
+  const cfg = getConfig();
+  const defaultModel = (cfg.defaultModel || '').trim();
+  const llm = _configuredLLMInfo(defaultModel);
+  info(`Configured engine: ${llm.engine}`);
+  info(`Configured base: ${llm.baseUrl || '(empty)'}`);
+  info(`Default model: ${defaultModel || '(empty)'}`);
+
+  const installed = await listOfficeModelPickerModels(true);
+  if (installed.length === 0) {
+    err('No running local chat models detected from Ollama or LM Studio.');
+  } else {
+    ok(`Detected ${installed.length} local chat model(s): ${installed.slice(0, 6).map(m => `${m.id} (${m.backend})`).join(', ')}`);
+  }
+
+  const installedIds = new Set(installed.map(m => m.id));
+  if (!defaultModel) {
+    if (installed.length > 0) warn(`Default model is empty. First Office command will auto-select ${installed[0].id}.`);
+    else warn('Default model is empty and no local model is currently available.');
+  } else if (installedIds.has(defaultModel)) {
+    ok(`Default model is visible on a local backend: ${defaultModel}`);
+  } else {
+    err(`Default model is not visible on the running local backends: ${defaultModel}`);
+  }
+
+  const overrides = Object.entries(readAgentModelMap())
+    .map(([agent, model]) => ({ agent, model: String(model || '').trim() }))
+    .filter(x => !!x.model);
+  if (overrides.length === 0) {
+    ok('No agent-specific model routing overrides are active.');
+  } else {
+    info(`Agent-specific model routing overrides: ${overrides.length}`);
+    const missing = overrides.filter(x => !installedIds.has(x.model));
+    if (missing.length === 0) {
+      ok('All agent-specific model routing overrides are visible on local backends.');
+    } else {
+      err(`Missing agent-specific route(s): ${missing.map(x => `${AGENTS[x.agent]?.name || x.agent} -> ${x.model}`).join(', ')}`);
+    }
+  }
+
+  try {
+    const dir = getCompanyDir();
+    if (dir && fs.existsSync(dir)) {
+      ok(`Personal asset Vault exists: ${dir}`);
+      const missingVaultDirs = OBSIDIAN_VAULT_FOLDERS.filter(name => !fs.existsSync(path.join(dir, name)));
+      if (missingVaultDirs.length === 0) ok('Obsidian folder structure is ready.');
+      else warn(`Obsidian folder structure is incomplete: ${missingVaultDirs.join(', ')}`);
+      if (fs.existsSync(path.join(dir, '00_Start_Here.md'))) ok('Obsidian start note exists.');
+      else warn('Obsidian start note is missing: 00_Start_Here.md');
+      const autoCaptureDir = path.join(dir, '50_Outputs', 'Auto Captures');
+      if (fs.existsSync(autoCaptureDir)) ok('Auto asset capture folder is ready.');
+      else warn('Auto asset capture folder is missing: 50_Outputs/Auto Captures');
+      if (readAutoAssetCaptureEnabled()) ok('Auto asset capture is enabled.');
+      else warn('Auto asset capture is disabled by setting: connectAiLab.autoAssetCapture');
+      const countRagNotes = (root: string) => fs.existsSync(root)
+        ? _walkBrainMd(root, { maxDepth: 6, maxFiles: 500, skipDirs: new Set() })
+            .filter(f => !_isLowValueRagRel(path.relative(dir, f)))
+            .length
+        : 0;
+      const autoCaptureCount = countRagNotes(autoCaptureDir);
+      const knowledgeCount = countRagNotes(path.join(dir, '20_Knowledge'));
+      const classifiedCaptureCount = fs.existsSync(autoCaptureDir)
+        ? _walkBrainMd(autoCaptureDir, { maxDepth: 6, maxFiles: 500, skipDirs: new Set() })
+            .filter(f => /\nasset_type:\s*/.test(_safeReadText(f)))
+            .length
+        : 0;
+      const digestDir = path.join(dir, '20_Knowledge', 'Auto Digest');
+      const digestCount = fs.existsSync(digestDir)
+        ? _walkBrainMd(digestDir, { maxDepth: 2, maxFiles: 200, skipDirs: new Set() })
+            .filter(f => path.basename(f).toLowerCase() !== 'readme.md')
+            .length
+        : 0;
+      const draftsDir = path.join(dir, '20_Knowledge', 'Drafts');
+      const draftCount = fs.existsSync(draftsDir)
+        ? _walkBrainMd(draftsDir, { maxDepth: 3, maxFiles: 500, skipDirs: new Set() })
+            .filter(f => path.basename(f).toLowerCase() !== 'readme.md' && /^type:\s*evergreen_draft/m.test(_safeReadText(f)))
+            .length
+        : 0;
+      const promotionPath = path.join(dir, '20_Knowledge', 'Promotion Candidates.md');
+      if (fs.existsSync(promotionPath)) ok('Knowledge promotion candidate report exists.');
+      else info('Knowledge promotion candidate report not generated yet.');
+      const draftReviewPath = path.join(dir, '20_Knowledge', 'Draft Review Queue.md');
+      if (fs.existsSync(draftReviewPath)) ok('Knowledge draft review queue exists.');
+      else info('Knowledge draft review queue not generated yet.');
+      const pipelineStatusPath = path.join(dir, '90_System', 'Pipeline Status.md');
+      if (fs.existsSync(pipelineStatusPath)) {
+        ok('Personal Vault pipeline status report exists.');
+        const pipelineStatusRaw = _safeReadText(pipelineStatusPath);
+        const needed = pipelineStatusRaw.match(/^Pipeline Needed:\s*(.+?)\s*$/m)?.[1]?.trim().toLowerCase();
+        if (needed === 'yes') warn('Personal Vault pipeline is pending after a new Auto Capture.');
+        else if (needed === 'no') ok('Personal Vault pipeline is up to date.');
+      } else info('Personal Vault pipeline status report not generated yet.');
+      const finalKnowledgeCount = ['20_Knowledge', '40_Workflows', '10_Projects']
+        .map(folder => path.join(dir, folder))
+        .reduce((sum, root) => sum + (fs.existsSync(root)
+          ? _walkBrainMd(root, { maxDepth: 4, maxFiles: 500, skipDirs: new Set(['Auto Digest', 'Drafts']) })
+              .filter(f => /^type:\s*evergreen_note/m.test(_safeReadText(f)))
+              .length
+          : 0), 0);
+      if (draftCount > 0) ok(`Knowledge draft RAG notes are ready (${draftCount}).`);
+      else info('Knowledge draft RAG notes not generated yet.');
+      if (finalKnowledgeCount > 0) ok(`Final evergreen knowledge notes are ready (${finalKnowledgeCount}).`);
+      else info('Final evergreen knowledge notes not generated yet.');
+      info(`Vault RAG source notes: ${knowledgeCount} knowledge note(s), ${autoCaptureCount} auto capture note(s), ${classifiedCaptureCount} classified auto capture note(s), ${digestCount} auto digest note(s), ${draftCount} knowledge draft note(s), ${finalKnowledgeCount} final evergreen note(s).`);
+    } else {
+      warn(`Personal asset Vault is not present yet: ${dir || '(empty)'}`);
+    }
+  } catch (e: any) {
+    warn(`Personal asset Vault check failed: ${e?.message || e}`);
+  }
+
+  const errorCount = lines.filter(x => x.startsWith('❌')).length;
+  const warningCount = lines.filter(x => x.startsWith('⚠️')).length;
+  const result = {
+    ok: errorCount === 0,
+    warning: errorCount === 0 && warningCount > 0,
+    summary: errorCount > 0
+      ? `Office smoke check found ${errorCount} error(s).`
+      : warningCount > 0
+        ? `Office smoke check found ${warningCount} warning(s).`
+        : 'Office smoke check OK.',
+    markdown: `# Connect AI Office Smoke Check\n\n_${new Date().toLocaleString('ko-KR')}_\n\n${lines.join('\n')}\n\n---\n\n## What This Checks\n\n- Local LLM server/model visibility\n- Default model readiness\n- Agent-specific model routing consistency\n- Personal asset Vault presence\n- Obsidian folder/index readiness\n- Automatic asset capture readiness\n- Vault RAG source note count\n- Automatic asset classification metadata\n- Automatic asset digest readiness\n- Auto Digest RAG duplicate suppression\n- Knowledge promotion candidate report\n- Knowledge draft RAG readiness\n- Knowledge draft review queue\n- Final evergreen knowledge readiness\n- Personal Vault pipeline status report\n\nThis check does not send prompts and does not change model settings.`,
+  };
+  return result;
+}
+
+async function ensureOfficeLLMReady(modelName: string): Promise<{ model: string; autoSelected: boolean }> {
+  const requested = String(modelName || '').trim();
+  const overrideEntries = Object.entries(readAgentModelMap())
+    .map(([agent, model]) => ({ agent, model: String(model || '').trim() }))
+    .filter(x => !!x.model);
+  const llm = { ..._configuredLLMInfo(requested), stage: 'office-preflight', overrideCount: overrideEntries.length };
+  const fail = (message: string) => {
+    const e: any = new Error(message);
+    e.connectAiLabLLM = llm;
+    throw e;
+  };
+  const installed = await listOfficeModelPickerModels();
+  if (installed.length === 0) fail('실행 중인 Ollama 또는 LM Studio 채팅 모델을 찾지 못했습니다. 로컬 서버를 켠 뒤 LLM 진단을 실행하세요.');
+  const installedIds = new Set(installed.map(m => m.id));
+  let selectedModel = requested;
+  let autoSelected = false;
+  if (!selectedModel) {
+    const picked = installed[0];
+    const cfg = vscode.workspace.getConfiguration('connectAiLab');
+    await cfg.update('ollamaUrl', picked.baseUrl, vscode.ConfigurationTarget.Global);
+    await cfg.update('defaultModel', picked.id, vscode.ConfigurationTarget.Global);
+    selectedModel = picked.id;
+    autoSelected = true;
+  }
+  if (!installedIds.has(selectedModel)) {
+    const sample = installed.slice(0, 4).map(m => `${m.id} (${m.backend})`).join(', ');
+    fail(`현재 기본 모델 '${selectedModel}'을 실행 중인 로컬 서버에서 찾지 못했습니다. 모델 선택에서 사용 가능한 모델로 바꿔주세요.${sample ? ' 감지됨: ' + sample : ''}`);
+  }
+  const missingOverrides = overrideEntries.filter(x => !installedIds.has(x.model));
+  if (missingOverrides.length > 0) {
+    const sample = missingOverrides.slice(0, 4).map(x => `${AGENTS[x.agent]?.name || x.agent}: ${x.model}`).join(', ');
+    fail(`에이전트별 모델 라우팅 ${missingOverrides.length}건이 현재 로컬 서버에 없습니다.${sample ? ' 문제: ' + sample : ''} 기본 모델로 통일하거나 모델 선택에서 다시 지정하세요.`);
+  }
+  return { model: selectedModel, autoSelected };
 }
 
 /* v2.89.14 / v2.89.39 — 회사 이름 동적 치환. 프롬프트 상수에 \`{{COMPANY}}\` 플레이스홀더를
@@ -5187,6 +5447,249 @@ function _safeReadText(p: string): string {
   try { return fs.readFileSync(p, 'utf-8'); } catch { return ''; }
 }
 
+const OBSIDIAN_VAULT_FOLDERS = [
+  '00_Inbox',
+  '10_Projects',
+  '20_Knowledge',
+  '30_Agents',
+  '40_Workflows',
+  '50_Outputs',
+  '90_System',
+];
+
+function _writeTextIfMissing(filePath: string, body: string) {
+  if (fs.existsSync(filePath)) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, body);
+}
+
+function _appendTextIfMissing(filePath: string, marker: string, body: string) {
+  const current = _safeReadText(filePath);
+  if (current.includes(marker)) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, body);
+}
+
+function ensureObsidianVaultStructure(dir: string) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const folder of OBSIDIAN_VAULT_FOLDERS) {
+      fs.mkdirSync(path.join(dir, folder), { recursive: true });
+    }
+    fs.mkdirSync(path.join(dir, '50_Outputs', 'Auto Captures'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '20_Knowledge', 'Auto Digest'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '20_Knowledge', 'Drafts'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '00_Inbox', 'Daily Reviews'), { recursive: true });
+    const agentLinks = AGENT_ORDER
+      .map(id => `- [[_agents/${id}/memory|${AGENTS[id].emoji} ${AGENTS[id].name} 메모리]] · [[_agents/${id}/prompt|페르소나]] · [[_agents/${id}/skills/README|스킬]]`)
+      .join('\n');
+    _writeTextIfMissing(path.join(dir, '00_Start_Here.md'),
+`# 개인 자산 Vault
+
+이 Vault는 Connect AI가 당신의 개인 자산, 작업 산출물, 에이전트 메모리, RAG 자료를 쌓는 공간입니다.
+Obsidian에서 이 폴더를 Vault로 열면 직접 정리하고, AI가 다시 읽는 지식으로 활용할 수 있습니다.
+
+## 먼저 볼 곳
+- [[00_Inbox/README|00_Inbox]]: 빠른 캡처와 임시 아이디어
+- [[10_Projects/README|10_Projects]]: 진행 중인 프로젝트
+- [[20_Knowledge/README|20_Knowledge]]: 장기 지식/RAG 자료
+- [[30_Agents/README|30_Agents]]: 에이전트별 메모리 바로가기
+- [[40_Workflows/README|40_Workflows]]: 반복 업무와 자동화 절차
+- [[50_Outputs/README|50_Outputs]]: 결과물 보관
+- [[90_System/Vault Map|90_System]]: Vault 운영 규칙
+
+## 사용 원칙
+- 임시 메모는 00_Inbox에 넣고, 정리되면 10_Projects 또는 20_Knowledge로 옮기세요.
+- AI가 참고해야 하는 확정 지식은 20_Knowledge에 Markdown으로 남기세요.
+- 토큰, 비밀번호, API 키는 Vault에 쓰지 마세요.
+`);
+    _writeTextIfMissing(path.join(dir, '00_Inbox', 'README.md'),
+`# 00_Inbox
+
+빠르게 붙잡아둘 생각, 링크, 회의 메모, 아직 분류하지 않은 자료를 넣는 곳입니다.
+
+정리 규칙:
+- 프로젝트가 있으면 [[../10_Projects/README|10_Projects]]로 이동
+- 장기 지식이면 [[../20_Knowledge/README|20_Knowledge]]로 이동
+- 반복 절차가 되면 [[../40_Workflows/README|40_Workflows]]로 이동
+`);
+    _writeTextIfMissing(path.join(dir, '10_Projects', 'README.md'),
+`# 10_Projects
+
+진행 중인 개인 프로젝트와 목표를 관리합니다.
+
+추천 템플릿:
+- 목적:
+- 현재 상태:
+- 다음 액션:
+- 참고 자료:
+- Connect AI에게 맡길 일:
+`);
+    _writeTextIfMissing(path.join(dir, '20_Knowledge', 'README.md'),
+`# 20_Knowledge
+
+AI가 장기적으로 참고해야 하는 지식/RAG 자료를 넣는 곳입니다.
+
+좋은 자료 형식:
+- 한 파일에 한 주제
+- 출처와 날짜 기록
+- 내 판단과 원문 사실을 구분
+- 제목은 검색 가능한 단어로 작성
+`);
+    _writeTextIfMissing(path.join(dir, '30_Agents', 'README.md'),
+`# 30_Agents
+
+Connect AI 에이전트가 자동으로 누적하는 메모리와 사람이 직접 조정할 수 있는 페르소나 바로가기입니다.
+
+${agentLinks}
+
+참고:
+- memory.md는 자동 누적 로그입니다.
+- prompt.md는 에이전트 성격/지시를 직접 조정하는 파일입니다.
+- skills/는 재사용할 만한 검증된 패턴입니다.
+`);
+    _writeTextIfMissing(path.join(dir, '40_Workflows', 'README.md'),
+`# 40_Workflows
+
+반복 업무, 자동화 절차, 체크리스트를 저장합니다.
+
+예시:
+- 콘텐츠 발행 절차
+- 리서치 루틴
+- 월간 정산 루틴
+- YouTube/Instagram 분석 루틴
+`);
+    _writeTextIfMissing(path.join(dir, '50_Outputs', 'README.md'),
+`# 50_Outputs
+
+최종 결과물, 보고서, 카피, 스크립트, 디자인 방향 등을 보관합니다.
+
+Connect AI의 세션 산출물은 기존 sessions/에도 저장됩니다. 사람이 다시 볼 만한 결과만 이곳에 선별해 옮기면 좋습니다.
+`);
+    _appendTextIfMissing(path.join(dir, '50_Outputs', 'README.md'), '## Auto Captures',
+`
+## Auto Captures
+
+Connect AI가 작업을 끝냈을 때 자산으로 남길 가치가 있다고 판단한 결과가 자동 저장됩니다.
+원본 세션은 sessions/에 남고, 이곳에는 Obsidian에서 바로 다시 읽기 좋은 Markdown 노트가 쌓입니다.
+`);
+    _writeTextIfMissing(path.join(dir, '00_Inbox', 'Daily Reviews', 'README.md'),
+`# Daily Reviews
+
+Connect AI가 날짜별로 자동 저장된 Auto Capture를 검토할 수 있게 모아두는 곳입니다.
+
+사용 방식:
+- Office의 📥 버튼을 누르면 오늘 리뷰 노트가 생성되거나 갱신됩니다.
+- 원본 Auto Capture는 50_Outputs/Auto Captures에 그대로 남습니다.
+- 리뷰 노트 아래에 직접 메모를 적어도 generated block 밖이면 보존됩니다.
+`);
+    _writeTextIfMissing(path.join(dir, '50_Outputs', 'Auto Captures', 'README.md'),
+`# Auto Captures
+
+Connect AI가 자동으로 자산화한 작업 결과가 날짜별로 저장됩니다.
+
+저장 기준:
+- 단순 인사/짧은 응답은 저장하지 않음
+- 분석, 전략, 계획, 결정, 체크리스트, 스크립트, 문서화처럼 재사용 가치가 있는 결과만 저장
+- 실패 보고서는 원본 세션에는 남지만 자산 노트로 승격하지 않음
+
+자동 분류:
+- asset_type: analysis, strategy, plan, workflow, content, code, research, decision, project, general
+- suggested_folder: 나중에 사람이 옮기거나 RAG 정리할 추천 위치
+- project: 자동 추정된 프로젝트/채널/시스템 이름
+- classification_confidence: high, medium, low
+
+색인은 [[../Asset Index|Asset Index]]에서 확인할 수 있습니다.
+분류 규칙은 [[../../90_System/Auto Classification|Auto Classification]]을 참고하세요.
+`);
+    _writeTextIfMissing(path.join(dir, '20_Knowledge', 'Auto Digest', 'README.md'),
+`# Auto Digest
+
+Connect AI가 자동 저장한 자산을 월간/프로젝트별로 다시 묶는 곳입니다.
+
+사용 방식:
+- Auto Captures에는 원본에 가까운 자산 노트가 저장됩니다.
+- Auto Digest에는 AI가 RAG로 다시 읽기 쉬운 짧은 색인이 누적됩니다.
+- 월간 파일은 시간순 흐름을 보고, Project 파일은 한 프로젝트의 누적 맥락을 볼 때 씁니다.
+`);
+    _writeTextIfMissing(path.join(dir, '20_Knowledge', 'Drafts', 'README.md'),
+`# Drafts
+
+Connect AI가 Auto Captures에서 만든 장기 지식 초안입니다.
+
+운영 방식:
+- 이 폴더의 문서는 초안입니다.
+- 검토 후 확정된 내용만 20_Knowledge의 적절한 주제 파일로 옮기거나 정리하세요.
+- 원본 링크와 source_asset frontmatter를 유지하면 추적이 쉽습니다.
+- 토큰, API 키, 비밀번호가 포함된 초안은 삭제하세요.
+`);
+    _writeTextIfMissing(path.join(dir, '90_System', 'Knowledge Promotion.md'),
+`# Knowledge Promotion
+
+Connect AI가 Auto Captures 중 장기 지식으로 정리할 만한 후보를 뽑는 규칙입니다.
+
+운영 방식:
+- 원본 Auto Captures는 그대로 둡니다.
+- 후보 목록은 [[../20_Knowledge/Promotion Candidates|Promotion Candidates]]에 생성됩니다.
+- 사람이 확인한 뒤 20_Knowledge, 40_Workflows, 10_Projects 중 맞는 곳에 evergreen note로 다시 작성합니다.
+- 토큰, API 키, 비밀번호는 승격하지 않습니다.
+`);
+    _writeTextIfMissing(path.join(dir, '90_System', 'Auto Classification.md'),
+`# Auto Classification
+
+Connect AI가 자동 저장한 자산 노트에 붙이는 분류 규칙입니다.
+
+## Frontmatter 필드
+- type: ai_asset
+- asset_type: 자산 유형
+- suggested_folder: 추천 보관 위치
+- project: 자동 추정 프로젝트
+- summary: 짧은 요약
+- classification_confidence: high / medium / low
+- tags: RAG와 Obsidian 검색용 태그
+- agents: 참여 에이전트
+
+## asset_type
+- analysis: 데이터, 지표, 현황 분석
+- strategy: 전략, 방향, 로드맵
+- plan: 다음 액션, 체크리스트, 일정
+- workflow: 반복 절차, 자동화, 루틴
+- content: 콘텐츠, 스크립트, 카피, 영상/릴스 아이디어
+- code: 구현, 테스트, 파일/코드 변경 관련
+- research: 리서치, 자료, 근거, RAG 지식
+- decision: 확정된 결정, 원칙, 운영 규칙
+- project: 프로젝트 상태와 마일스톤
+- general: 위 유형이 뚜렷하지 않은 일반 자산
+
+## 운영 방식
+Auto Captures의 노트는 바로 RAG 후보가 됩니다. 중요한 노트는 나중에 20_Knowledge, 10_Projects, 40_Workflows로 옮겨도 됩니다.
+`);
+    _writeTextIfMissing(path.join(dir, '90_System', 'Vault Map.md'),
+`# Vault Map
+
+## Connect AI가 쓰는 내부 폴더
+- _shared/: 목표, 정체성, 결정 로그, 모델 라우팅
+- _agents/: 에이전트별 메모리, 페르소나, 스킬, 도구 설정
+- sessions/: 작업 세션별 산출물
+- approvals/: 승인 대기/이력
+
+## 사람이 쓰기 좋은 Obsidian 폴더
+- 00_Inbox: 빠른 캡처
+- 10_Projects: 진행 프로젝트
+- 20_Knowledge: 장기 지식/RAG
+- 30_Agents: 에이전트 메모리 바로가기
+- 40_Workflows: 반복 절차
+- 50_Outputs: 선별된 결과물
+- 90_System: 운영 규칙과 구조 설명
+
+## Google Drive와 함께 쓰는 법
+이 Vault 폴더 자체를 Google Drive 동기화 폴더 안에 두면 됩니다. 직접 OAuth 연동 없이도 Obsidian과 Connect AI가 같은 Markdown 자료를 공유합니다.
+`);
+  } catch (e: any) {
+    console.warn('[obsidianVault] structure init failed:', e?.message || e);
+  }
+}
+
 function ensureCompanyStructure(): string {
   const dir = getCompanyDir();
   fs.mkdirSync(path.join(dir, '_shared'), { recursive: true });
@@ -5194,6 +5697,7 @@ function ensureCompanyStructure(): string {
   fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'approvals', 'pending'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'approvals', 'history'), { recursive: true });
+  ensureObsidianVaultStructure(dir);
   AGENT_ORDER.forEach(id => {
     fs.mkdirSync(path.join(dir, '_agents', id), { recursive: true });
     _seedAgentGoalIfMissing(id);
@@ -5420,6 +5924,104 @@ function _scoreRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
+function _ragKeywords(agentId: string, queryText?: string): string[] {
+  const stop = new Set([
+    '그리고', '그러면', '이제', '다음', '진행', '해봐', '해줘', '해주세요', '관련', '대한', '위한', '으로', '에서', '에게',
+    'the', 'and', 'for', 'with', 'from', 'this', 'that', 'what', 'when', 'where', 'how', 'please', 'todo', 'task'
+  ]);
+  const fromQuery = String(queryText || '')
+    .replace(/[^0-9A-Za-z가-힣_]+/g, ' ')
+    .split(/\s+/)
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length >= 2 && !stop.has(t) && !/^\d+$/.test(t))
+    .slice(0, 24);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of [...fromQuery, ..._agentKeywords(agentId)]) {
+    if (!seen.has(t)) { seen.add(t); out.push(t); }
+  }
+  return out;
+}
+
+function _ragRoots(): string[] {
+  const roots = [getCompanyDir(), _getBrainDir()];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of roots) {
+    const clean = path.normalize(String(r || '').trim());
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    if (fs.existsSync(clean)) out.push(clean);
+  }
+  return out;
+}
+
+function _normalizeRagRel(relPath: string): string {
+  return String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+}
+
+function _isAutoDigestRagRel(relPath: string, raw: string = ''): boolean {
+  const rel = _normalizeRagRel(relPath);
+  return rel.startsWith('20_knowledge/auto digest/') || /^type:\s*auto_digest/m.test(String(raw || ''));
+}
+
+function _isAutoCaptureRagRel(relPath: string): boolean {
+  return _normalizeRagRel(relPath).startsWith('50_outputs/auto captures/');
+}
+
+function _isKnowledgeDraftRagRel(relPath: string, raw: string = ''): boolean {
+  const rel = _normalizeRagRel(relPath);
+  return rel.startsWith('20_knowledge/drafts/') || /^type:\s*evergreen_draft/m.test(String(raw || ''));
+}
+
+function _autoDigestSourceRelKeys(raw: string): string[] {
+  const out = new Set<string>();
+  const re = /<!--\s*connect-ai-asset:([^>]+?)\s*-->/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(raw || ''))) && out.size < 80) {
+    const key = _normalizeRagRel(m[1] || '');
+    if (key) out.add(key);
+  }
+  return Array.from(out);
+}
+
+function _autoDigestGroupKey(raw: string, relPath: string): string {
+  const sources = _autoDigestSourceRelKeys(raw).sort();
+  return sources.length > 0 ? sources.slice(0, 30).join('|') : _normalizeRagRel(relPath);
+}
+function _isLowValueRagRel(relPath: string): boolean {
+  const rel = relPath.replace(/\\/g, '/').toLowerCase();
+  const base = path.basename(rel).toLowerCase();
+  if (base === 'readme.md') return true;
+  if (base === 'asset index.md') return true;
+  if (base === 'promotion candidates.md') return true;
+  if (base === 'draft review queue.md') return true;
+  if (base === 'pipeline status.md') return true;
+  if (rel.startsWith('00_inbox/daily reviews/')) return true;
+  if (base === '00_start_here.md') return true;
+  if (rel.endsWith('/vault map.md')) return true;
+  return false;
+}
+
+function _vaultRagBoost(relPath: string, raw: string): number {
+  const rel = _normalizeRagRel(relPath);
+  let boost = 0;
+  if (_isAutoDigestRagRel(relPath, raw)) boost += rel.includes('/project -') ? 14 : 12;
+  else if (_isKnowledgeDraftRagRel(relPath, raw)) boost += 10;
+  else if (_isAutoCaptureRagRel(relPath)) boost += 5;
+  else if (rel.startsWith('20_knowledge/')) boost += 6;
+  else if (rel.startsWith('10_projects/')) boost += 4;
+  else if (rel.startsWith('40_workflows/')) boost += 4;
+  else if (rel.startsWith('00_inbox/')) boost += 2;
+  if (/^type:\s*auto_digest/m.test(raw)) boost += 5;
+  if (/^type:\s*evergreen_note/m.test(raw)) boost += 8;
+  if (/^type:\s*evergreen_draft/m.test(raw)) boost += 4;
+  if (/^type:\s*ai_asset/m.test(raw)) boost += 2;
+  if (/^status:\s*accepted/m.test(raw)) boost += 2;
+  if (/^status:\s*draft/m.test(raw)) boost += 1;
+  if (/^status:\s*captured/m.test(raw)) boost += 1;
+  return boost;
+}
 /* Recursively list .md files under a root, capped depth + count for safety.
    Skips company-internal folders + .git so we don't pull in identity.md /
    memory.md (those are added separately). */
@@ -5456,6 +6058,8 @@ function _extractWikiSnippet(filePath: string, brainRoot: string, keywords: stri
     raw = fs.readFileSync(filePath, 'utf-8').slice(0, 12_000);
   } catch { return null; }
   if (!raw.trim()) return null;
+  const rel = path.relative(brainRoot, filePath).replace(/\\/g, '/');
+  if (_isLowValueRagRel(rel)) return null;
   /* Title: first H1, else filename */
   const h1 = raw.match(/^#\s+(.+?)\s*$/m);
   const title = h1 ? h1[1].trim().replace(/\[\[|\]\]/g, '') : path.basename(filePath, path.extname(filePath));
@@ -5486,10 +6090,12 @@ function _extractWikiSnippet(filePath: string, brainRoot: string, keywords: stri
   const ageDays = st ? (Date.now() - st.mtimeMs) / 86_400_000 : 999;
   const recencyBonus = ageDays <= 14 ? 5 : (ageDays <= 60 ? 2 : 0);
   const scoreText = title + '\n' + insight + '\n' + raw.slice(0, 2000);
-  const score = _scoreRelevance(scoreText, keywords) + recencyBonus;
+  const keywordScore = _scoreRelevance(scoreText, keywords);
+  const vaultBoost = _vaultRagBoost(rel, raw);
+  const score = keywordScore > 0 ? keywordScore + recencyBonus + vaultBoost : 0;
   return {
     path: filePath,
-    rel: path.relative(brainRoot, filePath),
+    rel,
     title,
     insight,
     score,
@@ -5505,7 +6111,7 @@ function readRelevantBrainContext(agentId: string, budgetChars: number = 2400): 
      the company subdir. Skip _company/ entirely so agent self-output never
      gets re-fed as "knowledge". */
   const brain = _getBrainDir();
-  const keywords = _agentKeywords(agentId);
+  const keywords = _ragKeywords(agentId);
   if (keywords.length === 0) return '';
 
   const skipDirs = new Set([
@@ -5534,6 +6140,7 @@ function readRelevantBrainContext(agentId: string, budgetChars: number = 2400): 
 
   const snippets: BrainSnippet[] = [];
   for (const f of all) {
+
     const s = _extractWikiSnippet(f, brain, keywords);
     if (s && s.score > 0) snippets.push(s);
   }
@@ -5565,29 +6172,37 @@ function readRelevantBrainContext(agentId: string, budgetChars: number = 2400): 
    This is intentionally educational: the user can compare against
    `readRelevantBrainContext` and see how Graph RAG surfaces 1-hop links
    that pure keyword search misses. */
-function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400): string {
-  /* Walk BRAIN root — same rationale as readRelevantBrainContext. The graph
-     edges (wikilinks) live in user notes under 00_Raw/, 10_Wiki/, etc.,
-     never inside _company/ (that's agent output, not knowledge). */
-  const brain = _getBrainDir();
-  const keywords = _agentKeywords(agentId);
-  if (keywords.length === 0) return '';
+function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400, queryText: string = ''): string {
+  /* Walk both the personal Vault runtime root and the legacy brain root. They
+     are usually the same path, but settings can diverge when users edit them
+     manually. RAG should still see Obsidian assets either way. */
+  const roots = _ragRoots();
+  const keywords = _ragKeywords(agentId, queryText);
+  if (roots.length === 0 || keywords.length === 0) return '';
 
   const skipDirs = new Set([
     '_company', '_shared', '_agents', 'sessions', 'approvals',
     'node_modules', '.git', '.cache', '_cache', 'out', 'dist', '__pycache__',
   ]);
-  const wikiFiles = _walkBrainMd(brain, { maxDepth: 4, maxFiles: 200, skipDirs });
-  const rawDir = path.join(brain, '00_Raw');
-  let rawFiles: string[] = [];
-  if (fs.existsSync(rawDir)) {
-    rawFiles = _walkBrainMd(rawDir, { maxDepth: 2, maxFiles: 50, skipDirs: new Set() });
-    const cutoff = Date.now() - 14 * 86_400_000;
-    rawFiles = rawFiles.filter(f => {
-      try { return fs.statSync(f).mtimeMs >= cutoff; } catch { return false; }
-    });
+
+  const entryMap = new Map<string, { file: string; root: string }>();
+  for (const root of roots) {
+    const wikiFiles = _walkBrainMd(root, { maxDepth: 5, maxFiles: 260, skipDirs });
+    const rawDir = path.join(root, '00_Raw');
+    let rawFiles: string[] = [];
+    if (fs.existsSync(rawDir)) {
+      rawFiles = _walkBrainMd(rawDir, { maxDepth: 2, maxFiles: 50, skipDirs: new Set() });
+      const cutoff = Date.now() - 14 * 86_400_000;
+      rawFiles = rawFiles.filter(f => {
+        try { return fs.statSync(f).mtimeMs >= cutoff; } catch { return false; }
+      });
+    }
+    for (const file of [...wikiFiles, ...rawFiles]) {
+      const key = path.normalize(file).toLowerCase();
+      if (!entryMap.has(key)) entryMap.set(key, { file, root });
+    }
   }
-  const all = Array.from(new Set([...wikiFiles, ...rawFiles]));
+  const all = Array.from(entryMap.values());
   if (all.length === 0) return '';
 
   /* Pass 1: load each file once (cap size), compute snippet + extract its
@@ -5596,7 +6211,8 @@ function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400): 
   type Node = { snippet: BrainSnippet; titleKey: string; links: string[]; anchors: string[]; raw: string };
   const nodes: Node[] = [];
   const titleToIdx = new Map<string, number>();
-  for (const f of all) {
+  for (const entry of all) {
+    const f = entry.file;
     let raw = '';
     try {
       const st = fs.statSync(f);
@@ -5604,7 +6220,7 @@ function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400): 
       raw = fs.readFileSync(f, 'utf-8').slice(0, 12_000);
     } catch { continue; }
     if (!raw.trim()) continue;
-    const snippet = _extractWikiSnippet(f, brain, keywords);
+    const snippet = _extractWikiSnippet(f, entry.root, keywords);
     if (!snippet) continue;
     const titleKey = snippet.title.trim().toLowerCase();
     /* Wikilinks — strip optional `|alias` */
@@ -5686,13 +6302,35 @@ function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400): 
       }
     }
   }
-  const ordered = Array.from(finalScore.entries())
+  const orderedRaw = Array.from(finalScore.entries())
     .sort((a, b) => b[1] - a[1] || nodes[b[0]].snippet.mtime - nodes[a[0]].snippet.mtime);
 
+  /* Auto Digest is a compact RAG index for Auto Captures. If a selected
+     digest already points at a captured asset, skip the original capture in
+     the emitted context so the model sees one concise source instead of the
+     same work twice. */
+  const digestCoveredAssets = new Set<string>();
+  for (const [idx] of orderedRaw) {
+    const n = nodes[idx];
+    if (_isAutoDigestRagRel(n.snippet.rel, n.raw)) {
+      for (const source of _autoDigestSourceRelKeys(n.raw)) digestCoveredAssets.add(source);
+    }
+  }
+  const seenDigestGroups = new Set<string>();
+  const ordered = orderedRaw.filter(([idx]) => {
+    const n = nodes[idx];
+    if (_isAutoCaptureRagRel(n.snippet.rel) && digestCoveredAssets.has(_normalizeRagRel(n.snippet.rel))) return false;
+    if (_isAutoDigestRagRel(n.snippet.rel, n.raw)) {
+      const groupKey = _autoDigestGroupKey(n.raw, n.snippet.rel);
+      if (seenDigestGroups.has(groupKey)) return false;
+      seenDigestGroups.add(groupKey);
+    }
+    return true;
+  });
   /* Emit. Mark each line with whether it was a direct match (🎯) or a
      graph-connected neighbor (🔗) so the agent — and the curious user
      reading the prompt — can see the graph at work. */
-  let block = '\n\n[관련 두뇌 지식 — Graph RAG: 직접 매칭(🎯) + 1-hop 연결(🔗)]\n';
+  let block = '\n\n[관련 개인 Vault 지식 — Graph RAG: 직접 매칭(🎯) + 1-hop 연결(🔗)]\n';
   let used = 0;
   for (const [idx] of ordered) {
     const n = nodes[idx];
@@ -5711,7 +6349,7 @@ function readGraphRagBrainContext(agentId: string, budgetChars: number = 2400): 
   return used > 0 ? block : '';
 }
 
-function readAgentSharedContext(agentId: string, opts?: { lean?: boolean }): string {
+function readAgentSharedContext(agentId: string, opts?: { lean?: boolean; query?: string }): string {
   /* v2.89.42 — lean 모드 = 두뇌 "삭제"가 아니라 "축소". 실데이터 prefetch가 성공해서
      큰 컨텍스트가 들어왔을 때 두뇌 콘텐츠 자르기보다 줄이는 쪽으로 결정.
      사용자가 쌓아둔 결정·메모리·brain 노트는 분석에 쓸 수 있어야 함 (제2의 두뇌 컨셉의
@@ -5784,7 +6422,7 @@ function readAgentSharedContext(agentId: string, opts?: { lean?: boolean }): str
      (the brain network IS the graph; not using it would be wasteful).
      Normal: 2400 chars cap. Lean: 900 chars cap — 두뇌가 살아있되 짐 가벼움. */
   try {
-    ctx += readGraphRagBrainContext(agentId, lean ? 900 : 2400);
+    ctx += readGraphRagBrainContext(agentId, lean ? 900 : 2400, opts?.query || '');
   } catch { /* never let brain scan break the prompt */ }
   /* Self-RAG instruction block — appended late so it overrides earlier
      conventions. Tells the agent to ground every claim in the context above
@@ -7428,6 +8066,1401 @@ function readRecentConversations(maxChars = 2500): string {
   }
 }
 
+function readAutoAssetCaptureEnabled(): boolean {
+  try {
+    return vscode.workspace.getConfiguration('connectAiLab').get<boolean>('autoAssetCapture', true) !== false;
+  } catch {
+    return true;
+  }
+}
+
+type AutoAssetCaptureTask = { agent: string; task: string };
+
+function _cleanAssetTitle(input: string): string {
+  const text = String(input || '')
+    .replace(/^\[[^\]]+\]\s*/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[#*_`>\[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (text || 'Connect AI 자동 자산').slice(0, 80);
+}
+
+function _slugForVaultFile(input: string): string {
+  const slug = _cleanAssetTitle(input)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/[\s.]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug || 'connect-ai-asset';
+}
+
+function _yamlQuote(value: string): string {
+  return `"${String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ').trim()}"`;
+}
+
+function _vaultRelPath(absPath: string): string {
+  try {
+    return path.relative(getCompanyDir(), absPath).replace(/\\/g, '/');
+  } catch {
+    return String(absPath || '').replace(/\\/g, '/');
+  }
+}
+
+function _vaultWikiLink(absPath: string, label: string): string {
+  const rel = _vaultRelPath(absPath).replace(/\.md$/i, '');
+  const safeLabel = String(label || rel).replace(/\|/g, '/');
+  return `[[${rel}|${safeLabel}]]`;
+}
+
+function _uniqueMarkdownPath(basePath: string): string {
+  if (!fs.existsSync(basePath)) return basePath;
+  const dir = path.dirname(basePath);
+  const ext = path.extname(basePath) || '.md';
+  const base = path.basename(basePath, ext);
+  for (let i = 2; i < 100; i++) {
+    const candidate = path.join(dir, `${base}-${i}${ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(dir, `${base}-${Date.now()}${ext}`);
+}
+
+function _autoAssetTags(prompt: string, finalReport: string): string[] {
+  const text = `${prompt}\n${finalReport}`.toLowerCase();
+  const tags = new Set<string>(['connect-ai', 'auto-capture']);
+  if (/분석|인사이트|통계|지표|매출|조회|데이터|analysis/.test(text)) tags.add('analysis');
+  if (/전략|방향|로드맵|포지셔닝|strategy/.test(text)) tags.add('strategy');
+  if (/계획|다음 액션|todo|체크리스트|일정|plan/.test(text)) tags.add('plan');
+  if (/워크플로우|자동화|루틴|절차|workflow/.test(text)) tags.add('workflow');
+  if (/콘텐츠|스크립트|카피|영상|릴스|글쓰기|content/.test(text)) tags.add('content');
+  if (/코드|구현|버그|테스트|파일|개발|code/.test(text)) tags.add('code');
+  if (/리서치|자료|지식|rag|논문|검색|research/.test(text)) tags.add('knowledge');
+  if (/결정|정했다|확정|decision/.test(text)) tags.add('decision');
+  return Array.from(tags).slice(0, 10);
+}
+
+type AutoAssetClassification = {
+  assetType: string;
+  suggestedFolder: string;
+  project: string;
+  summary: string;
+  confidence: 'high' | 'medium' | 'low';
+  reasons: string[];
+  tags: string[];
+};
+
+function _countRegexHits(text: string, re: RegExp): number {
+  const m = text.match(re);
+  return m ? m.length : 0;
+}
+
+function _autoAssetSummary(prompt: string, finalReport: string): string {
+  const cleaned = String(finalReport || '')
+    .replace(/^---[\s\S]*?---\s*/m, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  const lines = cleaned.split('\n')
+    .map(l => l.replace(/^[-*>#\s`]+/, '').trim())
+    .filter(l => l.length >= 24 && !/^산출물 길이|도구 실행|세션|원 명령/.test(l));
+  const picked = lines.find(l => /[.!?。]|다|요|음$/.test(l)) || lines[0] || String(prompt || '').trim();
+  return picked.replace(/\s+/g, ' ').slice(0, 220);
+}
+
+function _inferAutoAssetProject(prompt: string, finalReport: string): string {
+  const text = `${prompt}\n${finalReport}`;
+  const explicit = text.match(/(?:프로젝트|브랜드|채널|앱|사이트|게임|제품|서비스)\s*[:：-]?\s*([A-Za-z0-9가-힣 _.-]{2,40})/);
+  if (explicit && explicit[1]) return explicit[1].replace(/[\n\r#*_`>]/g, ' ').trim().slice(0, 40);
+  if (/obsidian|옵시디언|vault|개인 자산|rag/i.test(text)) return 'Personal Vault';
+  if (/connect\s*ai|connect-ai|커넥트\s*ai/i.test(text)) return 'Connect AI';
+  if (/유튜브|youtube|채널|영상|구독자/i.test(text)) return 'YouTube';
+  if (/인스타|instagram|릴스/i.test(text)) return 'Instagram';
+  if (/매출|paypal|페이팔|수익/i.test(text)) return 'Revenue';
+  return '';
+}
+
+function classifyAutoAsset(args: {
+  prompt: string;
+  finalReport: string;
+  planBrief?: string;
+  tasks?: AutoAssetCaptureTask[];
+  learnedDecisions?: string[];
+}): AutoAssetClassification {
+  const text = `${args.prompt || ''}\n${args.planBrief || ''}\n${args.finalReport || ''}`.toLowerCase();
+  const scores: Record<string, number> = {
+    analysis: _countRegexHits(text, /분석|인사이트|통계|지표|매출|조회|데이터|리포트|현황|analysis|metric|report/g),
+    strategy: _countRegexHits(text, /전략|방향|로드맵|포지셔닝|성장|시장|경쟁|strategy|roadmap/g),
+    plan: _countRegexHits(text, /계획|다음\s*액션|todo|체크리스트|우선순위|일정|플랜|plan|action/g),
+    workflow: _countRegexHits(text, /워크플로우|자동화|루틴|절차|반복|프로세스|workflow|automation|routine/g),
+    content: _countRegexHits(text, /콘텐츠|스크립트|카피|영상|릴스|썸네일|유튜브|인스타|content|script|copy/g),
+    code: _countRegexHits(text, /코드|구현|버그|테스트|컴파일|파일|확장|api|typescript|개발|code|build/g),
+    research: _countRegexHits(text, /리서치|자료|논문|근거|검색|시장조사|지식|rag|research|source/g),
+    decision: _countRegexHits(text, /결정|확정|정했다|원칙|규칙|의사결정|decision/g) + ((args.learnedDecisions || []).length > 0 ? 3 : 0),
+    project: _countRegexHits(text, /프로젝트|목표|마일스톤|진행\s*상태|project|milestone/g),
+    general: 0,
+  };
+  for (const t of args.tasks || []) {
+    if (t.agent === 'developer') scores.code += 2;
+    if (t.agent === 'researcher') scores.research += 2;
+    if (t.agent === 'writer' || t.agent === 'youtube' || t.agent === 'instagram' || t.agent === 'designer') scores.content += 1;
+    if (t.agent === 'business') { scores.analysis += 1; scores.strategy += 1; }
+    if (t.agent === 'secretary') { scores.plan += 1; scores.workflow += 1; }
+  }
+  const ranked = Object.entries(scores)
+    .filter(([k]) => k !== 'general')
+    .sort((a, b) => b[1] - a[1]);
+  const [topType, topScore] = ranked[0] || ['general', 0];
+  const assetType = topScore > 0 ? topType : 'general';
+  const suggestedFolder = assetType === 'research' || assetType === 'decision'
+    ? '20_Knowledge'
+    : assetType === 'workflow'
+      ? '40_Workflows'
+      : assetType === 'project'
+        ? '10_Projects'
+        : '50_Outputs';
+  const confidence: 'high' | 'medium' | 'low' = topScore >= 5 ? 'high' : (topScore >= 2 ? 'medium' : 'low');
+  const reasons = ranked.filter(([, s]) => s > 0).slice(0, 4).map(([k, s]) => `${k}:${s}`);
+  const tags = [assetType, suggestedFolder.toLowerCase().replace(/[^a-z0-9]+/g, '-')].filter(Boolean);
+  return {
+    assetType,
+    suggestedFolder,
+    project: _inferAutoAssetProject(args.prompt, args.finalReport),
+    summary: _autoAssetSummary(args.prompt, args.finalReport),
+    confidence,
+    reasons,
+    tags,
+  };
+}
+type AutoAssetDigestEntry = {
+  notePath: string;
+  title: string;
+  day: string;
+  assetType: string;
+  suggestedFolder: string;
+  project: string;
+  summary: string;
+  tags: string[];
+};
+
+function _digestSafeLine(value: string, max = 180): string {
+  return String(value || '')
+    .replace(/[\r\n|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+function _appendAutoDigestLine(filePath: string, header: string, marker: string, line: string) {
+  const current = _safeReadText(filePath);
+  if (current.includes(marker)) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!current.trim()) fs.writeFileSync(filePath, header);
+  const latest = _safeReadText(filePath);
+  const prefix = latest.endsWith('\n') ? '' : '\n';
+  fs.appendFileSync(filePath, `${prefix}${marker}\n${line}\n`);
+}
+
+function _updateAutoAssetDigest(vault: string, entry: AutoAssetDigestEntry): string {
+  const digestDir = path.join(vault, '20_Knowledge', 'Auto Digest');
+  fs.mkdirSync(digestDir, { recursive: true });
+  const day = entry.day || new Date().toISOString().slice(0, 10);
+  const month = day.slice(0, 7);
+  const noteRel = _vaultRelPath(entry.notePath);
+  const marker = `<!-- connect-ai-asset:${noteRel} -->`;
+  const tags = entry.tags || [];
+  const project = _digestSafeLine(entry.project, 60);
+  const projectText = project ? ` · project: ${project}` : '';
+  const tagText = tags.length ? ` · ${tags.slice(0, 6).map(t => `#${t}`).join(' ')}` : '';
+  const summary = _digestSafeLine(entry.summary, 220) || '(summary unavailable)';
+  const line = `- ${day} · ${_vaultWikiLink(entry.notePath, entry.title)} · ${entry.assetType} -> ${entry.suggestedFolder}${projectText}${tagText}\n  - summary: ${summary}`;
+
+  const monthPath = path.join(digestDir, `${month}.md`);
+  const monthHeader = [
+    '---',
+    'type: auto_digest',
+    `month: ${_yamlQuote(month)}`,
+    'source: connect_ai',
+    '---',
+    '',
+    `# Auto Digest ${month}`,
+    '',
+    'Connect AI auto-captured assets for this month. Compact enough for Vault RAG.',
+    '',
+  ].join('\n');
+  _appendAutoDigestLine(monthPath, monthHeader, marker, line);
+
+  const readmePath = path.join(digestDir, 'README.md');
+  const readmeHeader = '# Auto Digest\n\nConnect AI auto-generated digest index.\n';
+  _appendAutoDigestLine(readmePath, readmeHeader, `<!-- connect-ai-digest-month:${month} -->`, `- ${_vaultWikiLink(monthPath, month)}`);
+
+  if (project) {
+    const projectPath = path.join(digestDir, `Project - ${_slugForVaultFile(project)}.md`);
+    const projectHeader = [
+      '---',
+      'type: auto_digest',
+      `project: ${_yamlQuote(project)}`,
+      'source: connect_ai',
+      '---',
+      '',
+      `# Project Digest - ${project}`,
+      '',
+      'Connect AI auto-captured assets for this project. Compact enough for Vault RAG.',
+      '',
+    ].join('\n');
+    _appendAutoDigestLine(projectPath, projectHeader, marker, line);
+    _appendAutoDigestLine(readmePath, readmeHeader, `<!-- connect-ai-digest-project:${_slugForVaultFile(project)} -->`, `- ${_vaultWikiLink(projectPath, `Project - ${project}`)}`);
+  }
+
+  return _vaultRelPath(monthPath);
+}
+function _frontmatterBlock(raw: string): string {
+  const m = String(raw || '').match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  return m ? m[1] : '';
+}
+
+function _yamlScalarValue(value: string): string {
+  const v = String(value || '').trim();
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
+  }
+  return v.replace(/\s+#.*$/g, '').trim();
+}
+
+function _frontmatterValue(fm: string, key: string): string {
+  const re = new RegExp(`^${key}:\\s*(.*)$`, 'm');
+  const m = String(fm || '').match(re);
+  return m ? _yamlScalarValue(m[1]) : '';
+}
+
+function _frontmatterList(fm: string, key: string): string[] {
+  const lines = String(fm || '').split(/\r?\n/);
+  const start = lines.findIndex(line => line.trim() === `${key}:`);
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\S/.test(line) && !line.trim().startsWith('-')) break;
+    const m = line.match(/^\s*-\s+(.+)$/);
+    if (m && m[1]) out.push(_yamlScalarValue(m[1]));
+  }
+  return out.filter(Boolean);
+}
+
+function _firstDigestSummaryLine(raw: string): string {
+  const body = String(raw || '').replace(/^---[\s\S]*?---\s*/m, '');
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.replace(/^[-*>#\s`]+/, '').trim();
+    if (t.length >= 24) return _digestSafeLine(t, 220);
+  }
+  return '';
+}
+
+function _readAutoAssetDigestEntry(notePath: string): AutoAssetDigestEntry | null {
+  if (path.basename(notePath).toLowerCase() === 'readme.md') return null;
+  const raw = _safeReadText(notePath);
+  if (!raw.trim()) return null;
+  const fm = _frontmatterBlock(raw);
+  const h1 = raw.match(/^#\s+(.+?)\s*$/m);
+  const title = _cleanAssetTitle(h1?.[1] || _frontmatterValue(fm, 'prompt') || path.basename(notePath, path.extname(notePath)));
+  const rel = _vaultRelPath(notePath);
+  const relDay = rel.match(/(?:^|\/)(\d{4}-\d{2}-\d{2})(?:\/|$)/)?.[1] || '';
+  let statDay = '';
+  try { statDay = fs.statSync(notePath).mtime.toISOString().slice(0, 10); } catch {}
+  const tags = _frontmatterList(fm, 'tags');
+  return {
+    notePath,
+    title,
+    day: _frontmatterValue(fm, 'date') || relDay || statDay || new Date().toISOString().slice(0, 10),
+    assetType: _frontmatterValue(fm, 'asset_type') || 'general',
+    suggestedFolder: _frontmatterValue(fm, 'suggested_folder') || '50_Outputs',
+    project: _frontmatterValue(fm, 'project'),
+    summary: _frontmatterValue(fm, 'summary') || _firstDigestSummaryLine(raw),
+    tags: tags.length ? tags : ['connect-ai', 'auto-capture'],
+  };
+}
+
+function rebuildAutoAssetDigest(): { ok: boolean; scanned: number; indexed: number; skipped: number; failed: number; digestDir: string; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures');
+  const digestDir = path.join(vault, '20_Knowledge', 'Auto Digest');
+  const files = fs.existsSync(capturesDir)
+    ? _walkBrainMd(capturesDir, { maxDepth: 8, maxFiles: 5000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+        .sort((a, b) => a.localeCompare(b))
+    : [];
+  let indexed = 0;
+  let skipped = 0;
+  const failures: string[] = [];
+  for (const file of files) {
+    const entry = _readAutoAssetDigestEntry(file);
+    if (!entry) { skipped++; continue; }
+    try {
+      _updateAutoAssetDigest(vault, entry);
+      indexed++;
+    } catch (e: any) {
+      failures.push(`${_vaultRelPath(file)}: ${e?.message || e}`);
+    }
+  }
+  const failed = failures.length;
+  const markdown = [
+    '# Auto Digest Reindex',
+    '',
+    `Vault: ${vault}`,
+    `Auto Captures: ${capturesDir}`,
+    `Auto Digest: ${digestDir}`,
+    '',
+    `- scanned: ${files.length}`,
+    `- indexed: ${indexed}`,
+    `- skipped: ${skipped}`,
+    `- failed: ${failed}`,
+    '',
+    failures.length ? '## Failures' : '## Result',
+    failures.length ? failures.map(x => `- ${x}`).join('\n') : 'Existing Auto Captures are indexed into monthly/project digest notes. Re-running this command is idempotent.',
+  ].join('\n');
+  return { ok: failed === 0, scanned: files.length, indexed, skipped, failed, digestDir, markdown };
+}
+type KnowledgePromotionCandidate = AutoAssetDigestEntry & {
+  relPath: string;
+  score: number;
+  targetFolder: string;
+  confidence: string;
+  reasons: string[];
+};
+
+function _knowledgePromotionTarget(assetType: string, suggestedFolder: string): string {
+  const t = String(assetType || '').toLowerCase();
+  if (t === 'workflow') return '40_Workflows';
+  if (t === 'project') return '10_Projects';
+  if (suggestedFolder === '20_Knowledge') return '20_Knowledge';
+  if (['research', 'decision', 'analysis', 'strategy'].includes(t)) return '20_Knowledge';
+  return suggestedFolder || '20_Knowledge';
+}
+
+function _scoreKnowledgePromotion(entry: AutoAssetDigestEntry, raw: string): { score: number; targetFolder: string; confidence: string; reasons: string[] } {
+  const fm = _frontmatterBlock(raw);
+  const confidence = _frontmatterValue(fm, 'classification_confidence') || 'unknown';
+  const assetType = String(entry.assetType || 'general').toLowerCase();
+  const suggested = entry.suggestedFolder || _frontmatterValue(fm, 'suggested_folder') || '';
+  const targetFolder = _knowledgePromotionTarget(assetType, suggested);
+  const tags = (entry.tags || []).map(t => String(t || '').toLowerCase());
+  const text = `${entry.title}\n${entry.summary}\n${raw.slice(0, 5000)}`.toLowerCase();
+  let score = 0;
+  const reasons: string[] = [];
+  const add = (n: number, reason: string) => { score += n; reasons.push(reason); };
+
+  if (assetType === 'research') add(5, 'research asset');
+  else if (assetType === 'decision') add(5, 'decision asset');
+  else if (assetType === 'analysis') add(4, 'analysis asset');
+  else if (assetType === 'strategy') add(4, 'strategy asset');
+  else if (assetType === 'workflow') add(3, 'workflow asset');
+  else if (assetType === 'project') add(2, 'project context');
+
+  if (confidence === 'high') add(2, 'high classification confidence');
+  else if (confidence === 'medium') add(1, 'medium classification confidence');
+
+  if (suggested === '20_Knowledge') add(2, 'already suggested for 20_Knowledge');
+  if (targetFolder === '20_Knowledge') add(1, 'long-term knowledge target');
+  if (tags.some(t => ['research', 'decision', 'strategy', 'analysis', 'rag', 'knowledge'].includes(t))) add(2, 'knowledge-oriented tags');
+  if (/^type:\s*ai_asset/m.test(raw)) add(1, 'captured AI asset');
+  if (/^summary:\s*".{40,}"/m.test(raw) || entry.summary.length >= 50) add(1, 'usable summary');
+  if (raw.length >= 2500) add(1, 'substantial source note');
+  if (/자동 추출 결정|learned decision|decision/i.test(raw)) add(1, 'decision section present');
+  if (/원칙|규칙|근거|출처|가설|검증|분석|전략|research|source|principle|rule/i.test(text)) add(1, 'reusable knowledge signals');
+
+  if (/failure_report|호출 실패|실패 보고서|error/i.test(raw.slice(0, 1000))) score -= 4;
+  return { score, targetFolder, confidence, reasons };
+}
+
+function _replaceGeneratedSection(existing: string, startMarker: string, endMarker: string, generated: string): string {
+  const current = String(existing || '');
+  const start = current.indexOf(startMarker);
+  const end = current.indexOf(endMarker);
+  if (start >= 0 && end >= start) {
+    return current.slice(0, start) + generated + current.slice(end + endMarker.length);
+  }
+  return current.trim() ? `${generated}\n\n---\n\n${current.trim()}\n` : generated;
+}
+
+function _dailyReviewSourceKey(value: string): string {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/\.md$/i, '')
+    .replace(/^\/+/, '')
+    .toLowerCase();
+}
+
+function _readCheckedDailyReviewSources(raw: string): Set<string> {
+  const checked = new Set<string>();
+  const re = /^-\s*\[[xX]\]\s+review:\s+\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(raw || '')))) {
+    checked.add(_dailyReviewSourceKey(m[1]));
+  }
+  return checked;
+}
+
+type TodayAutoCaptureReviewStatus = {
+  date: string;
+  exists: boolean;
+  captures: number;
+  reviewed: number;
+  pending: number;
+  reviewPath: string;
+  displayPath: string;
+  summary: string;
+};
+
+function readTodayAutoCaptureReviewStatus(date = new Date().toISOString().slice(0, 10), vault = getCompanyDir()): TodayAutoCaptureReviewStatus {
+  const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures', date);
+  const reviewPath = path.join(vault, '00_Inbox', 'Daily Reviews', `${date} Auto Capture Review.md`);
+  const existingReview = _safeReadText(reviewPath);
+  const checkedSources = _readCheckedDailyReviewSources(existingReview);
+  const files = fs.existsSync(capturesDir)
+    ? _walkBrainMd(capturesDir, { maxDepth: 4, maxFiles: 1000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+    : [];
+  const entries = files
+    .map(file => _readAutoAssetDigestEntry(file))
+    .filter((entry): entry is AutoAssetDigestEntry => !!entry);
+  const reviewed = entries.filter(entry => checkedSources.has(_dailyReviewSourceKey(_vaultRelPath(entry.notePath)))).length;
+  const captures = entries.length;
+  const pending = Math.max(0, captures - reviewed);
+  const summary = captures === 0
+    ? 'No Auto Captures saved today yet.'
+    : pending > 0
+      ? `${pending}/${captures} Auto Captures still need review.`
+      : `All ${captures} Auto Captures are reviewed.`;
+  return {
+    date,
+    exists: !!existingReview.trim(),
+    captures,
+    reviewed,
+    pending,
+    reviewPath,
+    displayPath: reviewPath.replace(os.homedir(), '~'),
+    summary,
+  };
+}
+
+function buildTodayAutoCaptureReview(date = new Date().toISOString().slice(0, 10)): { ok: boolean; date: string; scanned: number; captures: number; reviewPath: string; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures', date);
+  const reviewDir = path.join(vault, '00_Inbox', 'Daily Reviews');
+  const reviewPath = path.join(reviewDir, `${date} Auto Capture Review.md`);
+  const existingReview = _safeReadText(reviewPath);
+  const checkedSources = _readCheckedDailyReviewSources(existingReview);
+  const files = fs.existsSync(capturesDir)
+    ? _walkBrainMd(capturesDir, { maxDepth: 4, maxFiles: 1000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+        .sort((a, b) => a.localeCompare(b))
+    : [];
+  const entries = files
+    .map(file => _readAutoAssetDigestEntry(file))
+    .filter((entry): entry is AutoAssetDigestEntry => !!entry);
+  const pipeline = readPersonalVaultPipelineStatus(vault);
+  const startMarker = '<!-- connect-ai-daily-capture-review:start -->';
+  const endMarker = '<!-- connect-ai-daily-capture-review:end -->';
+  const rows = entries.length > 0
+    ? entries.map((entry, i) => {
+        const tagText = (entry.tags || []).slice(0, 8).map(t => `#${t}`).join(' ');
+        const projectText = entry.project ? ` · project: ${entry.project}` : '';
+        const suggested = entry.suggestedFolder || '20_Knowledge';
+        const sourceKey = _dailyReviewSourceKey(_vaultRelPath(entry.notePath));
+        const reviewMark = checkedSources.has(sourceKey) ? 'x' : ' ';
+        return [
+          `### ${i + 1}. ${entry.title}`,
+          `- [${reviewMark}] review: ${_vaultWikiLink(entry.notePath, entry.title)}`,
+          `- type: ${entry.assetType || 'general'} -> ${suggested}${projectText}${tagText ? ' · ' + tagText : ''}`,
+          `- summary: ${_digestSafeLine(entry.summary, 260) || '(summary unavailable)'}`,
+          `- next: keep as source, promote to knowledge, or ignore if it is no longer useful.`,
+        ].join('\n');
+      }).join('\n\n')
+    : '_No Auto Captures saved for this date yet._';
+  const pipelineLine = pipeline.needed === 'yes'
+    ? `- Pipeline: needs run. Use the Office 🔁 button after reviewing captures.`
+    : pipeline.needed === 'no'
+      ? `- Pipeline: up to date. Last run: ${pipeline.lastRun}.`
+      : '- Pipeline: status not generated yet.';
+  const generated = [
+    '---',
+    'type: daily_asset_review',
+    'source: connect_ai',
+    `date: ${_yamlQuote(date)}`,
+    'status: review',
+    '---',
+    '',
+    `# Daily Auto Capture Review - ${date}`,
+    '',
+    'This note is a daily inbox for automatically captured assets. Manual notes below the generated block are preserved, and checked review boxes stay checked across auto-updates.',
+    '',
+    startMarker,
+    `Generated: ${new Date().toISOString()}`,
+    `Vault: ${vault}`,
+    `Auto Capture Folder: ${capturesDir}`,
+    `Captures: ${entries.length}`,
+    `Pipeline Needed: ${pipeline.needed}`,
+    '',
+    '## Review Checklist',
+    '',
+    '- [ ] Open captures that look reusable.',
+    '- [ ] Run the Personal Vault pipeline if Pipeline Needed is yes.',
+    '- [ ] Mark useful Knowledge Drafts as status: accepted after the pipeline creates them.',
+    '',
+    '## Pipeline',
+    '',
+    pipelineLine,
+    '',
+    '## Today\'s Captures',
+    '',
+    rows,
+    '',
+    endMarker,
+    '',
+  ].join('\n');
+  const finalBody = _replaceGeneratedSection(existingReview, startMarker, endMarker, generated);
+  fs.mkdirSync(path.dirname(reviewPath), { recursive: true });
+  fs.writeFileSync(reviewPath, finalBody);
+  return { ok: true, date, scanned: files.length, captures: entries.length, reviewPath, markdown: generated };
+}
+function buildKnowledgePromotionCandidates(): { ok: boolean; scanned: number; candidates: number; reportPath: string; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures');
+  const reportPath = path.join(vault, '20_Knowledge', 'Promotion Candidates.md');
+  const files = fs.existsSync(capturesDir)
+    ? _walkBrainMd(capturesDir, { maxDepth: 8, maxFiles: 5000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+    : [];
+  const top = _collectKnowledgePromotionCandidates(80);
+  const startMarker = '<!-- connect-ai-knowledge-candidates:start -->';
+  const endMarker = '<!-- connect-ai-knowledge-candidates:end -->';
+  const rows = top.length > 0
+    ? top.map((c, i) => [
+        `## ${i + 1}. ${c.title}`,
+        `- source: ${_vaultWikiLink(path.join(vault, c.relPath), c.title)}`,
+        `- score: ${c.score}`,
+        `- target: ${c.targetFolder}`,
+        `- type: ${c.assetType} / confidence: ${c.confidence}`,
+        c.project ? `- project: ${c.project}` : '',
+        `- summary: ${_digestSafeLine(c.summary, 260) || '(summary unavailable)'}`,
+        `- reasons: ${c.reasons.join(', ')}`,
+        `- suggested action: if still valid, rewrite this as a clean evergreen note under ${c.targetFolder}.`,
+      ].filter(Boolean).join('\n')).join('\n\n')
+    : '_No promotion candidates found yet. Run more substantial Connect AI tasks or rebuild Auto Digest after captures accumulate._';
+  const generated = [
+    '# Knowledge Promotion Candidates',
+    '',
+    'Generated by Connect AI from Auto Captures. This file recommends durable notes; it does not move or rewrite your source assets.',
+    '',
+    startMarker,
+    `Generated: ${new Date().toISOString()}`,
+    `Scanned Auto Captures: ${files.length}`,
+    `Candidates: ${top.length}`,
+    '',
+    rows,
+    endMarker,
+    '',
+  ].join('\n');
+  const finalBody = _replaceGeneratedSection(_safeReadText(reportPath), startMarker, endMarker, generated);
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, finalBody);
+  return { ok: true, scanned: files.length, candidates: top.length, reportPath, markdown: generated };
+}
+function _stableShortHash(input: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < String(input || '').length; i++) {
+    h ^= String(input).charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36).slice(0, 7);
+}
+
+function _stripMarkdownFrontmatter(raw: string): string {
+  return String(raw || '').replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, '').trim();
+}
+
+function _extractMarkdownSection(raw: string, heading: string, maxChars = 2200): string {
+  const body = _stripMarkdownFrontmatter(raw);
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'mi');
+  const m = body.match(re);
+  if (!m || m.index === undefined) return '';
+  const start = m.index + m[0].length;
+  const rest = body.slice(start);
+  const next = rest.search(/^##\s+/m);
+  return (next >= 0 ? rest.slice(0, next) : rest).trim().slice(0, maxChars);
+}
+
+function _firstUsefulMarkdownLines(raw: string, maxLines = 8): string[] {
+  const body = _stripMarkdownFrontmatter(raw);
+  const lines: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('#')) continue;
+    if (/^>\s*(원 명령|세션|자동 저장 이유|분류):/.test(t)) continue;
+    if (/^[-*]\s*\(_/.test(t)) continue;
+    lines.push(t.replace(/^>\s*/, '').slice(0, 280));
+    if (lines.length >= maxLines) break;
+  }
+  return lines;
+}
+
+function _collectKnowledgePromotionCandidates(limit = 80): KnowledgePromotionCandidate[] {
+  const vault = getCompanyDir();
+  const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures');
+  const files = fs.existsSync(capturesDir)
+    ? _walkBrainMd(capturesDir, { maxDepth: 8, maxFiles: 5000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+        .sort((a, b) => a.localeCompare(b))
+    : [];
+  const candidates: KnowledgePromotionCandidate[] = [];
+  for (const file of files) {
+    const entry = _readAutoAssetDigestEntry(file);
+    if (!entry) continue;
+    const raw = _safeReadText(file);
+    const scored = _scoreKnowledgePromotion(entry, raw);
+    if (scored.score < 6) continue;
+    candidates.push({
+      ...entry,
+      relPath: _vaultRelPath(file),
+      score: scored.score,
+      targetFolder: scored.targetFolder,
+      confidence: scored.confidence,
+      reasons: scored.reasons,
+    });
+  }
+  return candidates
+    .sort((a, b) => b.score - a.score || b.day.localeCompare(a.day) || a.title.localeCompare(b.title))
+    .slice(0, limit);
+}
+
+function _buildEvergreenDraftBody(vault: string, candidate: KnowledgePromotionCandidate, raw: string, draftRel: string): string {
+  const resultSection = _extractMarkdownSection(raw, '결과', 2400);
+  const decisionSection = _extractMarkdownSection(raw, '자동 추출 결정', 1200);
+  const fallbackLines = _firstUsefulMarkdownLines(raw, 8);
+  const summary = _digestSafeLine(candidate.summary, 260) || fallbackLines[0] || candidate.title;
+  const sourceAbs = path.join(vault, candidate.relPath);
+  const sourceLink = _vaultWikiLink(sourceAbs, candidate.title);
+  const tags = Array.from(new Set(['connect-ai', 'knowledge-draft', candidate.assetType, ...candidate.tags])).filter(Boolean).slice(0, 12);
+  const knowledgeBody = resultSection
+    ? resultSection
+    : fallbackLines.length > 0
+      ? fallbackLines.map(line => `- ${line.replace(/^[-*]\s*/, '')}`).join('\n')
+      : '- _(원본 Auto Capture를 열어 정리하세요.)_';
+  const decisionBody = decisionSection || '- _(자동 추출 결정 없음)_';
+  return [
+    '---',
+    'type: evergreen_draft',
+    'source: connect_ai',
+    'status: draft',
+    `created: ${_yamlQuote(new Date().toISOString())}`,
+    `source_asset: ${_yamlQuote(candidate.relPath)}`,
+    `draft_path: ${_yamlQuote(draftRel)}`,
+    `target_folder: ${_yamlQuote(candidate.targetFolder)}`,
+    `asset_type: ${_yamlQuote(candidate.assetType)}`,
+    `project: ${_yamlQuote(candidate.project)}`,
+    `promotion_score: ${candidate.score}`,
+    `classification_confidence: ${_yamlQuote(candidate.confidence)}`,
+    'tags:',
+    ...tags.map(t => `  - ${t}`),
+    '---',
+    '',
+    `# ${candidate.title}`,
+    '',
+    `<!-- connect-ai-evergreen-draft-source:${candidate.relPath} -->`,
+    '',
+    `> 원본 자산: ${sourceLink}`,
+    `> 추천 위치: ${candidate.targetFolder}`,
+    `> 생성 목적: Auto Captures를 장기 지식으로 정리하기 위한 초안입니다. 검토 후 확정본만 승격하세요.`,
+    '',
+    '## 핵심 요약',
+    '',
+    summary,
+    '',
+    '## 정리된 지식 초안',
+    '',
+    knowledgeBody,
+    '',
+    '## 재사용 기준',
+    '',
+    `- 이 지식은 ${candidate.assetType || 'general'} 유형의 작업에서 재사용 후보입니다.`,
+    candidate.project ? `- 관련 프로젝트: ${candidate.project}` : '- 관련 프로젝트: _(자동 추정 없음)_',
+    `- 승격 근거: ${candidate.reasons.join(', ') || 'promotion candidate'}`,
+    '',
+    '## 결정/원칙 후보',
+    '',
+    decisionBody,
+    '',
+    '## 검토 체크리스트',
+    '',
+    '- [ ] 사실과 추론을 분리했다.',
+    '- [ ] 장기적으로 다시 쓸 수 있는 문장으로 고쳤다.',
+    '- [ ] 민감정보, 토큰, 개인 키가 없다.',
+    '- [ ] 필요한 경우 출처/날짜를 보강했다.',
+    '- [ ] 확정 후 20_Knowledge, 40_Workflows, 10_Projects 중 맞는 위치로 옮겼다.',
+    '',
+  ].join('\n');
+}
+
+function generateKnowledgeDraftsFromCandidates(): { ok: boolean; scanned: number; candidates: number; created: number; updated: number; skipped: number; draftsDir: string; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const draftsDir = path.join(vault, '20_Knowledge', 'Drafts');
+  fs.mkdirSync(draftsDir, { recursive: true });
+  const candidates = _collectKnowledgePromotionCandidates(30);
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  const lines: string[] = [];
+  for (const candidate of candidates) {
+    const sourceAbs = path.join(vault, candidate.relPath);
+    const raw = _safeReadText(sourceAbs);
+    if (!raw.trim()) { skipped++; continue; }
+    const sourceHash = _stableShortHash(candidate.relPath);
+    const draftPath = path.join(draftsDir, `${candidate.day}-${_slugForVaultFile(candidate.title)}-${sourceHash}.md`);
+    const draftRel = _vaultRelPath(draftPath);
+    const existed = fs.existsSync(draftPath);
+    const body = _buildEvergreenDraftBody(vault, candidate, raw, draftRel);
+    fs.writeFileSync(draftPath, body);
+    if (existed) updated++; else created++;
+    lines.push(`- ${existed ? 'updated' : 'created'}: ${_vaultWikiLink(draftPath, candidate.title)} ← ${_vaultWikiLink(sourceAbs, 'source')}`);
+  }
+  const markdown = [
+    '# Knowledge Draft Generation',
+    '',
+    `Drafts directory: ${draftsDir}`,
+    `Candidates considered: ${candidates.length}`,
+    `Created: ${created}`,
+    `Updated: ${updated}`,
+    `Skipped: ${skipped}`,
+    '',
+    lines.length ? lines.join('\n') : '_No drafts generated. Create promotion candidates first or run more substantial Connect AI tasks._',
+  ].join('\n');
+  return { ok: true, scanned: candidates.length, candidates: candidates.length, created, updated, skipped, draftsDir, markdown };
+}
+type KnowledgeDraftReviewState = 'pending' | 'accepted' | 'rejected' | 'needs_revision';
+
+interface KnowledgeDraftReviewItem {
+  draftPath: string;
+  relPath: string;
+  title: string;
+  status: string;
+  reviewState: KnowledgeDraftReviewState;
+  targetFolder: string;
+  sourceAsset: string;
+  project: string;
+  assetType: string;
+  promotionScore: string;
+  summary: string;
+  modified: string;
+}
+
+function _normalizeKnowledgeDraftReviewState(status: string): KnowledgeDraftReviewState {
+  const s = String(status || '').trim().toLowerCase().replace(/\s+/g, '_');
+  if (['accepted', 'approved', 'final', 'done', 'promoted'].includes(s)) return 'accepted';
+  if (['rejected', 'discarded', 'archive', 'archived', 'dropped'].includes(s)) return 'rejected';
+  if (['needs_revision', 'revision', 'revise', 'needs_review', 'fix'].includes(s)) return 'needs_revision';
+  return 'pending';
+}
+
+function _knowledgeDraftReviewSummary(raw: string, fm: string): string {
+  const explicit = _frontmatterValue(fm, 'summary');
+  if (explicit) return _digestSafeLine(explicit, 220);
+  const body = _stripMarkdownFrontmatter(raw);
+  for (const line of body.split(/\r?\n/)) {
+    let t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('#')) continue;
+    if (t.startsWith('>')) continue;
+    if (t.startsWith('<!--')) continue;
+    if (t.startsWith('- [ ]') || t.startsWith('- [x]') || t.startsWith('- [X]')) continue;
+    if (/^[-*_]{3,}$/.test(t)) continue;
+    t = t.replace(/^[-*]\s+/, '').trim();
+    if (!t || t.startsWith('_(')) continue;
+    return _digestSafeLine(t, 220);
+  }
+  return '';
+}
+
+function _readKnowledgeDraftReviewItem(draftPath: string): KnowledgeDraftReviewItem | null {
+  const base = path.basename(draftPath).toLowerCase();
+  if (base === 'readme.md' || base === 'draft review queue.md') return null;
+  const raw = _safeReadText(draftPath);
+  if (!raw.trim()) return null;
+  const fm = _frontmatterBlock(raw);
+  const relPath = _vaultRelPath(draftPath);
+  if (!_isKnowledgeDraftRagRel(relPath, raw)) return null;
+  const h1 = raw.match(/^#\s+(.+?)\s*$/m);
+  const title = _cleanAssetTitle(h1?.[1] || path.basename(draftPath, path.extname(draftPath)));
+  const status = _frontmatterValue(fm, 'status') || 'draft';
+  let modified = '';
+  try { modified = fs.statSync(draftPath).mtime.toISOString().slice(0, 10); } catch {}
+  return {
+    draftPath,
+    relPath,
+    title,
+    status,
+    reviewState: _normalizeKnowledgeDraftReviewState(status),
+    targetFolder: _frontmatterValue(fm, 'target_folder') || '20_Knowledge',
+    sourceAsset: _frontmatterValue(fm, 'source_asset'),
+    project: _frontmatterValue(fm, 'project'),
+    assetType: _frontmatterValue(fm, 'asset_type') || 'general',
+    promotionScore: _frontmatterValue(fm, 'promotion_score'),
+    summary: _knowledgeDraftReviewSummary(raw, fm),
+    modified,
+  };
+}
+
+function _formatKnowledgeDraftReviewRows(vault: string, items: KnowledgeDraftReviewItem[], emptyText: string): string {
+  if (items.length === 0) return emptyText;
+  return items.map((item, i) => {
+    const sourceLink = item.sourceAsset ? _vaultWikiLink(path.join(vault, item.sourceAsset), 'source') : '';
+    return [
+      `### ${i + 1}. ${item.title}`,
+      `- draft: ${_vaultWikiLink(item.draftPath, item.title)}`,
+      `- status: ${item.status}`,
+      `- target: ${item.targetFolder}`,
+      sourceLink ? `- source: ${sourceLink}` : '',
+      item.project ? `- project: ${item.project}` : '',
+      `- type: ${item.assetType}${item.promotionScore ? ' / score: ' + item.promotionScore : ''}`,
+      item.modified ? `- modified: ${item.modified}` : '',
+      item.summary ? `- summary: ${item.summary}` : '',
+      '- review action: edit the draft frontmatter status to accepted, needs_revision, or rejected after reading it.',
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
+}
+
+function buildKnowledgeDraftReviewQueue(): { ok: boolean; scanned: number; pending: number; accepted: number; rejected: number; needsRevision: number; reportPath: string; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const draftsDir = path.join(vault, '20_Knowledge', 'Drafts');
+  const reportPath = path.join(vault, '20_Knowledge', 'Draft Review Queue.md');
+  const files = fs.existsSync(draftsDir)
+    ? _walkBrainMd(draftsDir, { maxDepth: 4, maxFiles: 1000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+        .sort((a, b) => a.localeCompare(b))
+    : [];
+  const items = files
+    .map(file => _readKnowledgeDraftReviewItem(file))
+    .filter((item): item is KnowledgeDraftReviewItem => !!item)
+    .sort((a, b) => {
+      const rank = (x: KnowledgeDraftReviewItem) => x.reviewState === 'pending' ? 0 : x.reviewState === 'needs_revision' ? 1 : x.reviewState === 'accepted' ? 2 : 3;
+      return rank(a) - rank(b) || b.modified.localeCompare(a.modified) || a.title.localeCompare(b.title);
+    });
+  const pendingItems = items.filter(x => x.reviewState === 'pending');
+  const revisionItems = items.filter(x => x.reviewState === 'needs_revision');
+  const acceptedItems = items.filter(x => x.reviewState === 'accepted');
+  const rejectedItems = items.filter(x => x.reviewState === 'rejected');
+  const startMarker = '<!-- connect-ai-draft-review:start -->';
+  const endMarker = '<!-- connect-ai-draft-review:end -->';
+  const generated = [
+    '# Knowledge Draft Review Queue',
+    '',
+    'Generated by Connect AI from 20_Knowledge/Drafts. This file is a non-destructive review board; it does not move, delete, or rewrite draft notes.',
+    '',
+    startMarker,
+    `Generated: ${new Date().toISOString()}`,
+    `Scanned Drafts: ${files.length}`,
+    `Review Items: ${items.length}`,
+    `Pending: ${pendingItems.length}`,
+    `Needs Revision: ${revisionItems.length}`,
+    `Accepted: ${acceptedItems.length}`,
+    `Rejected: ${rejectedItems.length}`,
+    '',
+    '## Review Rule',
+    '',
+    '- Open each draft and keep only durable, reusable knowledge.',
+    '- To approve a draft, set its frontmatter status to accepted.',
+    '- To pause a draft, set status to needs_revision.',
+    '- To exclude a draft, set status to rejected.',
+    '- After approval, rewrite or copy the durable content into the target folder shown below.',
+    '',
+    '## Pending Review',
+    '',
+    _formatKnowledgeDraftReviewRows(vault, pendingItems, '_No pending drafts._'),
+    '',
+    '## Needs Revision',
+    '',
+    _formatKnowledgeDraftReviewRows(vault, revisionItems, '_No drafts need revision._'),
+    '',
+    '## Accepted',
+    '',
+    _formatKnowledgeDraftReviewRows(vault, acceptedItems, '_No accepted drafts yet._'),
+    '',
+    '## Rejected',
+    '',
+    _formatKnowledgeDraftReviewRows(vault, rejectedItems, '_No rejected drafts yet._'),
+    '',
+    endMarker,
+    '',
+  ].join('\n');
+  const finalBody = _replaceGeneratedSection(_safeReadText(reportPath), startMarker, endMarker, generated);
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, finalBody);
+  return {
+    ok: true,
+    scanned: files.length,
+    pending: pendingItems.length,
+    accepted: acceptedItems.length,
+    rejected: rejectedItems.length,
+    needsRevision: revisionItems.length,
+    reportPath,
+    markdown: generated,
+  };
+}
+function _finalKnowledgeTargetFolder(targetFolder: string, assetType: string): string {
+  const first = String(targetFolder || '').replace(/\\/g, '/').split('/')[0];
+  if (['20_Knowledge', '40_Workflows', '10_Projects'].includes(first)) return first;
+  const t = String(assetType || '').toLowerCase();
+  if (t === 'workflow') return '40_Workflows';
+  if (t === 'project') return '10_Projects';
+  return '20_Knowledge';
+}
+
+function _stripDraftOnlySections(raw: string): string {
+  const body = _stripMarkdownFrontmatter(raw)
+    .replace(/^#\s+.+?\s*\r?\n+/, '')
+    .replace(/<!--\s*connect-ai-evergreen-draft-source:[\s\S]*?-->\s*/g, '')
+    .trim();
+  const out: string[] = [];
+  let skip = false;
+  for (const line of body.split(/\r?\n/)) {
+    const h2 = line.match(/^##\s+(.+?)\s*$/);
+    if (h2) {
+      const heading = h2[1].toLowerCase();
+      skip = heading.includes('review') || heading.includes('checklist') || heading.includes('검토') || heading.includes('체크리스트');
+      if (skip) continue;
+    }
+    if (skip) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function _buildFinalKnowledgeNoteBody(vault: string, item: KnowledgeDraftReviewItem, raw: string, finalRel: string): string {
+  const fm = _frontmatterBlock(raw);
+  const sourceLink = item.sourceAsset ? _vaultWikiLink(path.join(vault, item.sourceAsset), 'source asset') : '';
+  const tags = Array.from(new Set(['connect-ai', 'evergreen-note', item.assetType, ..._frontmatterList(fm, 'tags')]))
+    .filter(Boolean)
+    .slice(0, 14);
+  const body = _stripDraftOnlySections(raw) || '_Accepted draft had no reusable body content._';
+  const frontmatter = [
+    '---',
+    'type: evergreen_note',
+    'source: connect_ai',
+    'status: accepted',
+    `created: ${_yamlQuote(new Date().toISOString())}`,
+    `source_draft: ${_yamlQuote(item.relPath)}`,
+    ...(item.sourceAsset ? [`source_asset: ${_yamlQuote(item.sourceAsset)}`] : []),
+    `final_path: ${_yamlQuote(finalRel)}`,
+    `target_folder: ${_yamlQuote(item.targetFolder)}`,
+    `asset_type: ${_yamlQuote(item.assetType)}`,
+    `project: ${_yamlQuote(item.project)}`,
+    ...(item.promotionScore ? [`promotion_score: ${_yamlQuote(item.promotionScore)}`] : []),
+    'tags:',
+    ...tags.map(t => `  - ${t}`),
+    '---',
+  ].join('\n');
+  const links = [
+    `> Finalized from: ${_vaultWikiLink(item.draftPath, 'accepted draft')}`,
+    ...(sourceLink ? [`> Source asset: ${sourceLink}`] : []),
+    `> Final target: ${item.targetFolder}`,
+  ].join('\n');
+  return [
+    frontmatter,
+    '',
+    `# ${item.title}`,
+    '',
+    links,
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+function finalizeAcceptedKnowledgeDrafts(): { ok: boolean; scanned: number; accepted: number; created: number; skipped: number; failed: number; markdown: string } {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const draftsDir = path.join(vault, '20_Knowledge', 'Drafts');
+  const files = fs.existsSync(draftsDir)
+    ? _walkBrainMd(draftsDir, { maxDepth: 4, maxFiles: 1000, skipDirs: new Set() })
+        .filter(f => f.toLowerCase().endsWith('.md'))
+        .sort((a, b) => a.localeCompare(b))
+    : [];
+  const acceptedItems = files
+    .map(file => _readKnowledgeDraftReviewItem(file))
+    .filter((item): item is KnowledgeDraftReviewItem => !!item && item.reviewState === 'accepted');
+  let created = 0;
+  let skipped = 0;
+  const failures: string[] = [];
+  const lines: string[] = [];
+  for (const item of acceptedItems) {
+    try {
+      const raw = _safeReadText(item.draftPath);
+      if (!raw.trim()) { skipped++; lines.push(`- skipped empty draft: ${item.relPath}`); continue; }
+      const targetFolder = _finalKnowledgeTargetFolder(item.targetFolder, item.assetType);
+      const finalDir = path.join(vault, targetFolder);
+      const finalName = `${_slugForVaultFile(item.title)}-${_stableShortHash(item.relPath)}.md`;
+      const finalPath = path.join(finalDir, finalName);
+      const finalRel = _vaultRelPath(finalPath);
+      if (fs.existsSync(finalPath)) {
+        skipped++;
+        lines.push(`- skipped existing: ${_vaultWikiLink(finalPath, item.title)} <- ${_vaultWikiLink(item.draftPath, 'draft')}`);
+        continue;
+      }
+      fs.mkdirSync(finalDir, { recursive: true });
+      fs.writeFileSync(finalPath, _buildFinalKnowledgeNoteBody(vault, item, raw, finalRel));
+      created++;
+      lines.push(`- created: ${_vaultWikiLink(finalPath, item.title)} <- ${_vaultWikiLink(item.draftPath, 'draft')}`);
+    } catch (e: any) {
+      failures.push(`${item.relPath}: ${e?.message || e}`);
+    }
+  }
+  const failed = failures.length;
+  const markdown = [
+    '# Accepted Knowledge Draft Finalization',
+    '',
+    `Vault: ${vault}`,
+    `Scanned Drafts: ${files.length}`,
+    `Accepted Drafts: ${acceptedItems.length}`,
+    `Created Final Notes: ${created}`,
+    `Skipped: ${skipped}`,
+    `Failed: ${failed}`,
+    '',
+    lines.length ? lines.join('\n') : '_No accepted drafts found. Set a draft frontmatter status to accepted, then run again._',
+    failures.length ? '\n## Failures\n\n' + failures.map(x => `- ${x}`).join('\n') : '',
+  ].filter(Boolean).join('\n');
+  return { ok: failed === 0, scanned: files.length, accepted: acceptedItems.length, created, skipped, failed, markdown };
+}
+function _personalVaultPipelineStatusPath(vault: string): string {
+  return path.join(vault, '90_System', 'Pipeline Status.md');
+}
+
+type PersonalVaultPipelineStatus = {
+  exists: boolean;
+  needed: 'yes' | 'no' | 'unknown';
+  statusPath: string;
+  displayPath: string;
+  lastRun: string;
+  pendingSince: string;
+  overall: string;
+  summary: string;
+};
+
+function readPersonalVaultPipelineStatus(vault = getCompanyDir()): PersonalVaultPipelineStatus {
+  const statusPath = _personalVaultPipelineStatusPath(vault);
+  const displayPath = statusPath.replace(os.homedir(), '~');
+  const raw = _safeReadText(statusPath);
+  if (!raw.trim()) {
+    return {
+      exists: false,
+      needed: 'unknown',
+      statusPath,
+      displayPath,
+      lastRun: 'not run yet',
+      pendingSince: '',
+      overall: '',
+      summary: 'Personal Vault pipeline status has not been generated yet.',
+    };
+  }
+  const neededRaw = raw.match(/^Pipeline Needed:\s*(.+?)\s*$/mi)?.[1]?.trim().toLowerCase() || '';
+  const needed: PersonalVaultPipelineStatus['needed'] =
+    neededRaw === 'yes' ? 'yes' : neededRaw === 'no' ? 'no' : 'unknown';
+  const lastRun = raw.match(/^Last Run:\s*(.+?)\s*$/mi)?.[1]?.trim() || 'not run yet';
+  const pendingSince = raw.match(/^Pending Since:\s*(.+?)\s*$/mi)?.[1]?.trim() || '';
+  const overall = raw.match(/^Overall:\s*(.+?)\s*$/mi)?.[1]?.trim() || '';
+  const summary = needed === 'yes'
+    ? (pendingSince
+      ? `Pipeline needed since ${pendingSince}. Run the Personal Vault pipeline.`
+      : 'Pipeline needed after a new Auto Capture.')
+    : needed === 'no'
+      ? `Pipeline up to date. Last run: ${lastRun}.`
+      : 'Pipeline status exists, but Pipeline Needed could not be read.';
+  return { exists: true, needed, statusPath, displayPath, lastRun, pendingSince, overall, summary };
+}
+
+function _personalVaultPipelineLastRun(vault: string): string {
+  const raw = _safeReadText(_personalVaultPipelineStatusPath(vault));
+  const m = raw.match(/^Last Run:\s*(.+?)\s*$/m);
+  return m ? m[1].trim() : 'not run yet';
+}
+
+function _markPersonalVaultPipelinePending(vault: string, entry: AutoAssetDigestEntry): string {
+  const statusPath = _personalVaultPipelineStatusPath(vault);
+  const startMarker = '<!-- connect-ai-pipeline-status:start -->';
+  const endMarker = '<!-- connect-ai-pipeline-status:end -->';
+  const pendingSince = new Date().toISOString();
+  const projectText = entry.project ? ` · project: ${entry.project}` : '';
+  const tagText = (entry.tags || []).slice(0, 8).map(t => `#${t}`).join(' ');
+  const generated = [
+    '# Personal Vault Pipeline Status',
+    '',
+    'This file is updated by Connect AI when assets are captured or the Personal Vault pipeline runs. Manual notes below the generated block are preserved.',
+    '',
+    startMarker,
+    `Last Run: ${_personalVaultPipelineLastRun(vault)}`,
+    'Pipeline Needed: yes',
+    `Pending Since: ${pendingSince}`,
+    '',
+    '## Pending Auto Capture',
+    '',
+    `- ${entry.day} · ${_vaultWikiLink(entry.notePath, entry.title)} · ${entry.assetType} -> ${entry.suggestedFolder}${projectText}${tagText ? ' · ' + tagText : ''}`,
+    `- summary: ${_digestSafeLine(entry.summary, 220) || '(summary unavailable)'}`,
+    '',
+    '## Next Step',
+    '',
+    '- Run the Personal Vault pipeline from the Office 🔁 button or the command palette.',
+    '',
+    endMarker,
+    '',
+  ].join('\n');
+  const finalBody = _replaceGeneratedSection(_safeReadText(statusPath), startMarker, endMarker, generated);
+  fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+  fs.writeFileSync(statusPath, finalBody);
+  return statusPath;
+}
+function _writePersonalVaultPipelineStatus(vault: string, started: string, result: {
+  ok: boolean;
+  digest: ReturnType<typeof rebuildAutoAssetDigest>;
+  promotion: ReturnType<typeof buildKnowledgePromotionCandidates>;
+  drafts: ReturnType<typeof generateKnowledgeDraftsFromCandidates>;
+  review: ReturnType<typeof buildKnowledgeDraftReviewQueue>;
+  finalized: ReturnType<typeof finalizeAcceptedKnowledgeDrafts>;
+}): string {
+  const statusPath = _personalVaultPipelineStatusPath(vault);
+  const startMarker = '<!-- connect-ai-pipeline-status:start -->';
+  const endMarker = '<!-- connect-ai-pipeline-status:end -->';
+  const generated = [
+    '# Personal Vault Pipeline Status',
+    '',
+    'This file is updated by Connect AI when the Personal Vault pipeline runs. Manual notes below the generated block are preserved.',
+    '',
+    startMarker,
+    `Last Run: ${started}`,
+    `Overall: ${result.ok ? 'OK' : 'Needs attention'}`,
+    'Pipeline Needed: no',
+    '',
+    '## Last Run Counts',
+    '',
+    `- Auto Digest: indexed ${result.digest.indexed}/${result.digest.scanned}, skipped ${result.digest.skipped}, failed ${result.digest.failed}`,
+    `- Promotion Candidates: ${result.promotion.candidates}/${result.promotion.scanned}`,
+    `- Knowledge Drafts: created ${result.drafts.created}, updated ${result.drafts.updated}, skipped ${result.drafts.skipped}`,
+    `- Draft Review Queue: pending ${result.review.pending}, needs revision ${result.review.needsRevision}, accepted ${result.review.accepted}, rejected ${result.review.rejected}`,
+    `- Accepted Draft Finalization: created ${result.finalized.created}/${result.finalized.accepted}, skipped ${result.finalized.skipped}, failed ${result.finalized.failed}`,
+    '',
+    '## Current Next Step',
+    '',
+    result.review.pending > 0
+      ? '- Review pending drafts in [[../20_Knowledge/Draft Review Queue|Draft Review Queue]] and set useful drafts to status: accepted.'
+      : '- No pending draft review items were found in the last run.',
+    result.finalized.created > 0
+      ? '- New evergreen notes were created in target Vault folders during the last run.'
+      : '- No new evergreen notes were created during the last run.',
+    '',
+    endMarker,
+    '',
+  ].join('\n');
+  const finalBody = _replaceGeneratedSection(_safeReadText(statusPath), startMarker, endMarker, generated);
+  fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+  fs.writeFileSync(statusPath, finalBody);
+  return statusPath;
+}
+function runPersonalVaultPipeline(): {
+  ok: boolean;
+  vault: string;
+  digest: ReturnType<typeof rebuildAutoAssetDigest>;
+  promotion: ReturnType<typeof buildKnowledgePromotionCandidates>;
+  drafts: ReturnType<typeof generateKnowledgeDraftsFromCandidates>;
+  review: ReturnType<typeof buildKnowledgeDraftReviewQueue>;
+  finalized: ReturnType<typeof finalizeAcceptedKnowledgeDrafts>;
+  statusPath: string;
+  markdown: string;
+} {
+  const vault = getCompanyDir();
+  ensureObsidianVaultStructure(vault);
+  const started = new Date().toISOString();
+  const digest = rebuildAutoAssetDigest();
+  const promotion = buildKnowledgePromotionCandidates();
+  const drafts = generateKnowledgeDraftsFromCandidates();
+  const review = buildKnowledgeDraftReviewQueue();
+  const finalized = finalizeAcceptedKnowledgeDrafts();
+  const ok = digest.ok && promotion.ok && drafts.ok && review.ok && finalized.ok;
+  const statusPath = _writePersonalVaultPipelineStatus(vault, started, { ok, digest, promotion, drafts, review, finalized });
+  const markdown = [
+    '# Personal Vault Pipeline',
+    '',
+    `Started: ${started}`,
+    `Vault: ${vault}`,
+    `Status Report: ${statusPath}`,
+    '',
+    '## Result',
+    '',
+    `- Overall: ${ok ? 'OK' : 'Needs attention'}`,
+    `- Auto Digest: indexed ${digest.indexed}/${digest.scanned}, skipped ${digest.skipped}, failed ${digest.failed}`,
+    `- Promotion Candidates: ${promotion.candidates}/${promotion.scanned}`,
+    `- Knowledge Drafts: created ${drafts.created}, updated ${drafts.updated}, skipped ${drafts.skipped}`,
+    `- Draft Review Queue: pending ${review.pending}, needs revision ${review.needsRevision}, accepted ${review.accepted}, rejected ${review.rejected}`,
+    `- Accepted Draft Finalization: created ${finalized.created}/${finalized.accepted}, skipped ${finalized.skipped}, failed ${finalized.failed}`,
+    '',
+    '## Next Manual Step',
+    '',
+    review.pending > 0
+      ? '- Open 20_Knowledge/Draft Review Queue.md and mark useful drafts as status: accepted.'
+      : '- No pending draft review items were found.',
+    finalized.created > 0
+      ? '- New evergreen notes were created in their target Vault folders.'
+      : '- No new evergreen notes were created in this run.',
+    '',
+  ].join('\n');
+  return { ok, vault, digest, promotion, drafts, review, finalized, statusPath, markdown };
+}
+function _autoAssetCaptureCheck(args: {
+  prompt: string;
+  finalReport: string;
+  planBrief?: string;
+  tasks?: AutoAssetCaptureTask[];
+  learnedDecisions?: string[];
+}): { ok: boolean; reasons: string[]; reason: string } {
+  if (!readAutoAssetCaptureEnabled()) return { ok: false, reasons: [], reason: 'disabled' };
+  const report = String(args.finalReport || '').trim();
+  if (report.replace(/\s/g, '').length < 320) return { ok: false, reasons: [], reason: 'too_short' };
+  if (/^⚠️|모든 에이전트의 LLM 호출이 실패|서버 미실행|모델 로드 실패|호출 실패/i.test(report.slice(0, 500))) {
+    return { ok: false, reasons: [], reason: 'failure_report' };
+  }
+  const combined = `${args.prompt || ''}\n${args.planBrief || ''}\n${report}`;
+  const reasons: string[] = [];
+  if (/보고서|분석|인사이트|전략|계획|기획|결정|체크리스트|워크플로우|템플릿|스크립트|카피|콘텐츠|아이디어|요약|설계|프로젝트|RAG|지식|문서|자동화|리서치/i.test(combined)) {
+    reasons.push('재사용 가능한 분석/계획/문서 신호');
+  }
+  if ((args.learnedDecisions || []).length > 0) reasons.push('자동 추출 결정 존재');
+  if ((args.tasks || []).length > 1) reasons.push('복수 에이전트 작업 결과');
+  if (/\n#{1,3}\s+/.test(report)) reasons.push('구조화된 Markdown 결과');
+  if (report.length > 1200) reasons.push('충분한 길이의 산출물');
+  return reasons.length > 0
+    ? { ok: true, reasons, reason: 'captured' }
+    : { ok: false, reasons: [], reason: 'no_asset_signal' };
+}
+
+function saveAutoAssetCapture(args: {
+  prompt: string;
+  finalReport: string;
+  planBrief?: string;
+  tasks?: AutoAssetCaptureTask[];
+  learnedDecisions?: string[];
+  sessionDir: string;
+}): { saved: boolean; relPath?: string; reviewRelPath?: string; reviewCaptures?: number; reason?: string } {
+  try {
+    const check = _autoAssetCaptureCheck(args);
+    if (!check.ok) return { saved: false, reason: check.reason };
+
+    const vault = getCompanyDir();
+    ensureObsidianVaultStructure(vault);
+    const now = new Date();
+    const iso = now.toISOString();
+    const day = iso.slice(0, 10);
+    const time = iso.slice(11, 19).replace(/:/g, '-');
+    const sessionId = path.basename(args.sessionDir);
+    const title = _cleanAssetTitle(args.prompt || args.planBrief || `세션 ${sessionId}`);
+    const capturesDir = path.join(vault, '50_Outputs', 'Auto Captures', day);
+    fs.mkdirSync(capturesDir, { recursive: true });
+    const notePath = _uniqueMarkdownPath(path.join(capturesDir, `${time}-${_slugForVaultFile(title)}.md`));
+    const sessionReportPath = path.join(args.sessionDir, '_report.md');
+    const conversationPath = path.join(getConversationsDir(), `${day}.md`);
+    const tasks = (args.tasks || []).filter(t => t && t.agent);
+    const agentIds = Array.from(new Set(tasks.map(t => t.agent)));
+    const classification = classifyAutoAsset(args);
+    const tags = Array.from(new Set([..._autoAssetTags(args.prompt, args.finalReport), ...classification.tags])).slice(0, 14);
+    const decisions = args.learnedDecisions || [];
+    const taskLines = tasks.length > 0
+      ? tasks.map(t => `- ${AGENTS[t.agent]?.emoji || ''} **${AGENTS[t.agent]?.name || t.agent}**: ${String(t.task || '').trim()}`).join('\n')
+      : '- _(기록된 에이전트 작업 없음)_';
+    const decisionLines = decisions.length > 0 ? decisions.map(d => `- ${d}`).join('\n') : '- _(자동 추출된 결정 없음)_';
+    const frontmatter = [
+      '---',
+      'type: ai_asset',
+      `created: ${_yamlQuote(iso)}`,
+      `date: ${_yamlQuote(day)}`,
+      'source: connect_ai',
+      'status: captured',
+      `asset_type: ${_yamlQuote(classification.assetType)}`,
+      `suggested_folder: ${_yamlQuote(classification.suggestedFolder)}`,
+      `project: ${_yamlQuote(classification.project)}`,
+      `summary: ${_yamlQuote(classification.summary)}`,
+      `classification_confidence: ${_yamlQuote(classification.confidence)}`,
+      `session: ${_yamlQuote(`sessions/${sessionId}`)}`,
+      `prompt: ${_yamlQuote(args.prompt)}`,
+      `brief: ${_yamlQuote(args.planBrief || '')}`,
+      'tags:',
+      ...tags.map(t => `  - ${t}`),
+      'agents:',
+      ...(agentIds.length ? agentIds.map(a => `  - ${a}`) : ['  - ceo']),
+      '---',
+      '',
+    ].join('\n');
+    const body = `${frontmatter}# ${title}\n\n` +
+      `> 원 명령: ${args.prompt}\n` +
+      `> 세션: ${_vaultWikiLink(sessionReportPath, sessionId)}\n` +
+      `> 자동 저장 이유: ${check.reasons.join(', ')}\n` +
+      `> 분류: ${classification.assetType} · 추천 위치: ${classification.suggestedFolder}${classification.project ? ' · 프로젝트: ' + classification.project : ''}\n\n` +
+      `## 자동 분류\n\n` +
+      `- 유형: ${classification.assetType}\n` +
+      `- 추천 위치: ${classification.suggestedFolder}\n` +
+      `- 프로젝트: ${classification.project || '_(자동 추정 없음)_'}\n` +
+      `- 신뢰도: ${classification.confidence}\n` +
+      `- 요약: ${classification.summary}\n` +
+      `- 근거: ${classification.reasons.length > 0 ? classification.reasons.join(', ') : '일반 자산'}\n\n` +
+      `## 브리프\n\n${args.planBrief || '_(브리프 없음)_'}\n\n` +
+      `## 결과\n\n${args.finalReport.trim()}\n\n` +
+      `## 에이전트 작업\n\n${taskLines}\n\n` +
+      `## 자동 추출 결정\n\n${decisionLines}\n\n` +
+      `## 원본 링크\n\n` +
+      `- ${_vaultWikiLink(sessionReportPath, 'CEO 종합 보고서')}\n` +
+      (fs.existsSync(conversationPath) ? `- ${_vaultWikiLink(conversationPath, `${day} 대화록`)}\n` : '') +
+      `\n`;
+    fs.writeFileSync(notePath, body);
+
+    const indexPath = path.join(vault, '50_Outputs', 'Asset Index.md');
+    if (!fs.existsSync(indexPath)) {
+      fs.writeFileSync(indexPath, `# Asset Index\n\nConnect AI가 자동 저장한 자산 노트 색인입니다.\n`);
+    }
+    const tagText = tags.map(t => `#${t}`).join(' ');
+    const projectText = classification.project ? ` · ${classification.project}` : '';
+    fs.appendFileSync(indexPath, `\n- ${_vaultWikiLink(notePath, title)} · ${day} · ${classification.assetType} → ${classification.suggestedFolder}${projectText} · ${tagText} · 세션 ${_vaultWikiLink(sessionReportPath, sessionId)}`);
+    const digestEntry: AutoAssetDigestEntry = {
+      notePath,
+      title,
+      day,
+      assetType: classification.assetType,
+      suggestedFolder: classification.suggestedFolder,
+      project: classification.project,
+      summary: classification.summary,
+      tags,
+    };
+    try {
+      _updateAutoAssetDigest(vault, digestEntry);
+    } catch (digestErr: any) {
+      console.warn('[autoAssetDigest] update failed:', digestErr?.message || digestErr);
+    }
+    try {
+      _markPersonalVaultPipelinePending(vault, digestEntry);
+    } catch (pipelineErr: any) {
+      console.warn('[personalVaultPipeline] pending status update failed:', pipelineErr?.message || pipelineErr);
+    }
+    let reviewRelPath = '';
+    let reviewCaptures = 0;
+    try {
+      const review = buildTodayAutoCaptureReview(day);
+      reviewRelPath = _vaultRelPath(review.reviewPath);
+      reviewCaptures = review.captures;
+    } catch (reviewErr: any) {
+      console.warn('[todayAutoCaptureReview] update failed:', reviewErr?.message || reviewErr);
+    }
+    return { saved: true, relPath: _vaultRelPath(notePath), reviewRelPath, reviewCaptures };
+  } catch (e: any) {
+    console.warn('[autoAssetCapture] save failed:', e?.message || e);
+    return { saved: false, reason: e?.message || String(e) };
+  }
+}
 function makeSessionDir(): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
   const dir = path.join(getCompanyDir(), 'sessions', ts);
@@ -8961,12 +10994,140 @@ export function activate(context: vscode.ExtensionContext) {
                 err(`Python 진단 자체 실패: ${pyErr?.message || pyErr}`);
             }
 
+            const errorCount = out.filter(line => line.startsWith('❌')).length;
+            const warningCount = out.filter(line => line.startsWith('⚠️')).length;
+            const successCount = out.filter(line => line.startsWith('✅')).length;
+            const diagnoseResult = {
+                ok: errorCount === 0,
+                warning: errorCount === 0 && warningCount > 0,
+                summary: errorCount > 0
+                    ? `LLM diagnostics found ${errorCount} error(s). Opened the report.`
+                    : warningCount > 0
+                        ? `LLM diagnostics found ${warningCount} warning(s). Opened the report.`
+                        : `LLM diagnostics OK (${successCount} checks passed). Opened the report.`,
+                errorCount,
+                warningCount,
+                successCount,
+            };
+
             /* 결과 패널 표시 */
             const doc = await vscode.workspace.openTextDocument({
                 language: 'markdown',
                 content: `# 🔍 Connect AI — LLM 연결 진단\n\n_${new Date().toLocaleString('ko-KR')}_\n\n${out.join('\n')}\n\n---\n\n## 자주 막히는 곳\n\n### LM Studio가 처음이면\n1. LM Studio 앱 열기\n2. 좌측 사이드바 'Discover' (🔍) 에서 모델 검색·다운로드 (예: 'Qwen2.5 7B Instruct')\n3. 좌측 사이드바 'Chat' (💬) 가서 모델이 로드되는지 확인 (한 번 채팅해봐야 메모리에 올라옴)\n4. 좌측 사이드바 'Developer' (또는 'Local Server') 가기\n5. **'Start Server' 버튼 클릭** ← 이게 핵심. 시작 안 하면 Connect AI에서 못 봐요.\n6. 화면에 \`http://localhost:1234\` 같은 URL이 보이면 OK\n7. Connect AI 사이드바 위 모델 메뉴에서 모델 선택 → 채팅 시도\n\n### Ollama가 처음이면\n1. \`ollama pull qwen2.5:7b\` (터미널, 한 번만)\n2. \`ollama serve\` 또는 Ollama 앱 실행\n3. Connect AI 모델 메뉴에서 선택 → 채팅\n\n### 그래도 안 되면\n- VS Code/Anti-Gravity 재시작\n- 명령 팔레트 (Cmd+Shift+P) → \`Connect AI: 연결 진단\` 다시 실행\n- 위 결과 스크린샷 + LM Studio 'Developer' 탭 스크린샷을 함께 제보\n`,
             });
             await vscode.window.showTextDocument(doc, { preview: false });
+            return diagnoseResult;
+        }),
+        vscode.commands.registerCommand('connectAiLab.officeSmokeCheck', async () => {
+            try {
+                const result = await buildOfficeSmokeCheck();
+                const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.markdown });
+                await vscode.window.showTextDocument(doc, { preview: false });
+                if (result.ok && !result.warning) vscode.window.showInformationMessage(`✅ ${result.summary}`);
+                else vscode.window.showWarningMessage(`⚠️ ${result.summary}`);
+                return result;
+            } catch (e: any) {
+                const message = `Office smoke check failed: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, warning: false, summary: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.generateKnowledgeDrafts', async () => {
+            try {
+                const result = generateKnowledgeDraftsFromCandidates();
+                const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.markdown });
+                await vscode.window.showTextDocument(doc, { preview: false });
+                vscode.window.showInformationMessage(`지식 초안 생성: 새 ${result.created}개, 갱신 ${result.updated}개`);
+                return result;
+            } catch (e: any) {
+                const message = `지식 초안 생성 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, scanned: 0, candidates: 0, created: 0, updated: 0, skipped: 0, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.reviewKnowledgeDrafts', async () => {
+            try {
+                const result = buildKnowledgeDraftReviewQueue();
+                const doc = await vscode.workspace.openTextDocument(result.reportPath);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                vscode.window.showInformationMessage(`지식 초안 리뷰 큐: 대기 ${result.pending}개, 수정 ${result.needsRevision}개, 승인 ${result.accepted}개`);
+                return result;
+            } catch (e: any) {
+                const message = `지식 초안 리뷰 큐 생성 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, scanned: 0, pending: 0, accepted: 0, rejected: 0, needsRevision: 0, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.finalizeAcceptedKnowledgeDrafts', async () => {
+            try {
+                const result = finalizeAcceptedKnowledgeDrafts();
+                const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.markdown });
+                await vscode.window.showTextDocument(doc, { preview: false });
+                const message = `승인 초안 확정화: 새 ${result.created}개, 스킵 ${result.skipped}개, 실패 ${result.failed}개`;
+                if (result.ok) vscode.window.showInformationMessage(message);
+                else vscode.window.showWarningMessage(message);
+                return result;
+            } catch (e: any) {
+                const message = `승인 초안 확정화 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, scanned: 0, accepted: 0, created: 0, skipped: 0, failed: 1, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.reviewKnowledgePromotionCandidates', async () => {
+            try {
+                const result = buildKnowledgePromotionCandidates();
+                const doc = await vscode.workspace.openTextDocument(result.reportPath);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                vscode.window.showInformationMessage(`지식 승격 후보 ${result.candidates}개 생성됨 (${result.scanned}개 스캔)`);
+                return result;
+            } catch (e: any) {
+                const message = `지식 승격 후보 생성 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, scanned: 0, candidates: 0, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.rebuildAutoDigest', async () => {
+            try {
+                const result = rebuildAutoAssetDigest();
+                const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.markdown });
+                await vscode.window.showTextDocument(doc, { preview: false });
+                const message = `Auto Digest 재색인: ${result.indexed}/${result.scanned}개 반영, 실패 ${result.failed}개`;
+                if (result.ok) vscode.window.showInformationMessage(message);
+                else vscode.window.showWarningMessage(message);
+                return result;
+            } catch (e: any) {
+                const message = `Auto Digest 재색인 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, scanned: 0, indexed: 0, skipped: 0, failed: 1, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.runPersonalVaultPipeline', async () => {
+            try {
+                const result = runPersonalVaultPipeline();
+                const doc = await vscode.workspace.openTextDocument(result.statusPath);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                const message = `개인 Vault 파이프라인: 후보 ${result.promotion.candidates}개, 초안 새 ${result.drafts.created}개, 확정 새 ${result.finalized.created}개`;
+                if (result.ok) vscode.window.showInformationMessage(message);
+                else vscode.window.showWarningMessage(message);
+                return result;
+            } catch (e: any) {
+                const message = `개인 Vault 파이프라인 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, markdown: message };
+            }
+        }),
+        vscode.commands.registerCommand('connectAiLab.openTodayAutoCaptureReview', async () => {
+            try {
+                const result = buildTodayAutoCaptureReview();
+                const doc = await vscode.workspace.openTextDocument(result.reviewPath);
+                await vscode.window.showTextDocument(doc, { preview: false });
+                vscode.window.showInformationMessage(`오늘 Auto Capture 리뷰: ${result.captures}개 자산`);
+                return result;
+            } catch (e: any) {
+                const message = `오늘 Auto Capture 리뷰 생성 실패: ${e?.message || e}`;
+                vscode.window.showErrorMessage(message);
+                return { ok: false, markdown: message };
+            }
         }),
         vscode.commands.registerCommand('connectAiLab.dailyBriefing.fireNow', async () => {
             try {
@@ -10802,6 +12963,7 @@ class CompanyDashboardPanel {
     public static current: CompanyDashboardPanel | null = null;
     public static readonly viewType = 'connectAiLab.dashboard';
     private readonly _panel: vscode.WebviewPanel;
+    private readonly _extensionUri: vscode.Uri;
     private _disposables: vscode.Disposable[] = [];
     private _refreshTimer: NodeJS.Timeout | null = null;
 
@@ -10823,6 +12985,7 @@ class CompanyDashboardPanel {
 
     private constructor(panel: vscode.WebviewPanel, _extUri: vscode.Uri) {
         this._panel = panel;
+        this._extensionUri = _extUri;
         this._panel.webview.html = this._html();
         this._panel.onDidDispose(() => this._dispose(), null, this._disposables);
         this._panel.webview.onDidReceiveMessage(async (msg) => {
@@ -11197,6 +13360,27 @@ class CompanyDashboardPanel {
 
     public refresh() { this._sendState().catch(() => {}); }
 
+    private _resolveAgentPortrait(agentId: string): { uri: string; mode: 'custom' | 'portrait' | 'sheet4' | 'none' } {
+        try {
+            const a = AGENTS[agentId];
+            if (a?.profileImage) {
+                const custom = vscode.Uri.joinPath(this._extensionUri, 'assets', 'agents', a.profileImage);
+                if (fs.existsSync(custom.fsPath)) {
+                    return { uri: this._panel.webview.asWebviewUri(custom).toString(), mode: 'custom' };
+                }
+            }
+            const portrait = vscode.Uri.joinPath(this._extensionUri, 'assets', 'pixel', 'characters', `${agentId}_portrait.png`);
+            if (fs.existsSync(portrait.fsPath)) {
+                return { uri: this._panel.webview.asWebviewUri(portrait).toString(), mode: 'portrait' };
+            }
+            const sheet = vscode.Uri.joinPath(this._extensionUri, 'assets', 'pixel', 'characters', `${agentId}_sheet.png`);
+            if (fs.existsSync(sheet.fsPath)) {
+                return { uri: this._panel.webview.asWebviewUri(sheet).toString(), mode: 'sheet4' };
+            }
+        } catch { /* ignore */ }
+        return { uri: '', mode: 'none' };
+    }
+
     private _postToast(text: string, err = false) {
         try { this._panel.webview.postMessage({ type: 'toast', text, err }); } catch { /* ignore */ }
     }
@@ -11270,15 +13454,9 @@ class CompanyDashboardPanel {
                 const lines = memTxt.split('\n').map(l => l.trim()).filter(l => /^\s*-\s*\[/.test(l) || (l.length > 4 && !l.startsWith('#') && !l.startsWith('_')));
                 lastActivity = lines.length > 0 ? lines[lines.length - 1].slice(0, 120) : '';
             } catch { /* ignore */ }
-            let profileImageUri = '';
-            try {
-                if (a.profileImage && _dashboardExtensionUri) {
-                    const p = vscode.Uri.joinPath(_dashboardExtensionUri, 'assets', 'agents', a.profileImage);
-                    if (fs.existsSync(p.fsPath)) {
-                        profileImageUri = this._panel.webview.asWebviewUri(p).toString();
-                    }
-                }
-            } catch { /* ignore */ }
+            const portrait = this._resolveAgentPortrait(id);
+            const profileImageUri = portrait.uri;
+            const profileImageMode = portrait.mode;
             const lvl = readToolAutonomyLevel(id);
             /* v2.87.7 — Pre-load lightweight skill list + verified count so the
                in-dashboard agent detail modal can render instantly without a
@@ -11370,6 +13548,7 @@ class CompanyDashboardPanel {
                 autonomyLabel: AUTONOMY_LABELS[lvl] || 'Off',
                 lastActivity,
                 profileImageUri,
+                profileImageMode,
                 skills,
                 verifiedCount,
                 ragMode,
@@ -12721,6 +14900,9 @@ class OfficePanel {
                 case 'officeReady':
                     this._sendInit();
                     break;
+                case 'getPersonalVaultPipelineStatus':
+                    panel.webview.postMessage({ type: 'personalVaultPipelineStatus', status: readPersonalVaultPipelineStatus() });
+                    break;
                 case 'openRevenueDashboard':
                     /* v2.89.143 — 가상 사무실 HUD 클릭 → 풀스크린 매출 대시보드 */
                     RevenueDashboardPanel.createOrShow();
@@ -12736,7 +14918,13 @@ class OfficePanel {
                             '현빈아, 이번 달 PayPal 매출 실데이터 가져와서 분석하고 다음 액션 1개 추천해줘.',
                             model
                         ).catch((e) => {
-                            try { panel.webview.postMessage({ type: 'error', value: `⚠️ ${e?.message || e}` }); } catch { /* ignore */ }
+                            try {
+                                panel.webview.postMessage({
+                                    type: 'error',
+                                    value: `⚠️ ${e?.message || e}`,
+                                    llm: _extractLLMErrorInfo(e) || _configuredLLMInfo(model),
+                                });
+                            } catch { /* ignore */ }
                         });
                     } catch { /* ignore */ }
                     break;
@@ -12783,9 +14971,34 @@ class OfficePanel {
                 case 'officePrompt': {
                     const prompt = String(msg.value || '').trim();
                     if (!prompt) return;
-                    const model = provider.getDefaultModel();
+                    let model = provider.getDefaultModel();
+                    try {
+                        const ready = await ensureOfficeLLMReady(model);
+                        model = ready.model;
+                        if (ready.autoSelected) {
+                            const llm = { ..._configuredLLMInfo(model), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length };
+                            panel.webview.postMessage({ type: 'modelPickDone', llm, autoSelected: true });
+                        }
+                    } catch (e: any) {
+                        try {
+                            panel.webview.postMessage({
+                                type: 'error',
+                                value: `⚠️ ${e?.message || e}`,
+                                llm: _extractLLMErrorInfo(e) || _configuredLLMInfo(model),
+                                fatal: true,
+                            });
+                        } catch { /* ignore */ }
+                        break;
+                    }
                     provider.runCorporatePromptExternal(prompt, model).catch((e) => {
-                        try { panel.webview.postMessage({ type: 'error', value: `⚠️ ${e?.message || e}` }); } catch { /* ignore */ }
+                        try {
+                            panel.webview.postMessage({
+                                type: 'error',
+                                value: `⚠️ ${e?.message || e}`,
+                                llm: _extractLLMErrorInfo(e) || _configuredLLMInfo(model),
+                                fatal: true,
+                            });
+                        } catch { /* ignore */ }
                     });
                     break;
                 }
@@ -12820,6 +15033,116 @@ class OfficePanel {
                 case 'openApiConnections':
                     try { vscode.commands.executeCommand('connectAiLab.apiConnections.open'); } catch { /* ignore */ }
                     break;
+                case 'pickLLMModel': {
+                    try {
+                        const installed = await listOfficeModelPickerModels(true);
+                        if (installed.length === 0) {
+                            panel.webview.postMessage({
+                                type: 'error',
+                                value: '선택 가능한 로컬 채팅 모델을 찾지 못했습니다. Ollama 또는 LM Studio 서버를 먼저 실행한 뒤 LLM 진단을 눌러주세요.',
+                                llm: { ..._configuredLLMInfo(provider.getDefaultModel()), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length },
+                            });
+                            break;
+                        }
+                        const current = getConfig().defaultModel;
+                        const picked = await vscode.window.showQuickPick(
+                            installed.map(m => ({
+                                label: m.id,
+                                description: m.backend === 'lmstudio' ? 'LM Studio' : 'Ollama',
+                                detail: m.id === current ? '현재 기본 모델' : `선택하면 기본 모델과 엔진 URL이 함께 갱신됩니다. (${m.baseUrl})`,
+                                model: m,
+                            })),
+                            { placeHolder: 'Connect AI가 사용할 로컬 모델을 선택하세요' }
+                        );
+                        if (!picked) break;
+                        const cfg = vscode.workspace.getConfiguration('connectAiLab');
+                        const nextUrl = picked.model.baseUrl || (picked.model.backend === 'lmstudio' ? 'http://127.0.0.1:1234' : 'http://127.0.0.1:11434');
+                        await cfg.update('ollamaUrl', nextUrl, vscode.ConfigurationTarget.Global);
+                        await cfg.update('defaultModel', picked.model.id, vscode.ConfigurationTarget.Global);
+                        const llm = { ..._configuredLLMInfo(picked.model.id), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length };
+                        panel.webview.postMessage({ type: 'modelPickDone', llm });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `모델 선택 실패: ${e?.message || e}`, llm: { ..._configuredLLMInfo(provider.getDefaultModel()), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length } });
+                    }
+                    break;
+                }
+                case 'clearAgentModelRouting': {
+                    try {
+                        const before = Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length;
+                        writeAgentModelMap({});
+                        try { _activeChatProvider?.triggerAgentDockReload?.(); } catch { /* ignore */ }
+                        const llm = { ..._configuredLLMInfo(provider.getDefaultModel()), overrideCount: 0 };
+                        panel.webview.postMessage({ type: 'agentModelRoutingCleared', llm, count: before });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `모델 라우팅 초기화 실패: ${e?.message || e}`, llm: _configuredLLMInfo(provider.getDefaultModel()) });
+                    }
+                    break;
+                }
+                case 'diagnoseConnection':
+                    try {
+                        const llm = { ..._configuredLLMInfo(provider.getDefaultModel()), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length };
+                        const result = await vscode.commands.executeCommand('connectAiLab.diagnoseConnection') as any;
+                        panel.webview.postMessage({ type: 'diagnoseConnectionDone', result, llm });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `LLM 진단 실행 실패: ${e?.message || e}`, llm: { ..._configuredLLMInfo(provider.getDefaultModel()), overrideCount: Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length } });
+                    }
+                    break;
+                case 'rebuildAutoDigest':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.rebuildAutoDigest') as any;
+                        panel.webview.postMessage({ type: 'autoDigestRebuilt', result });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `Auto Digest 재색인 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'runPersonalVaultPipeline':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.runPersonalVaultPipeline') as any;
+                        panel.webview.postMessage({ type: 'personalVaultPipelineRun', result, status: readPersonalVaultPipelineStatus() });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `개인 Vault 파이프라인 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'openTodayAutoCaptureReview':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.openTodayAutoCaptureReview') as any;
+                        panel.webview.postMessage({ type: 'todayAutoCaptureReviewOpened', result, status: readTodayAutoCaptureReviewStatus() });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `오늘 Auto Capture 리뷰 열기 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'generateKnowledgeDrafts':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.generateKnowledgeDrafts') as any;
+                        panel.webview.postMessage({ type: 'knowledgeDraftsGenerated', result });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `지식 초안 생성 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'reviewKnowledgeDrafts':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.reviewKnowledgeDrafts') as any;
+                        panel.webview.postMessage({ type: 'knowledgeDraftReviewBuilt', result });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `지식 초안 리뷰 큐 생성 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'finalizeAcceptedKnowledgeDrafts':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.finalizeAcceptedKnowledgeDrafts') as any;
+                        panel.webview.postMessage({ type: 'acceptedKnowledgeDraftsFinalized', result });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `승인 초안 확정화 실패: ${e?.message || e}` });
+                    }
+                    break;
+                case 'reviewKnowledgePromotionCandidates':
+                    try {
+                        const result = await vscode.commands.executeCommand('connectAiLab.reviewKnowledgePromotionCandidates') as any;
+                        panel.webview.postMessage({ type: 'knowledgePromotionReviewed', result });
+                    } catch (e: any) {
+                        panel.webview.postMessage({ type: 'error', value: `지식 승격 후보 생성 실패: ${e?.message || e}` });
+                    }
+                    break;
                 case 'toggleAutoCycle':
                     try {
                         await vscode.workspace.getConfiguration('connectAiLab').update('autoCycleEnabled', !!msg.on, vscode.ConfigurationTarget.Global);
@@ -12833,8 +15156,8 @@ class OfficePanel {
                             canSelectFolders: true,
                             canSelectFiles: false,
                             canSelectMany: false,
-                            openLabel: '회사 폴더로 선택',
-                            title: '회사 폴더 선택 — 에이전트들의 작업/메모리/세션이 여기에 저장됩니다'
+                            openLabel: '개인 자산 Vault로 선택',
+                            title: '개인 자산 Vault 선택 — Obsidian/Google Drive 동기화 폴더를 권장합니다'
                         });
                         if (!picked || picked.length === 0) break;
                         const newDir = picked[0].fsPath;
@@ -12842,7 +15165,7 @@ class OfficePanel {
                         ensureCompanyStructure();
                         this._sendInit();
                         this._panel.webview.postMessage({ type: 'companyFolderChanged', dir: newDir.replace(os.homedir(), '~') });
-                        vscode.window.showInformationMessage(`🏢 회사 폴더 변경됨: ${newDir}`);
+                        vscode.window.showInformationMessage(`🏢 개인 자산 Vault 변경됨: ${newDir}`);
                     } catch (e: any) {
                         vscode.window.showErrorMessage(`폴더 변경 실패: ${e?.message || e}`);
                     }
@@ -12870,12 +15193,28 @@ class OfficePanel {
                            the modal can render the real face instead of just the
                            sprite. Empty string when no custom photo is declared. */
                         let profileImageUri = '';
+                        let profileImageMode = 'none';
                         try {
                             const pi = AGENTS[id]?.profileImage;
                             if (pi) {
                                 const p = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', pi);
                                 if (fs.existsSync(p.fsPath)) {
                                     profileImageUri = this._panel.webview.asWebviewUri(p).toString();
+                                    profileImageMode = 'custom';
+                                }
+                            }
+                            if (!profileImageUri) {
+                                const p = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}_portrait.png`);
+                                if (fs.existsSync(p.fsPath)) {
+                                    profileImageUri = this._panel.webview.asWebviewUri(p).toString();
+                                    profileImageMode = 'portrait';
+                                }
+                            }
+                            if (!profileImageUri) {
+                                const p = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}_sheet.png`);
+                                if (fs.existsSync(p.fsPath)) {
+                                    profileImageUri = this._panel.webview.asWebviewUri(p).toString();
+                                    profileImageMode = 'sheet4';
                                 }
                             }
                         } catch { /* ignore */ }
@@ -12886,6 +15225,7 @@ class OfficePanel {
                             sessionCount,
                             recentSessions,
                             profileImageUri,
+                            profileImageMode,
                             agentDir: agentDir.replace(os.homedir(), '~')
                         });
                     } catch (e: any) {
@@ -12962,8 +15302,13 @@ class OfficePanel {
         return '';
     }
 
-    /** 캐릭터 sprite를 결정. 우선순위: 사용자 LimeZu 폴더 > 번들 자산 > 빈 문자열(이모지 폴백) */
-    private _resolveCharacterSprite(agentId: string): { uri: string; source: 'user' | 'bundled' | 'none' } {
+    /** 캐릭터 sprite를 결정. 우선순위: 생성된 YOMI sheet > 사용자 LimeZu 폴더 > 번들 atlas > 빈 문자열(이모지 폴백) */
+    private _resolveCharacterSprite(agentId: string): { uri: string; source: 'generated' | 'user' | 'bundled' | 'none'; mode: 'sheet4' | 'atlas' | 'none' } {
+        const generated = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${agentId}_sheet.png`);
+        if (fs.existsSync(generated.fsPath)) {
+            return { uri: this._panel.webview.asWebviewUri(generated).toString(), source: 'generated', mode: 'sheet4' };
+        }
+
         const userPath = OfficePanel._resolveUserAssetsPath();
         if (userPath) {
             const idx: Record<string, number> = {
@@ -12981,7 +15326,7 @@ class OfficePanel {
                 ];
                 for (const file of candidates) {
                     if (fs.existsSync(file)) {
-                        return { uri: this._panel.webview.asWebviewUri(vscode.Uri.file(file)).toString(), source: 'user' };
+                        return { uri: this._panel.webview.asWebviewUri(vscode.Uri.file(file)).toString(), source: 'user', mode: 'atlas' };
                     }
                 }
             }
@@ -12989,9 +15334,9 @@ class OfficePanel {
         // 번들 자산 (vsix에 포함, 모든 사용자에게 동작)
         const bundled = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${agentId}.png`);
         if (fs.existsSync(bundled.fsPath)) {
-            return { uri: this._panel.webview.asWebviewUri(bundled).toString(), source: 'bundled' };
+            return { uri: this._panel.webview.asWebviewUri(bundled).toString(), source: 'bundled', mode: 'atlas' };
         }
-        return { uri: '', source: 'none' };
+        return { uri: '', source: 'none', mode: 'none' };
     }
 
     /** Resolve all WORLD_LAYOUT scene + decoration assets to webview URIs.
@@ -13070,6 +15415,7 @@ class OfficePanel {
 
     private _sendInit() {
         const characterUris: Record<string, string> = {};
+        const characterModes: Record<string, string> = {};
         const sources: Record<string, string> = {};
         let firstUri = '';
         const missing: string[] = [];
@@ -13077,6 +15423,7 @@ class OfficePanel {
             const r = this._resolveCharacterSprite(id);
             if (r.uri) {
                 characterUris[id] = r.uri;
+                characterModes[id] = r.mode;
                 sources[id] = r.source;
                 if (!firstUri) firstUri = r.uri;
             } else {
@@ -13090,10 +15437,12 @@ class OfficePanel {
             emoji: AGENTS[id].emoji,
             color: AGENTS[id].color,
             specialty: AGENTS[id].specialty,
-            sprite: characterUris[id] || ''
+            sprite: characterUris[id] || '',
+            spriteMode: characterModes[id] || 'atlas'
         }));
         const dir = getCompanyDir();
         const userPath = OfficePanel._resolveUserAssetsPath();
+        const generatedCount = Object.values(sources).filter(s => s === 'generated').length;
         const bundledCount = Object.values(sources).filter(s => s === 'bundled').length;
         const userCount = Object.values(sources).filter(s => s === 'user').length;
         // Phase-B-1 connected campus: Office + Cafe + Garden in one world.
@@ -13107,17 +15456,31 @@ class OfficePanel {
             world.desks = { ...world.desks, ...CUSTOM_MAP_DESKS };
         }
         const workdayOn = vscode.workspace.getConfiguration('connectAiLab').get<boolean>('autoCycleEnabled', true);
+        const llmCfg = getConfig();
+        const llmBase = llmCfg.ollamaBase || '';
+        const llmModel = llmCfg.defaultModel || '';
+        const llmEngine = _isLMStudioEngine(llmBase) ? 'LM Studio' : 'Ollama';
+        const agentModelOverrides = Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length;
         this._panel.webview.postMessage({
             type: 'officeInit',
             agents,
             companyName: readCompanyName() || '1인 기업',
             companyDir: dir.replace(os.homedir(), '~'),
+            pipelineStatus: readPersonalVaultPipelineStatus(dir),
+            todayReviewStatus: readTodayAutoCaptureReviewStatus(undefined, dir),
             assetsAvailable: Object.keys(characterUris).length > 0,
             world,
             customMapUri,
             workdayOn,
+            llm: {
+                engine: llmEngine,
+                model: llmModel,
+                baseUrl: llmBase,
+                overrideCount: agentModelOverrides,
+            },
             debug: {
                 userPath,
+                generatedCount,
                 bundledCount,
                 userCount,
                 missing,
@@ -13127,6 +15490,36 @@ class OfficePanel {
                 customMap: customMapUri ? 'OK' : 'none',
             }
         });
+        this._postInitialLLMStatus().catch(() => { /* status is advisory */ });
+    }
+
+    private async _postInitialLLMStatus() {
+        const cfg = getConfig();
+        const model = cfg.defaultModel || '';
+        const overrideCount = Object.values(readAgentModelMap()).filter(v => String(v || '').trim()).length;
+        const baseInfo = { ..._configuredLLMInfo(model), overrideCount };
+        try {
+            const installed = await listOfficeModelPickerModels();
+            let ok = false;
+            let warning = false;
+            let summary = '';
+            if (installed.length === 0) {
+                summary = '실행 중인 Ollama 또는 LM Studio 채팅 모델을 찾지 못했습니다.';
+            } else if (!model) {
+                warning = true;
+                summary = `로컬 모델 ${installed.length}개를 찾았습니다. 첫 명령에서 자동 선택하거나 모델 선택을 눌러 지정하세요.`;
+            } else if (installed.some(m => m.id === model)) {
+                ok = true;
+                summary = `LLM ready: ${model}`;
+            } else {
+                warning = true;
+                const sample = installed.slice(0, 4).map(m => `${m.id} (${m.backend})`).join(', ');
+                summary = `기본 모델 '${model}'을 실행 중인 로컬 서버에서 찾지 못했습니다.${sample ? ' 감지됨: ' + sample : ''}`;
+            }
+            this._panel.webview.postMessage({ type: 'llmStatus', ok, warning, summary, llm: baseInfo, installedCount: installed.length });
+        } catch (e: any) {
+            this._panel.webview.postMessage({ type: 'llmStatus', ok: false, warning: false, summary: `LLM 상태 확인 실패: ${e?.message || e}`, llm: baseInfo, installedCount: 0 });
+        }
     }
 
     public dispose() {
@@ -13267,6 +15660,12 @@ body{display:flex;flex-direction:column}
 }
 .topbtn.ghost{background:transparent;color:var(--text-dim)}
 .topbtn.ghost:hover{background:rgba(255,255,255,.04);color:var(--text)}
+#vaultPipelineBtn.pending{border-color:rgba(255,171,64,.55);color:#ffab40;background:rgba(255,171,64,.09)}
+#vaultPipelineBtn.ready{border-color:rgba(0,255,65,.36);color:var(--accent);background:rgba(0,255,65,.07)}
+#vaultPipelineBtn.unknown{opacity:.82}
+#todayReviewBtn.pending{border-color:rgba(255,171,64,.5);color:#ffab40;background:rgba(255,171,64,.08)}
+#todayReviewBtn.ready{border-color:rgba(0,255,65,.34);color:var(--accent);background:rgba(0,255,65,.06)}
+#todayReviewBtn.empty{opacity:.78}
 
 /* 24h workday toggle — distinct on/off pill with live dot. */
 #workdayBtn{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:11.5px}
@@ -13342,6 +15741,16 @@ body{display:flex;flex-direction:column}
 .office-bg{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;image-rendering:crisp-edges;pointer-events:none;display:block}
 .office-zones{position:absolute;inset:0;pointer-events:none;z-index:2}
 .office-zones .zone-label{position:absolute;font-family:'SF Mono',monospace;font-size:8px;letter-spacing:1px;color:var(--accent);text-transform:uppercase;text-shadow:0 0 6px rgba(0,255,65,.7),0 1px 2px rgba(0,0,0,.95);opacity:.55;transform:translate(-50%,-100%);white-space:nowrap;padding:1px 4px;border-radius:2px;background:rgba(0,8,4,.45)}
+.collab-layer{position:absolute;inset:0;z-index:9;pointer-events:none}
+.collab-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.collab-svg line{stroke:rgba(103,232,249,.5);stroke-width:.2;stroke-linecap:round;stroke-dasharray:1.6 1.6;filter:drop-shadow(0 0 5px rgba(103,232,249,.5));animation:collabFlow 1.15s linear infinite}
+.collab-svg circle{fill:rgba(103,232,249,.18);stroke:rgba(103,232,249,.75);stroke-width:.18;filter:drop-shadow(0 0 7px rgba(103,232,249,.5));animation:collabPulse 1.7s ease-in-out infinite}
+.collab-hotspot{position:absolute;min-width:112px;max-width:210px;transform:translate(-50%,-132%);border:1px solid rgba(103,232,249,.34);border-radius:8px;background:rgba(4,11,14,.82);box-shadow:0 12px 30px rgba(0,0,0,.5),0 0 18px rgba(103,232,249,.13);padding:6px 8px;text-align:center;backdrop-filter:blur(6px);font-family:'SF Mono','JetBrains Mono',monospace}
+.collab-hotspot strong{display:block;color:#e9fff7;font-size:10px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collab-hotspot span{display:block;margin-top:2px;color:rgba(103,232,249,.86);font-size:9px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.collab-hotspot small{display:block;margin-top:2px;color:rgba(231,245,255,.62);font-size:8px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@keyframes collabFlow{to{stroke-dashoffset:-9}}
+@keyframes collabPulse{0%,100%{opacity:.48;transform:scale(.96);transform-origin:center}50%{opacity:.95;transform:scale(1.04);transform-origin:center}}
 /* Hide legacy single-room overlay UI in unified-office mode. */
 body.floorplan .conf-room,body.floorplan .location{display:none!important}
 .office-vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.45) 100%);pointer-events:none;z-index:3}
@@ -13545,6 +15954,8 @@ body.floorplan .conf-room,body.floorplan .location{display:none!important}
    the photo blends with the brand's amber border. */
 .amd-emoji.has-photo{background:transparent;padding:0}
 .amd-photo{width:100%;height:100%;object-fit:cover;display:block;border-radius:13px}
+.amd-photo.pixel-portrait{image-rendering:pixelated}
+.amd-photo-sheet{width:100%;height:100%;display:block;border-radius:13px;background-repeat:no-repeat;background-size:400% 100%;background-position:0 0;image-rendering:pixelated;background-color:rgba(0,0,0,.35)}
 .amd-title{flex:1;min-width:0}
 .amd-name{
   font-size:18px;font-weight:800;color:var(--text);
@@ -13579,6 +15990,11 @@ body.floorplan .conf-room,body.floorplan .location{display:none!important}
   text-shadow:0 0 8px var(--accent-glow);
   font-variant-numeric:tabular-nums;letter-spacing:-.2px;
 }
+.amd-role-brief{display:grid;gap:7px;border:1px solid rgba(0,255,65,.16);border-radius:12px;background:rgba(0,255,65,.035);padding:12px}
+.amd-brief-line{display:grid;grid-template-columns:78px minmax(0,1fr);gap:8px;align-items:start;font-size:11px;line-height:1.45}
+.amd-brief-line b{color:var(--accent);font-size:9px;letter-spacing:1.2px;text-transform:uppercase;white-space:nowrap}
+.amd-brief-line span{color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis}
+.amd-brief-line.current span{color:#ffdd7a}
 .amd-section{display:flex;flex-direction:column;gap:7px;flex:1;min-height:80px}
 .amd-section-head{
   font-size:10px;letter-spacing:1.5px;color:var(--text-dim);
@@ -13619,7 +16035,8 @@ textarea.amd-input{resize:vertical;min-height:50px;line-height:1.45}
 
 
 /* Agent piece — inline-SVG character + nameplate. Furniture is CSS-drawn behind. */
-.agent{position:absolute;width:60px;display:flex;flex-direction:column;align-items:center;gap:3px;transition:left .9s cubic-bezier(.16,1,.3,1),top .9s cubic-bezier(.16,1,.3,1);z-index:6;filter:drop-shadow(0 4px 6px rgba(0,0,0,.65));transform:scale(var(--char-scale,1));transform-origin:50% 96px}
+.agent{position:absolute;width:76px;display:flex;flex-direction:column;align-items:center;gap:3px;transition:left .9s cubic-bezier(.16,1,.3,1),top .9s cubic-bezier(.16,1,.3,1),filter .2s;z-index:6;filter:drop-shadow(0 4px 6px rgba(0,0,0,.65));transform:scale(var(--char-scale,1));transform-origin:50% 96px;cursor:pointer}
+.agent:hover{filter:drop-shadow(0 6px 10px rgba(0,0,0,.8)) drop-shadow(0 0 8px var(--ag-color-glow,var(--accent-glow)))}
 .agent .ag-led{position:absolute;top:-4px;right:6px;width:5px;height:5px;border-radius:50%;background:var(--text-dim);opacity:.4;transition:all .3s;z-index:7}
 .agent.thinking .ag-led{background:#ffab40;animation:ledBlink 1s infinite;box-shadow:0 0 6px #ffab40;opacity:1}
 .agent.working .ag-led{background:var(--ag-color,var(--accent));animation:ledBlink .7s infinite;box-shadow:0 0 8px var(--ag-color,var(--accent));opacity:1}
@@ -13631,7 +16048,8 @@ textarea.amd-input{resize:vertical;min-height:50px;line-height:1.45}
    Rendering this as 48×48 (the bug we hit before) shows only the head/hair.
    Idle frame: row 1, col 0 → background-position: 0 -96px
    Walking row: row 2 (y=-192), 6 frames per direction (down 0–5, left 6–11, right 12–17, up 18–23) */
-.character{width:48px;height:96px;position:relative;overflow:hidden;image-rendering:pixelated;cursor:default;background-repeat:no-repeat;background-position:0 -96px;background-size:auto;filter:drop-shadow(0 6px 8px rgba(0,0,0,.65));animation:charBob 2.4s ease-in-out infinite;transform:scale(0.8);transform-origin:center bottom}
+.character{width:48px;height:96px;position:relative;overflow:hidden;image-rendering:pixelated;cursor:pointer;background-repeat:no-repeat;background-position:0 -96px;background-size:auto;filter:drop-shadow(0 6px 8px rgba(0,0,0,.65));animation:charBob 2.4s ease-in-out infinite;transform:scale(0.8);transform-origin:center bottom}
+.character.sheet4{width:64px;height:64px;background-position:0 0;background-size:400% 100%}
 @keyframes charBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}
 
 /* State glow under character */
@@ -13659,6 +16077,7 @@ textarea.amd-input{resize:vertical;min-height:50px;line-height:1.45}
 @keyframes workBarFill{0%{width:0}90%{width:96%}100%{width:100%}}
 
 .ag-plate{font-family:'SF Mono','JetBrains Mono',monospace;font-size:8.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text-bright);padding:2px 7px;background:rgba(0,0,0,.85);border:1px solid var(--ag-color,var(--border));border-radius:5px;text-shadow:0 0 4px var(--ag-color-glow,transparent);white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+.ag-role{max-width:82px;font-family:'SF Mono','JetBrains Mono',monospace;font-size:7.5px;font-weight:700;letter-spacing:.4px;color:rgba(230,245,238,.82);padding:1px 6px;background:rgba(8,10,15,.82);border:1px solid rgba(255,255,255,.1);border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(0,0,0,.45)}
 .agent.idle .ag-plate{opacity:.7}
 .agent.working .ag-plate{color:var(--ag-color,var(--accent));box-shadow:0 0 10px var(--ag-color-glow,var(--accent-glow)),0 2px 6px rgba(0,0,0,.5)}
 
@@ -13750,6 +16169,12 @@ body.dispatching .beams{opacity:1}
   word-break:break-word;
 }
 .log-text strong{color:var(--ag-color,var(--accent));font-weight:700}
+.llm-error-meta{display:block;margin-top:5px;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,171,64,.24);background:rgba(255,171,64,.06);color:#ffab40;font-family:'SF Mono','Consolas',monospace;font-size:10px;line-height:1.45;word-break:break-all}
+.log-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.log-action-btn{border:1px solid rgba(0,255,65,.25);background:rgba(0,255,65,.07);color:var(--accent);border-radius:6px;padding:5px 8px;font-size:10.5px;font-weight:700;font-family:inherit;cursor:pointer;line-height:1.2}
+.log-action-btn:hover{border-color:rgba(0,255,65,.55);background:rgba(0,255,65,.13);box-shadow:0 0 10px rgba(0,255,65,.12)}
+.log-action-btn.warn{border-color:rgba(255,171,64,.28);background:rgba(255,171,64,.07);color:#ffab40}
+.log-action-btn.warn:hover{border-color:rgba(255,171,64,.58);background:rgba(255,171,64,.13)}
 
 /* Output stream cards (per agent) — feels like an employee handing in work */
 .out-card{
@@ -13785,11 +16210,16 @@ body.dispatching .beams{opacity:1}
 
 /* ===== Bottom command bar ===== */
 .cmdbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:rgba(8,10,15,.96);border-top:1px solid var(--border);flex-shrink:0;z-index:10}
+.cmd-meta{min-width:130px;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:1px solid rgba(0,255,65,.18);border-radius:8px;padding:9px 10px;background:rgba(0,255,65,.04);color:var(--accent);font-size:11px;font-weight:700;font-family:'SF Mono','Consolas',monospace;line-height:1.2;cursor:pointer;user-select:none;transition:all .18s}
+.cmd-meta:hover{border-color:rgba(0,255,65,.42);background:rgba(0,255,65,.09);box-shadow:0 0 12px rgba(0,255,65,.12)}
+.cmd-meta.empty{border-color:rgba(255,171,64,.32);background:rgba(255,171,64,.06);color:#ffab40}
+.cmd-meta.empty:hover{border-color:rgba(255,171,64,.56);background:rgba(255,171,64,.12)}
 .cmdbar input{flex:1;background:rgba(0,10,2,.7);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-family:inherit;font-size:13px;outline:none;transition:all .2s}
 .cmdbar input:focus{border-color:var(--accent);box-shadow:0 0 14px var(--accent-glow)}
 .cmdbar button{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;transition:all .2s}
 .cmdbar button:hover{transform:translateY(-1px);box-shadow:0 4px 14px var(--accent-glow)}
 .cmdbar button:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+@media (max-width:700px){.cmd-meta{display:none}}
 
 /* ===== Empty state ===== */
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-size:12px;text-align:center;padding:40px 20px;line-height:1.7}
@@ -13942,7 +16372,7 @@ body.dispatching .beams{opacity:1}
     <div class="brand-text">
       <div class="brand-row">
         <div class="brand-name loading" id="topCompany">불러오는 중…</div>
-        <button class="brand-edit" id="pickFolderBtn" title="회사 폴더 변경">⚙</button>
+        <button class="brand-edit" id="pickFolderBtn" title="개인 자산 Vault 변경">⚙</button>
       </div>
       <div class="brand-sub">나만의 에이전트 팀</div>
     </div>
@@ -13972,6 +16402,14 @@ body.dispatching .beams{opacity:1}
   <div class="actions">
     <button class="topbtn" id="workdayBtn" title="24시간 자동 운영 — 설정 로딩 중...">24h ⋯</button>
     <button class="topbtn primary" id="dashboardBtn" title="👥 직원 에이전트 보기 — 팀 전체 한눈에">👥 직원 에이전트 보기</button>
+    <button class="topbtn ghost" id="diagnoseBtn" title="LLM 연결 진단 — Ollama / LM Studio 상태 확인">LLM</button>
+    <button class="topbtn ghost" id="vaultPipelineBtn" title="개인 Vault 파이프라인 — Digest·후보·초안·리뷰·승인 확정화를 순서대로 실행">🔁</button>
+    <button class="topbtn ghost" id="todayReviewBtn" title="오늘 Auto Capture 리뷰 — 00_Inbox/Daily Reviews에 오늘 자산 목록 생성">📥</button>
+    <button class="topbtn ghost" id="digestBtn" title="개인 Vault Auto Digest 재색인 — 기존 Auto Captures를 RAG 요약 색인으로 묶기">🧠</button>
+    <button class="topbtn ghost" id="promoteBtn" title="지식 승격 후보 생성 — Auto Captures 중 장기 지식 후보를 20_Knowledge에 추천 목록으로 정리">💡</button>
+    <button class="topbtn ghost" id="draftBtn" title="지식 초안 생성 — 승격 후보를 20_Knowledge/Drafts evergreen note 초안으로 만들기">📝</button>
+    <button class="topbtn ghost" id="reviewDraftsBtn" title="지식 초안 리뷰 큐 — Drafts를 승인/수정/제외 상태로 검토">✅</button>
+    <button class="topbtn ghost" id="finalizeDraftsBtn" title="승인 초안 확정화 — status: accepted 초안을 대상 Vault 폴더에 비파괴 복사">🏁</button>
     <button class="topbtn ghost" id="apiBtn" title="🔌 외부 연결 — Telegram · YouTube · Google Calendar 등 API 키 한 곳에서">🔌</button>
     <button class="topbtn ghost" id="toggleSideBtn" title="활동 로그 패널 토글">📋</button>
     <button class="topbtn ghost" id="folderBtn" title="회사 폴더 열기">📁</button>
@@ -14042,6 +16480,7 @@ body.dispatching .beams{opacity:1}
         <div class="world-buildings" id="worldBuildings"></div>
         <div class="world-decorations" id="worldDecor"></div>
         <div class="office-zones" id="officeZones"></div>
+        <div class="collab-layer" id="collabLayer" aria-hidden="true"></div>
         <!-- agents inserted here by JS — coords resolve % of stageInner -->
       </div>
     </div>
@@ -14081,6 +16520,7 @@ body.dispatching .beams{opacity:1}
         <div class="amd-stat"><div class="amd-stat-lbl">STATE</div><div class="amd-stat-val" id="amdState">IDLE</div></div>
         <div class="amd-stat"><div class="amd-stat-lbl">SPECIALTY</div><div class="amd-stat-val" id="amdSpecialty" style="font-size:9px">—</div></div>
       </div>
+      <div class="amd-role-brief" id="amdRoleBrief"></div>
       <div class="amd-section">
         <div class="amd-section-head">⚙️ 외부 연결 / API</div>
         <div class="amd-form" id="amdConfigForm"><span style="font-size:10px;color:var(--text-dim)">이 에이전트는 별도 설정이 없습니다.</span></div>
@@ -14136,19 +16576,22 @@ body.dispatching .beams{opacity:1}
   </div>
 </div>
 
-<!-- 명령창은 사이드바에 통합됨. 사무실 패널은 시각화 전용. -->
-<div class="cmdbar" style="display:none">
-  <input id="cmdInput" type="hidden" />
-  <button id="cmdSend" style="display:none">전송 ↑</button>
+<!-- Office command bar: direct path into the same corporate dispatch flow. -->
+<div class="cmdbar">
+  <div class="cmd-meta" id="cmdMeta" title="현재 로컬 LLM 대상 · 클릭해서 모델 선택">LLM checking...</div>
+  <input id="cmdInput" type="text" placeholder="한 줄 명령을 내리세요. 팀이 바로 움직입니다." autocomplete="off" spellcheck="false" />
+  <button id="cmdSend">전송</button>
 </div>
 
 <script>
 const vscode = acquireVsCodeApi();
 const floor = document.getElementById('floor');
 const beams = document.getElementById('beams');
+const collabLayer = document.getElementById('collabLayer');
 const whiteboard = document.getElementById('whiteboard');
 const cmdInput = document.getElementById('cmdInput');
 const cmdSend = document.getElementById('cmdSend');
+const cmdMeta = document.getElementById('cmdMeta');
 const logPane = document.getElementById('logPane');
 const outPane = document.getElementById('outPane');
 const topCompany = document.getElementById('topCompany');
@@ -14158,8 +16601,12 @@ const folderBtn = document.getElementById('folderBtn');
 let agents = [];
 let agentMap = {};
 let deskEls = {};   /* alias: agent elements */
+let lastOfficePrompt = '';
 let outCardEls = {};
+let lastChunkPulseAt = {};
 let currentTasks = [];
+let activeWorkAgents = new Set();
+let collabClearTimer = null;
 /* Home desk positions are % of the WORLD canvas (1400×700 campus).
    Replaced by world.desks at officeInit time; placeholder below covers
    the brief moment before the message arrives. Office is at world
@@ -14179,6 +16626,100 @@ function getHomeXY(agentId){
   return { x: p.x, y: p.y };
 }
 
+function clampPct(value, fallback){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, n));
+}
+
+function collaborationPoint(agentId){
+  const el = deskEls[agentId];
+  const home = getHomeXY(agentId);
+  const x = el ? (el.dataset.currX || el.dataset.homeX) : home.x;
+  const y = el ? (el.dataset.currY || el.dataset.homeY) : home.y;
+  return { x: clampPct(parseFloat(x), home.x), y: clampPct(parseFloat(y), home.y) };
+}
+
+function clearCollaborationCue(){
+  if (collabClearTimer) {
+    clearTimeout(collabClearTimer);
+    collabClearTimer = null;
+  }
+  if (collabLayer) collabLayer.innerHTML = '';
+}
+
+function scheduleCollaborationClear(delayMs){
+  if (collabClearTimer) clearTimeout(collabClearTimer);
+  collabClearTimer = setTimeout(() => {
+    collabClearTimer = null;
+    if (activeWorkAgents.size === 0) clearCollaborationCue();
+  }, Math.max(300, Number(delayMs) || 1200));
+}
+
+function renderCollaborationCue(title, agentIds, detail){
+  if (!collabLayer) return;
+  if (collabClearTimer) {
+    clearTimeout(collabClearTimer);
+    collabClearTimer = null;
+  }
+  const ids = (agentIds || [])
+    .filter(id => id && id !== 'ceo' && deskEls[id])
+    .filter((id, index, arr) => arr.indexOf(id) === index);
+  if (ids.length === 0 || !deskEls.ceo) {
+    if (ids.length === 0) clearCollaborationCue();
+    return;
+  }
+  const ceo = collaborationPoint('ceo');
+  const points = ids.map(id => collaborationPoint(id));
+  const sum = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: ceo.x, y: ceo.y });
+  const center = { x: sum.x / (points.length + 1), y: sum.y / (points.length + 1) };
+  const safeX = Math.max(12, Math.min(88, center.x));
+  const safeY = Math.max(14, Math.min(86, center.y));
+  const lines = ids.map(id => {
+    const point = collaborationPoint(id);
+    const a = agentMap[id] || {};
+    const color = String(a.color || '#67e8f9');
+    return '<line x1="' + ceo.x.toFixed(2) + '" y1="' + ceo.y.toFixed(2) + '" x2="' + point.x.toFixed(2) + '" y2="' + point.y.toFixed(2) + '" style="stroke:' + color + '"/>';
+  }).join('');
+  const dots = points.map(point => '<circle cx="' + point.x.toFixed(2) + '" cy="' + point.y.toFixed(2) + '" r="1.08"/>').join('');
+  const team = ['요미'].concat(ids.map(id => agentMap[id]?.name || id)).join(' + ');
+  const detailText = String(detail || '').replace(/\\s+/g, ' ').trim().slice(0, 56);
+  collabLayer.innerHTML =
+    '<svg class="collab-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+      '<g class="collab-links">' + lines + '</g>' +
+      '<g class="collab-dots"><circle cx="' + center.x.toFixed(2) + '" cy="' + center.y.toFixed(2) + '" r="2.3"/>' + dots + '</g>' +
+    '</svg>' +
+    '<div class="collab-hotspot" style="left:' + safeX.toFixed(2) + '%;top:' + safeY.toFixed(2) + '%">' +
+      '<strong>' + escapeHtml(title || '협업 중') + '</strong>' +
+      '<span>' + escapeHtml(team) + '</span>' +
+      (detailText ? '<small>' + escapeHtml(detailText) + '</small>' : '') +
+    '</div>';
+}
+
+function renderDispatchCollaboration(tasks, brief){
+  const ids = (tasks || []).map(t => t.agent).filter(Boolean);
+  renderCollaborationCue('작업 분배', ids, brief || '요미가 담당자에게 인계');
+}
+
+function startAgentCollaboration(agentId, task){
+  if (!agentId || agentId === 'ceo') {
+    if (activeWorkAgents.size === 0) clearCollaborationCue();
+    return;
+  }
+  activeWorkAgents.add(agentId);
+  renderCollaborationCue('담당 처리', Array.from(activeWorkAgents), task || '담당자가 작업 중');
+}
+
+function finishAgentCollaboration(agentId){
+  if (agentId) activeWorkAgents.delete(agentId);
+  const remaining = Array.from(activeWorkAgents);
+  if (remaining.length > 0) {
+    renderCollaborationCue('동시 처리', remaining, '다른 담당자가 계속 작업 중');
+  } else {
+    scheduleCollaborationClear(900);
+  }
+}
+
 
 
 
@@ -14190,13 +16731,14 @@ function makeAgent(a){
   d.dataset.homeX = home.x;
   d.dataset.homeY = home.y;
   d.dataset.dir = 'down';
+  d.dataset.spriteMode = a.spriteMode || 'atlas';
   d.style.setProperty('--ag-color', a.color);
   d.style.setProperty('--ag-color-glow', a.color + '55');
   positionAgentToImageCoord(d, home.x, home.y);
   
   /* Sprite character */
   const character = document.createElement('div');
-  character.className = 'character';
+  character.className = 'character ' + ((a.spriteMode === 'sheet4') ? 'sheet4' : 'atlas');
   if (a.sprite) {
     character.style.backgroundImage = 'url(' + a.sprite + ')';
   } else {
@@ -14211,6 +16753,10 @@ function makeAgent(a){
   const wfill = document.createElement('div'); wfill.className = 'work-bar-fill';
   wbar.appendChild(wfill); d.appendChild(wbar);
   const nm = document.createElement('div'); nm.className = 'ag-plate'; nm.textContent = a.emoji + ' ' + a.name; d.appendChild(nm);
+  const role = document.createElement('div');
+  role.className = 'ag-role';
+  role.textContent = String(a.role || '').split('·')[0].trim() || a.id;
+  d.appendChild(role);
   d.title = a.role + ' — ' + a.specialty;
   d.addEventListener('click', () => {
     /* CEO opens its folder; everyone else opens the unified agent card —
@@ -14229,8 +16775,11 @@ function makeAgent(a){
     Higher y = renders in front (depth-sort), so agents farther down the
     office naturally occlude ones above them. */
 function positionAgentToImageCoord(el, xPct, yPct){
-  el.style.left = 'calc(' + xPct + '% - 24px)';
-  el.style.top  = 'calc(' + yPct + '% - 96px)';
+  const sheet4 = el.dataset.spriteMode === 'sheet4';
+  const xOffset = sheet4 ? 32 : 24;
+  const yOffset = sheet4 ? 64 : 96;
+  el.style.left = 'calc(' + xPct + '% - ' + xOffset + 'px)';
+  el.style.top  = 'calc(' + yPct + '% - ' + yOffset + 'px)';
   el.style.zIndex = String(10 + Math.floor(yPct * 10));
 }
 
@@ -14266,6 +16815,8 @@ function setDeskState(agentId, state, task){
   const d = deskEls[agentId]; if (!d) return;
   d.classList.remove('idle','thinking','working','done');
   d.classList.add(state);
+  if (task) d.dataset.task = String(task);
+  else if (state === 'idle' || state === 'done') delete d.dataset.task;
   const old = d.querySelector('.bubble'); if (old) old.remove();
   if (task && (state === 'working' || state === 'thinking')) {
     const b = document.createElement('div'); b.className = 'bubble'; b.textContent = task;
@@ -14276,6 +16827,13 @@ function setDeskState(agentId, state, task){
      whenever any desk state changes. Makes the office feel genuinely live —
      the user sees the count rise the moment an agent starts a task. */
   try { updateLiveStatus(); } catch {}
+  try {
+    if (_profileAgentId === agentId) {
+      const stateEl = document.getElementById('amdState');
+      if (stateEl) stateEl.textContent = agentStateLabel(agentId);
+      renderAgentRoleBrief(agentId);
+    }
+  } catch {}
 }
 
 /* Counts how many agents are currently in working/thinking state and
@@ -14330,12 +16888,15 @@ function pickRandom(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
 
 function walkToward(agentId, targetXPct, targetYPct, durationMs){
   const el = deskEls[agentId]; if (!el) return Promise.resolve();
-  const currentX = parseFloat(el.style.left.replace(/[^-0-9.]/g, '')) || 0; // Simplified check
-  const currentY = parseFloat(el.style.top.replace(/[^-0-9.]/g, '')) || 0;
+  targetXPct = Math.max(2, Math.min(98, Number(targetXPct) || 50));
+  targetYPct = Math.max(8, Math.min(96, Number(targetYPct) || 50));
+  const ms = Math.max(180, Number(durationMs) || 1000);
   
   /* Determine direction */
-  const dx = targetXPct - parseFloat(el.dataset.currX || el.dataset.homeX);
-  const dy = targetYPct - parseFloat(el.dataset.currY || el.dataset.homeY);
+  const fromX = parseFloat(el.dataset.currX || el.dataset.homeX || targetXPct);
+  const fromY = parseFloat(el.dataset.currY || el.dataset.homeY || targetYPct);
+  const dx = targetXPct - fromX;
+  const dy = targetYPct - fromY;
   if (Math.abs(dx) > Math.abs(dy)) {
     el.dataset.dir = dx > 0 ? 'right' : 'left';
   } else {
@@ -14345,10 +16906,86 @@ function walkToward(agentId, targetXPct, targetYPct, durationMs){
   el.dataset.currY = targetYPct;
 
   el.classList.add('walking');
+  el.style.transitionDuration = ms + 'ms';
   positionAgentToImageCoord(el, targetXPct, targetYPct);
   return new Promise(resolve => {
-    setTimeout(() => { el.classList.remove('walking'); resolve(); }, durationMs || 1000);
+    setTimeout(() => { el.classList.remove('walking'); resolve(); }, ms);
   });
+}
+
+function returnAgentHome(agentId, durationMs){
+  const el = deskEls[agentId]; if (!el) return Promise.resolve();
+  const hx = parseFloat(el.dataset.homeX);
+  const hy = parseFloat(el.dataset.homeY);
+  if (!Number.isFinite(hx) || !Number.isFinite(hy)) return Promise.resolve();
+  return walkToward(agentId, hx, hy, durationMs || 900);
+}
+
+function nudgeAgentAtDesk(agentId){
+  const el = deskEls[agentId]; if (!el) return;
+  const hx = parseFloat(el.dataset.homeX);
+  const hy = parseFloat(el.dataset.homeY);
+  const cx = parseFloat(el.dataset.currX || el.dataset.homeX);
+  const cy = parseFloat(el.dataset.currY || el.dataset.homeY);
+  if (!Number.isFinite(hx) || !Number.isFinite(hy)) return;
+  if (Math.abs(cx - hx) > 2.5 || Math.abs(cy - hy) > 2.5) return;
+  const sign = agentId.length % 2 === 0 ? 1 : -1;
+  walkToward(agentId, hx + sign * 2.4, hy - 2.2, 520)
+    .then(() => returnAgentHome(agentId, 560))
+    .catch(() => {});
+}
+
+const ROLE_WORK_SPOTS = {
+  secretary: { x: 43, y: 50, label: '운영 체크', bubble: '순서 정리', emoji: '📋' },
+  youtube: { x: 47, y: 31, label: '영상 기획', bubble: '훅 설계', emoji: '🎥' },
+  instagram: { x: 55, y: 31, label: 'SNS 운영', bubble: 'SNS 포맷', emoji: '📱' },
+  designer: { x: 70, y: 35, label: '디자인 보드', bubble: '화면 구조', emoji: '🎨' },
+  developer: { x: 50, y: 70, label: '개발 벤치', bubble: '코드 검증', emoji: '💻' },
+  business: { x: 76, y: 47, label: '전략 테이블', bubble: '지표 판단', emoji: '📈' },
+  editor: { x: 61, y: 69, label: '편집 베이', bubble: '리듬 편집', emoji: '🎬' },
+  writer: { x: 29, y: 68, label: '문서 작성', bubble: '초안 작성', emoji: '✍️' },
+  researcher: { x: 29, y: 35, label: '리서치 데스크', bubble: '근거 수집', emoji: '🔎' },
+  archivist: { x: 71, y: 73, label: 'Vault 분류', bubble: '자산화', emoji: '🗃️' }
+};
+
+const ROLE_CARD_COPY = {
+  ceo: { focus: '목표를 쪼개고 담당자를 배정하는 총괄 지휘자', handoff: '최종 판단과 보고서 톤을 정리합니다.' },
+  secretary: { focus: '업무 순서, 일정, 체크리스트를 정리하는 운영 담당', handoff: '누락된 단계와 다음 액션을 확인합니다.' },
+  youtube: { focus: '영상 기획, 훅, 제목, 썸네일 관점을 보는 콘텐츠 담당', handoff: '시청자가 클릭할 이유를 만듭니다.' },
+  instagram: { focus: '짧은 카피, 캡션, SNS 포맷을 다듬는 배포 담당', handoff: '플랫폼에 맞게 메시지를 압축합니다.' },
+  designer: { focus: '화면 구조, 분위기, 시각적 우선순위를 잡는 디자인 담당', handoff: '무엇을 먼저 봐야 하는지 정리합니다.' },
+  developer: { focus: '구현, 오류, 코드 검증을 맡는 개발 담당', handoff: '실제로 작동하는지 확인합니다.' },
+  business: { focus: '우선순위, 매출, 지표, 전략 판단을 맡는 사업 담당', handoff: '해야 할 일과 하지 말아야 할 일을 가릅니다.' },
+  editor: { focus: '흐름, 컷, 리듬, 마감 품질을 보는 편집 담당', handoff: '결과물이 읽히고 보이게 다듬습니다.' },
+  writer: { focus: '초안, 문장, 구조, 설명력을 만드는 글 담당', handoff: '막연한 생각을 문서로 바꿉니다.' },
+  researcher: { focus: '근거, 자료, 비교, 출처를 찾는 리서치 담당', handoff: '판단에 필요한 확인 재료를 모읍니다.' },
+  archivist: { focus: '결과물을 Vault에 분류하고 재사용 가능한 자산으로 만드는 기록 담당', handoff: '나중에 다시 찾을 수 있게 저장합니다.' }
+};
+
+function moveAgentToWorkSpot(agentId, task){
+  const el = deskEls[agentId]; if (!el) return;
+  if (agentId === 'ceo') { nudgeAgentAtDesk(agentId); return; }
+  const spot = ROLE_WORK_SPOTS[agentId];
+  if (!spot) { nudgeAgentAtDesk(agentId); return; }
+  const cx = parseFloat(el.dataset.currX || el.dataset.homeX || spot.x);
+  const cy = parseFloat(el.dataset.currY || el.dataset.homeY || spot.y);
+  const alreadyThere = Math.abs(cx - spot.x) < 1.2 && Math.abs(cy - spot.y) < 1.2;
+  const a = agentMap[agentId];
+  showStatusIcon(agentId, spot.emoji || '⚡', 3200);
+  if (a) logActivity(spot.emoji || '📍', agentId, '<strong>'+a.name+'</strong> → '+spot.label);
+  const bubble = spot.bubble || spot.label || task || '작업 중';
+  if (alreadyThere) {
+    showBubbleOn(agentId, bubble.slice(0, 34), 2600);
+    return;
+  }
+  walkToward(agentId, spot.x, spot.y, 950).then(() => {
+    try {
+      if (deskEls[agentId]?.classList.contains('working')) {
+        showBubbleOn(agentId, bubble.slice(0, 34), 2600);
+        spawnArrivalBurst(agentId);
+      }
+    } catch {}
+  }).catch(() => {});
 }
 
 /* ===== Visit locations — WORLD %-coords (1400×700 campus canvas) =====
@@ -14400,6 +17037,26 @@ const PERSONALITY = {
   secretary: {
     thoughts: ['일정 정리하자', '메일 답장 보내야', 'CEO 미팅 30분 후', '다들 할 일 알지?', '회의록 다시 보자'],
     status: ['📋','📞','📅','📝','✉️'],
+    likedLocs: ['copier','meeting','cafeTable']
+  },
+  editor: {
+    thoughts: ['컷 리듬을 줄여야겠어', '강조 지점 다시 보자', '사운드가 조금 떠', '인트로 압축 필요', '자막 타이밍 체크'],
+    status: ['🎬','🎵','✂️','🎚️','✨'],
+    likedLocs: ['meeting','cafeTable','gardenWalk']
+  },
+  writer: {
+    thoughts: ['첫 문장이 약해', '훅을 다시 잡자', '문단 순서 바꾸면 좋겠다', '톤을 더 선명하게', '요약을 짧게'],
+    status: ['✍️','📝','📄','💡','✅'],
+    likedLocs: ['cafeTable','meeting','gardenBench']
+  },
+  researcher: {
+    thoughts: ['근거를 더 찾아야 해', '출처 확인', '반례도 봐야지', '트렌드가 바뀌었나?', '데이터 정리 중'],
+    status: ['🔎','📚','📊','🧭','✅'],
+    likedLocs: ['meeting','copier','gardenBench']
+  },
+  archivist: {
+    thoughts: ['어디에 저장하지?', '태그를 정리하자', '재사용 가능하게 묶자', 'Vault 연결 확인', 'RAG 후보 분류'],
+    status: ['🗃️','🏷️','🔗','📚','✅'],
     likedLocs: ['copier','meeting','cafeTable']
   }
 };
@@ -14832,6 +17489,31 @@ const AGENT_CONFIG_FIELDS = {
 
 /* ===== Agent profile modal (in-UI panel) ===== */
 let _profileAgentId = null;
+function agentStateLabel(agentId){
+  const el = deskEls[agentId];
+  if (!el) return '대기';
+  if (el.classList.contains('working')) return '작업 중';
+  if (el.classList.contains('thinking')) return '검토 중';
+  if (el.classList.contains('done')) return '완료';
+  return '대기';
+}
+function renderAgentRoleBrief(agentId){
+  const box = document.getElementById('amdRoleBrief');
+  const a = agentMap[agentId];
+  if (!box || !a) return;
+  const el = deskEls[agentId];
+  const spot = ROLE_WORK_SPOTS[agentId];
+  const copy = ROLE_CARD_COPY[agentId] || {};
+  const task = el?.dataset.task || '';
+  const place = agentId === 'ceo' ? '요미 지휘석' : (spot?.label || '개인 자리');
+  const focus = copy.focus || a.specialty || a.role || '담당 역할 확인 중';
+  const handoff = copy.handoff || '필요할 때 요미에게 결과를 인계합니다.';
+  box.innerHTML =
+    '<div class="amd-brief-line"><b>역할</b><span>'+escapeHtml(focus)+'</span></div>' +
+    '<div class="amd-brief-line"><b>자리</b><span>'+escapeHtml(place)+'</span></div>' +
+    '<div class="amd-brief-line"><b>인계</b><span>'+escapeHtml(handoff)+'</span></div>' +
+    '<div class="amd-brief-line current"><b>현재</b><span>'+escapeHtml(task || agentStateLabel(agentId))+'</span></div>';
+}
 function openAgentProfile(agentId){
   const a = agentMap[agentId]; if (!a) return;
   _profileAgentId = agentId;
@@ -14850,14 +17532,8 @@ function openAgentProfile(agentId){
   if (name) name.textContent = a.name;
   if (role) role.textContent = a.role;
   if (specialty) specialty.textContent = a.specialty || '—';
-  const el = deskEls[agentId];
-  let cur = 'IDLE';
-  if (el) {
-    if (el.classList.contains('working')) cur = 'WORKING';
-    else if (el.classList.contains('thinking')) cur = 'THINKING';
-    else if (el.classList.contains('done')) cur = 'DONE';
-  }
-  if (state) state.textContent = cur;
+  if (state) state.textContent = agentStateLabel(agentId);
+  renderAgentRoleBrief(agentId);
   if (memory) memory.textContent = '불러오는 중…';
   if (decisions) decisions.textContent = '불러오는 중…';
   if (sessions) sessions.textContent = '…';
@@ -15005,9 +17681,115 @@ function appendOutChunk(agentId, value){
   c.body.textContent = c.raw;
   outPane.scrollTop = outPane.scrollHeight;
 }
-function endOutCard(agentId){ delete outCardEls[agentId]; }
+function formatElapsedShort(sec){
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const mm = Math.floor(sec / 60);
+  const ss = sec % 60;
+  return mm > 0 ? (mm + '분 ' + ss + '초') : (ss + '초');
+}
+function pulseAgentOnChunk(agentId, value){
+  if (!agentId || !String(value || '').trim()) return;
+  const now = Date.now();
+  if (now - (lastChunkPulseAt[agentId] || 0) < 2400) return;
+  lastChunkPulseAt[agentId] = now;
+  const d = deskEls[agentId]; if (!d) return;
+  if (!d.classList.contains('working') && !d.classList.contains('thinking')) setDeskState(agentId, 'working');
+  try { showStatusIcon(agentId, pickRandom(['✍️','💡','⚙️','📝']), 1400); } catch {}
+  try { nudgeAgentAtDesk(agentId); } catch {}
+}
+function endOutCard(agentId){ delete outCardEls[agentId]; delete lastChunkPulseAt[agentId]; }
+function resetOfficeRunUI(){
+  try { document.body.classList.remove('dispatching'); } catch {}
+  try { if (beams) beams.innerHTML = ''; } catch {}
+  try { activeWorkAgents.clear(); clearCollaborationCue(); } catch {}
+  Object.keys(deskEls).forEach(id => {
+    try { endOutCard(id); } catch {}
+    try { setDeskState(id, 'idle'); } catch {}
+    try { returnAgentHome(id, 700); } catch {}
+  });
+}
+function settleAgentAfterError(agentId){
+  if (!agentId || !deskEls[agentId]) return;
+  try { showStatusIcon(agentId, '⚠️', 2200); } catch {}
+  try { returnAgentHome(agentId, 700); } catch {}
+}
 
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function renderLLMErrorMeta(llm){
+  if (!llm) return '';
+  const parts = [];
+  if (llm.engine) parts.push(llm.engine);
+  if (llm.model) parts.push('model=' + llm.model);
+  if (llm.baseUrl) parts.push('base=' + llm.baseUrl);
+  if (llm.apiUrl) parts.push('api=' + llm.apiUrl);
+  if (llm.overrideCount) parts.push('agent overrides=' + llm.overrideCount);
+  return parts.length ? '<span class="llm-error-meta">LLM target: '+escapeHtml(parts.join(' · '))+'</span>' : '';
+}
+function renderLLMDisplay(llm){
+  const engine = llm.engine || 'LLM';
+  const model = llm.model || 'model not set';
+  const overrides = Number(llm.overrideCount || 0);
+  return engine + ' · ' + model + (overrides > 0 ? ' · routes ' + overrides : '');
+}
+function renderLLMTitle(llm, suffix){
+  const overrides = Number(llm.overrideCount || 0);
+  const base = llm.apiUrl || llm.baseUrl || 'local LLM';
+  const model = llm.model || 'model not set';
+  return base + ' · ' + model + (overrides > 0 ? ' · 에이전트별 모델 ' + overrides + '건 우선' : '') + ' · ' + suffix;
+}
+function renderErrorActions(canRetry, hasOverrides){
+  return '<span class="log-actions">'
+    + (canRetry ? '<button class="log-action-btn" data-log-action="retry">재시도</button>' : '')
+    + '<button class="log-action-btn" data-log-action="model">모델 선택</button>'
+    + (hasOverrides ? '<button class="log-action-btn warn" data-log-action="clear-routing">기본 모델로 통일</button>' : '')
+    + '<button class="log-action-btn warn" data-log-action="diagnose">LLM 진단</button>'
+    + '</span>';
+}
+function runLLMDiagnosisFromOffice(){
+  logActivity('🧪','ceo','LLM connection diagnostics requested');
+  showStatusIcon('ceo', '🧪', 2500);
+  vscode.postMessage({ type: 'diagnoseConnection' });
+}
+function runAutoDigestReindexFromOffice(){
+  logActivity('🧠','ceo','개인 Vault Auto Digest 재색인 요청');
+  showStatusIcon('ceo', '🧠', 2500);
+  vscode.postMessage({ type: 'rebuildAutoDigest' });
+}
+function runPersonalVaultPipelineFromOffice(){
+  logActivity('🔁','ceo','개인 Vault 파이프라인 실행 요청');
+  showStatusIcon('ceo', '🔁', 2500);
+  applyPersonalVaultPipelineStatus({ needed: 'unknown', summary: 'Personal Vault pipeline is running...', displayPath: '' });
+  vscode.postMessage({ type: 'runPersonalVaultPipeline' });
+}
+function openTodayAutoCaptureReviewFromOffice(){
+  logActivity('📥','ceo','오늘 Auto Capture 리뷰 열기 요청');
+  showStatusIcon('ceo', '📥', 2500);
+  vscode.postMessage({ type: 'openTodayAutoCaptureReview' });
+}
+function runKnowledgePromotionFromOffice(){
+  logActivity('💡','ceo','개인 Vault 지식 승격 후보 생성 요청');
+  showStatusIcon('ceo', '💡', 2500);
+  vscode.postMessage({ type: 'reviewKnowledgePromotionCandidates' });
+}
+function runKnowledgeDraftsFromOffice(){
+  logActivity('📝','ceo','개인 Vault 지식 초안 생성 요청');
+  showStatusIcon('ceo', '📝', 2500);
+  vscode.postMessage({ type: 'generateKnowledgeDrafts' });
+}
+function runKnowledgeDraftReviewFromOffice(){
+  logActivity('✅','ceo','개인 Vault 지식 초안 리뷰 큐 생성 요청');
+  showStatusIcon('ceo', '✅', 2500);
+  vscode.postMessage({ type: 'reviewKnowledgeDrafts' });
+}
+function runFinalizeAcceptedDraftsFromOffice(){
+  logActivity('🏁','ceo','개인 Vault 승인 초안 확정화 요청');
+  showStatusIcon('ceo', '🏁', 2500);
+  vscode.postMessage({ type: 'finalizeAcceptedKnowledgeDrafts' });
+}
+function openLLMModelPicker(){
+  logActivity('🎚','ceo','모델 선택창 열기');
+  vscode.postMessage({ type: 'pickLLMModel' });
+}
 
 function drawBeams(taskAgentIds){
   if (!beams || !deskEls.ceo) return;
@@ -15036,16 +17818,39 @@ function drawBeams(taskAgentIds){
 }
 
 function setSending(v){ cmdSend.disabled = v; cmdInput.disabled = v; }
-function send(){
-  const text = (cmdInput.value || '').trim();
+function send(textOverride){
+  const text = String(textOverride || cmdInput.value || '').trim();
   if (!text) return;
+  lastOfficePrompt = text;
   setSending(true);
   logActivity('👤','ceo','명령: <strong>'+escapeHtml(text)+'</strong>');
   vscode.postMessage({ type: 'officePrompt', value: text });
   cmdInput.value = '';
+  cmdInput.placeholder = '처리 중... 캐릭터가 움직이면 정상입니다.';
 }
-cmdSend.addEventListener('click', send);
+cmdSend.addEventListener('click', () => send());
 cmdInput.addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); }});
+logPane.addEventListener('click', e => {
+  const btn = e.target && e.target.closest ? e.target.closest('[data-log-action]') : null;
+  if (!btn) return;
+  const action = btn.getAttribute('data-log-action');
+  if (action === 'retry') {
+    if (!lastOfficePrompt) {
+      logActivity('⚠️','ceo','재시도할 마지막 명령이 없습니다.');
+      return;
+    }
+    cmdInput.value = lastOfficePrompt;
+    send(lastOfficePrompt);
+  } else if (action === 'diagnose') {
+    runLLMDiagnosisFromOffice();
+  } else if (action === 'model') {
+    openLLMModelPicker();
+  } else if (action === 'clear-routing') {
+    logActivity('🎚','ceo','에이전트별 모델 라우팅 초기화 요청');
+    vscode.postMessage({ type: 'clearAgentModelRouting' });
+  }
+});
+if (cmdMeta) cmdMeta.addEventListener('click', openLLMModelPicker);
 folderBtn.addEventListener('click', () => vscode.postMessage({ type: 'openCompanyFolder' }));
 /* Single master switch: walking + chatter + 24h work cycle move together.
    Initial state mirrors the workspace setting connectAiLab.autoCycleEnabled,
@@ -15103,6 +17908,56 @@ const dashboardBtn = document.getElementById('dashboardBtn');
 if (dashboardBtn) dashboardBtn.addEventListener('click', () => {
   vscode.postMessage({ type: 'openDashboard' });
 });
+const diagnoseBtn = document.getElementById('diagnoseBtn');
+if (diagnoseBtn) diagnoseBtn.addEventListener('click', runLLMDiagnosisFromOffice);
+const vaultPipelineBtn = document.getElementById('vaultPipelineBtn');
+if (vaultPipelineBtn) vaultPipelineBtn.addEventListener('click', runPersonalVaultPipelineFromOffice);
+const todayReviewBtn = document.getElementById('todayReviewBtn');
+if (todayReviewBtn) todayReviewBtn.addEventListener('click', openTodayAutoCaptureReviewFromOffice);
+function applyTodayAutoCaptureReviewStatus(status){
+  if (!todayReviewBtn) return;
+  const s = status || {};
+  const captures = Number(s.captures || 0);
+  const pending = Number(s.pending || 0);
+  const reviewed = Number(s.reviewed || 0);
+  todayReviewBtn.classList.toggle('pending', captures > 0 && pending > 0);
+  todayReviewBtn.classList.toggle('ready', captures > 0 && pending === 0);
+  todayReviewBtn.classList.toggle('empty', captures === 0);
+  todayReviewBtn.textContent = captures === 0 ? '📥 0' : pending > 0 ? '📥 ' + pending : '📥 OK';
+  const base = s.summary || (captures === 0
+    ? '오늘 자동 저장된 자산이 아직 없습니다.'
+    : pending > 0
+      ? '오늘 리뷰할 Auto Capture가 ' + pending + '개 남았습니다.'
+      : '오늘 Auto Capture 리뷰가 완료되었습니다.');
+  todayReviewBtn.title = base + '\nreviewed ' + reviewed + '/' + captures + (s.displayPath ? '\n' + s.displayPath : '');
+}
+function applyPersonalVaultPipelineStatus(status){
+  if (!vaultPipelineBtn) return;
+  const s = status || {};
+  const needed = String(s.needed || 'unknown').toLowerCase();
+  vaultPipelineBtn.classList.toggle('pending', needed === 'yes');
+  vaultPipelineBtn.classList.toggle('ready', needed === 'no');
+  vaultPipelineBtn.classList.toggle('unknown', needed !== 'yes' && needed !== 'no');
+  if (needed === 'yes') vaultPipelineBtn.textContent = '🔁 필요';
+  else if (needed === 'no') vaultPipelineBtn.textContent = '🔁 OK';
+  else vaultPipelineBtn.textContent = '🔁';
+  const base = s.summary || (needed === 'yes'
+    ? '개인 Vault 파이프라인 실행이 필요합니다.'
+    : needed === 'no'
+      ? '개인 Vault 파이프라인이 최신 상태입니다.'
+      : '개인 Vault 파이프라인 상태를 확인합니다.');
+  vaultPipelineBtn.title = base + (s.displayPath ? '\n' + s.displayPath : '');
+}
+const digestBtn = document.getElementById('digestBtn');
+if (digestBtn) digestBtn.addEventListener('click', runAutoDigestReindexFromOffice);
+const promoteBtn = document.getElementById('promoteBtn');
+if (promoteBtn) promoteBtn.addEventListener('click', runKnowledgePromotionFromOffice);
+const draftBtn = document.getElementById('draftBtn');
+if (draftBtn) draftBtn.addEventListener('click', runKnowledgeDraftsFromOffice);
+const reviewDraftsBtn = document.getElementById('reviewDraftsBtn');
+if (reviewDraftsBtn) reviewDraftsBtn.addEventListener('click', runKnowledgeDraftReviewFromOffice);
+const finalizeDraftsBtn = document.getElementById('finalizeDraftsBtn');
+if (finalizeDraftsBtn) finalizeDraftsBtn.addEventListener('click', runFinalizeAcceptedDraftsFromOffice);
 const apiBtn = document.getElementById('apiBtn');
 if (apiBtn) apiBtn.addEventListener('click', () => {
   vscode.postMessage({ type: 'openApiConnections' });
@@ -15288,11 +18143,21 @@ window.addEventListener('message', e => {
     case 'officeInit': {
       agents = m.agents || [];
       agentMap = {}; deskEls = {};
+      activeWorkAgents.clear();
+      clearCollaborationCue();
       agents.forEach(a => { agentMap[a.id] = a; });
       topCompany.textContent = m.companyName || '1인 기업';
       /* Drop the 'loading' style class once the real name arrives so the
          brand text picks up the bold heading style. */
       topCompany.classList.remove('loading');
+      if (cmdMeta) {
+        const llm = m.llm || {};
+        cmdMeta.textContent = renderLLMDisplay(llm);
+        cmdMeta.title = renderLLMTitle(llm, '클릭해서 모델 선택');
+        cmdMeta.classList.toggle('empty', !llm.model);
+      }
+      applyPersonalVaultPipelineStatus(m.pipelineStatus);
+      applyTodayAutoCaptureReviewStatus(m.todayReviewStatus);
       /* Working count in the HUD reflects the actual roster size. */
       const wEl = document.getElementById('hudWorking');
       if (wEl) wEl.textContent = '0/' + (agents.length || 0);
@@ -15364,6 +18229,14 @@ window.addEventListener('message', e => {
           const el = deskEls[a.id]; if (!el) return;
           const characterEl = el.querySelector('.character'); if (!characterEl) return;
 
+          if ((a.spriteMode || el.dataset.spriteMode) === 'sheet4') {
+            const speed = (el.classList.contains('walking') || el.classList.contains('working') || el.classList.contains('thinking')) ? 8 : 14;
+            const frameIndex = Math.floor(frameCount / speed) % 4;
+            const pct = frameIndex === 0 ? 0 : frameIndex === 1 ? 33.333 : frameIndex === 2 ? 66.667 : 100;
+            characterEl.style.backgroundPosition = pct + '% 0';
+            return;
+          }
+
           let colOffset = 0;
           switch (el.dataset.dir) {
             case 'down':  colOffset = 0;  break;
@@ -15412,12 +18285,15 @@ window.addEventListener('message', e => {
     }
     case 'agentDispatch': {
       currentTasks = m.tasks || [];
+      activeWorkAgents.clear();
       const ids = ['ceo'].concat(currentTasks.map(t => t.agent));
       whiteboard.classList.add('active');
       whiteboard.innerHTML = '<span class="wb-line">📋 '+escapeHtml(m.brief||'')+'</span>';
       currentTasks.forEach(t => setDeskState(t.agent, 'thinking', t.task));
       document.body.classList.add('dispatching');
       setTimeout(() => drawBeams(ids), 50);
+      renderDispatchCollaboration(currentTasks, m.brief);
+      scheduleCollaborationClear(4600);
       setTimeout(() => { document.body.classList.remove('dispatching'); beams.innerHTML=''; }, 1700);
       logActivity('🧭','ceo','<strong>분배:</strong> '+escapeHtml(m.brief||''));
       currentTasks.forEach(t => {
@@ -15445,6 +18321,8 @@ window.addEventListener('message', e => {
     }
     case 'agentStart': {
       setDeskState(m.agent, 'working', m.task);
+      startAgentCollaboration(m.agent, m.task);
+      moveAgentToWorkSpot(m.agent, m.task);
       const persona = PERSONALITY[m.agent] || { status:['⚡'] };
       showStatusIcon(m.agent, pickRandom(persona.status), 4500);
       if (m.agent !== 'ceo') {
@@ -15458,7 +18336,9 @@ window.addEventListener('message', e => {
       break;
     }
     case 'agentChunk': {
-      appendOutChunk(m.agent, m.value || '');
+      const chunk = m.value || '';
+      appendOutChunk(m.agent, chunk);
+      pulseAgentOnChunk(m.agent, chunk);
       break;
     }
     case 'multiDispatch': {
@@ -15474,6 +18354,8 @@ window.addEventListener('message', e => {
         const tasks = Array.isArray(m.tasks) ? m.tasks : [];
         if (tasks.length === 0) break;
         const ids = tasks.map(t => t.agent);
+        activeWorkAgents.clear();
+        try { renderDispatchCollaboration(tasks, m.brief); scheduleCollaborationClear(5200); } catch {}
         /* 0. 화면 중앙 글리치 배너 */
         try { spawnDispatchBanner(String(m.brief || '작업 분배')); } catch {}
         /* 1. CEO 펄스 + 화이트보드 */
@@ -15558,23 +18440,31 @@ window.addEventListener('message', e => {
     case 'agentBusy': {
       /* v2.89.131 — LLM 호출 대기 중 5초마다 들어오는 신호. 작업 중인 에이전트의
          책상을 'working' 상태로 유지 + 페르소나 thought·status 반복 노출.
-         v2.89.157 — 게임식 효과: 매 tick 마다 sparkle 입자 5개 spawn + 작업 막대 진행 + 풍부한 thought. */
+         v2.89.157 — 게임식 효과: 매 tick 마다 sparkle 입자 5개 spawn + 작업 막대 진행 + 풍부한 thought.
+         v2.89.158 — 첫 토큰 전 모델 로드 대기 중에도 desk nudge로 실제 위치 변화 표시. */
       try {
         const a = agentMap[m.agent];
         if (!a) break;
         setDeskState(m.agent, 'working');
+        try { nudgeAgentAtDesk(m.agent); } catch {}
         const p = (typeof PERSONALITY !== 'undefined') ? PERSONALITY[m.agent] : null;
         const elapsed = Number(m.elapsedSec || 0);
+        const elapsedLabel = elapsed > 0 ? formatElapsedShort(elapsed) : '';
+        let thoughtShown = false;
         if (p) {
           /* thought 노출 빈도 ↑ — 매 tick 마다 (5초마다) 새로운 페르소나 멘트 */
           if (Array.isArray(p.thoughts) && p.thoughts.length > 0) {
-            const t = p.thoughts[Math.floor(Math.random() * p.thoughts.length)];
-            try { showThought(m.agent, t, 5500); } catch {}
+            const baseThought = p.thoughts[Math.floor(Math.random() * p.thoughts.length)];
+            const t = elapsedLabel ? (baseThought + ' · ' + elapsedLabel) : baseThought;
+            try { showThought(m.agent, t, 5500); thoughtShown = true; } catch {}
           }
           if (Array.isArray(p.status) && p.status.length > 0) {
             const s = p.status[Math.floor(Math.random() * p.status.length)];
             try { showStatusIcon(m.agent, s, 4500); } catch {}
           }
+        }
+        if (!thoughtShown && elapsedLabel) {
+          try { showThought(m.agent, '모델 대기 ' + elapsedLabel, 5500); } catch {}
         }
         /* v2.89.157 — sparkle 입자 5개 spawn. 머리 위에서 무작위 방향으로 흩날림.
            "백엔드에서 일하고 있다"는 visual heartbeat — 정지처럼 보이지 않게. */
@@ -15609,10 +18499,12 @@ window.addEventListener('message', e => {
     }
     case 'agentEnd': {
       setDeskState(m.agent, 'done');
+      finishAgentCollaboration(m.agent);
       endOutCard(m.agent);
       const a = agentMap[m.agent];
       if (a) logActivity('✅', m.agent, a.name+' 완료');
       showStatusIcon(m.agent, '✨', 2000);
+      setTimeout(() => { try { returnAgentHome(m.agent, 850); } catch {} }, 450);
       bumpOutput();
       break;
     }
@@ -15630,6 +18522,8 @@ window.addEventListener('message', e => {
       break;
     }
     case 'corporateReport': {
+      activeWorkAgents.clear();
+      clearCollaborationCue();
       whiteboard.classList.add('active');
       whiteboard.innerHTML = '<span class="wb-line">📝 '+escapeHtml((m.brief||'').slice(0,80))+'</span>';
       const block = document.createElement('div'); block.className = 'report-block';
@@ -15643,6 +18537,7 @@ window.addEventListener('message', e => {
       document.querySelector('.side-tab[data-pane="outPane"]').classList.add('active');
       outPane.classList.add('active');
       setSending(false);
+      cmdInput.placeholder = '한 줄 명령을 내리세요. 팀이 바로 움직입니다.';
       setTimeout(() => Object.keys(deskEls).forEach(id => setDeskState(id, 'idle')), 2500);
       break;
     }
@@ -15681,7 +18576,12 @@ window.addEventListener('message', e => {
         if (emo) {
           if (m.profileImageUri) {
             emo.classList.add('has-photo');
-            emo.innerHTML = '<img class="amd-photo" src="'+m.profileImageUri+'" alt="">';
+            if (m.profileImageMode === 'sheet4') {
+              emo.innerHTML = '<span class="amd-photo-sheet" style="background-image:url('+m.profileImageUri+')" aria-hidden="true"></span>';
+            } else {
+              const photoClass = m.profileImageMode === 'portrait' ? 'amd-photo pixel-portrait' : 'amd-photo';
+              emo.innerHTML = '<img class="'+photoClass+'" src="'+m.profileImageUri+'" alt="">';
+            }
           } else {
             emo.classList.remove('has-photo');
             const a = agentMap[m.agent];
@@ -15703,7 +18603,172 @@ window.addEventListener('message', e => {
       break;
     }
     case 'companyFolderChanged': {
-      logActivity('📁','ceo','회사 폴더 변경됨 → '+escapeHtml(m.dir||''));
+      logActivity('📁','ceo','개인 자산 Vault 변경됨 → '+escapeHtml(m.dir||''));
+      break;
+    }
+    case 'llmStatus': {
+      const llm = m.llm || {};
+      const display = renderLLMDisplay(llm);
+      const ok = !!m.ok;
+      const warning = !!m.warning;
+      if (cmdMeta) {
+        cmdMeta.textContent = display + (ok ? ' · ready' : (warning ? ' · check' : ' · offline'));
+        cmdMeta.title = (m.summary || renderLLMTitle(llm, '클릭해서 모델 선택')) + ' · 클릭해서 모델 선택';
+        cmdMeta.classList.toggle('empty', !ok);
+      }
+      if (!ok || warning) {
+        const icon = warning ? '⚠️' : '❌';
+        const hasOverrides = Number(llm.overrideCount || 0) > 0;
+        logActivity(icon,'ceo',escapeHtml(m.summary || 'LLM 상태 확인 필요')+renderErrorActions(false, hasOverrides));
+      }
+      break;
+    }
+    case 'diagnoseConnectionDone': {
+      const r = m.result || {};
+      const llm = m.llm || {};
+      const icon = r.ok ? '✅' : (r.warning ? '⚠️' : '❌');
+      showStatusIcon('ceo', icon, 2200);
+      if (cmdMeta && m.llm) {
+        cmdMeta.textContent = renderLLMDisplay(llm) + (r.ok ? ' · ready' : (r.warning ? ' · check' : ' · offline'));
+        cmdMeta.title = (r.summary || renderLLMTitle(llm, '클릭해서 모델 선택')) + ' · 클릭해서 모델 선택';
+        cmdMeta.classList.toggle('empty', !r.ok);
+      }
+      const hasOverrides = Number(llm.overrideCount || 0) > 0;
+      const actions = r.ok ? '' : renderErrorActions(!!lastOfficePrompt, hasOverrides);
+      logActivity(icon,'ceo',escapeHtml(r.summary || 'LLM diagnostics opened in a Markdown document')+actions);
+      break;
+    }
+    case 'autoDigestRebuilt': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      showStatusIcon('ceo', icon, 2200);
+      const scanned = Number(r.scanned || 0);
+      const indexed = Number(r.indexed || 0);
+      const failed = Number(r.failed || 0);
+      const digestDir = r.digestDir ? '<span class="llm-error-meta">'+escapeHtml(String(r.digestDir))+'</span>' : '';
+      logActivity(icon,'ceo','Auto Digest 재색인 완료: '+indexed+'/'+scanned+'개 반영, 실패 '+failed+'개'+digestDir);
+      break;
+    }
+    case 'personalVaultPipelineStatus': {
+      applyPersonalVaultPipelineStatus(m.status);
+      break;
+    }
+    case 'todayAutoCaptureReviewOpened': {
+      const r = m.result || {};
+      const status = m.status || {};
+      applyTodayAutoCaptureReviewStatus(status);
+      showStatusIcon('ceo', '📥', 2200);
+      const captures = Number(r.captures || status.captures || 0);
+      const reviewPath = r.reviewPath ? '<span class="llm-error-meta">'+escapeHtml(String(r.reviewPath))+'</span>' : '';
+      logActivity('📥','ceo','오늘 Auto Capture 리뷰 열림: '+captures+'개 자산'+reviewPath);
+      break;
+    }
+    case 'todayAutoCaptureReviewUpdated': {
+      const r = m.status || m.result || {};
+      applyTodayAutoCaptureReviewStatus(r);
+      showStatusIcon('ceo', '📥', 1800);
+      const captures = Number(r.captures || 0);
+      const reviewPath = (r.displayPath || r.reviewRelPath) ? '<span class="llm-error-meta">'+escapeHtml(String(r.displayPath || r.reviewRelPath))+'</span>' : '';
+      logActivity('📥','ceo','오늘 Auto Capture 리뷰 자동 갱신: '+captures+'개 자산'+reviewPath);
+      break;
+    }
+    case 'personalVaultPipelineRun': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      applyPersonalVaultPipelineStatus(m.status || { needed: ok ? 'no' : 'unknown', summary: ok ? 'Pipeline run finished.' : 'Pipeline run needs attention.', displayPath: r.statusPath || '' });
+      showStatusIcon('ceo', icon, 2600);
+      const digest = r.digest || {};
+      const promotion = r.promotion || {};
+      const drafts = r.drafts || {};
+      const review = r.review || {};
+      const finalized = r.finalized || {};
+      const indexed = Number(digest.indexed || 0);
+      const candidates = Number(promotion.candidates || 0);
+      const createdDrafts = Number(drafts.created || 0);
+      const pending = Number(review.pending || 0);
+      const finalCreated = Number(finalized.created || 0);
+      const finalFailed = Number(finalized.failed || 0);
+      const statusPath = r.statusPath ? '<span class="llm-error-meta">'+escapeHtml(String(r.statusPath))+'</span>' : '';
+      logActivity(icon,'ceo','개인 Vault 파이프라인 완료: Digest '+indexed+'개, 후보 '+candidates+'개, 초안 새 '+createdDrafts+'개, 리뷰 대기 '+pending+'개, 확정 새 '+finalCreated+'개, 실패 '+finalFailed+'개'+statusPath);
+      break;
+    }
+    case 'knowledgeDraftsGenerated': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      showStatusIcon('ceo', icon, 2200);
+      const created = Number(r.created || 0);
+      const updated = Number(r.updated || 0);
+      const skipped = Number(r.skipped || 0);
+      const draftsDir = r.draftsDir ? '<span class="llm-error-meta">'+escapeHtml(String(r.draftsDir))+'</span>' : '';
+      logActivity(icon,'ceo','지식 초안 생성 완료: 새 '+created+'개, 갱신 '+updated+'개, 스킵 '+skipped+'개'+draftsDir);
+      break;
+    }
+    case 'knowledgeDraftReviewBuilt': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      showStatusIcon('ceo', icon, 2200);
+      const scanned = Number(r.scanned || 0);
+      const pending = Number(r.pending || 0);
+      const needsRevision = Number(r.needsRevision || 0);
+      const accepted = Number(r.accepted || 0);
+      const rejected = Number(r.rejected || 0);
+      const report = r.reportPath ? '<span class="llm-error-meta">'+escapeHtml(String(r.reportPath))+'</span>' : '';
+      logActivity(icon,'ceo','지식 초안 리뷰 큐 업데이트: '+pending+'/'+scanned+'개 대기, 수정 '+needsRevision+'개, 승인 '+accepted+'개, 제외 '+rejected+'개'+report);
+      break;
+    }
+    case 'acceptedKnowledgeDraftsFinalized': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      showStatusIcon('ceo', icon, 2200);
+      const accepted = Number(r.accepted || 0);
+      const created = Number(r.created || 0);
+      const skipped = Number(r.skipped || 0);
+      const failed = Number(r.failed || 0);
+      logActivity(icon,'ceo','승인 초안 확정화 완료: 승인 '+accepted+'개 중 새 '+created+'개, 스킵 '+skipped+'개, 실패 '+failed+'개');
+      break;
+    }
+    case 'knowledgePromotionReviewed': {
+      const r = m.result || {};
+      const ok = r.ok !== false;
+      const icon = ok ? '✅' : '⚠️';
+      showStatusIcon('ceo', icon, 2200);
+      const scanned = Number(r.scanned || 0);
+      const candidates = Number(r.candidates || 0);
+      const reportPath = r.reportPath ? '<span class="llm-error-meta">'+escapeHtml(String(r.reportPath))+'</span>' : '';
+      logActivity(icon,'ceo','지식 승격 후보 생성 완료: '+candidates+'개 후보 / '+scanned+'개 스캔'+reportPath);
+      break;
+    }
+    case 'modelPickDone': {
+      const llm = m.llm || {};
+      const display = renderLLMDisplay(llm);
+      if (cmdMeta) {
+        cmdMeta.textContent = display;
+        cmdMeta.title = renderLLMTitle(llm, '선택됨 · 클릭해서 모델 선택');
+        cmdMeta.classList.toggle('empty', !llm.model);
+      }
+      const hasOverrides = Number(llm.overrideCount || 0) > 0;
+      const retryActions = lastOfficePrompt ? renderErrorActions(true, hasOverrides) : renderErrorActions(false, hasOverrides);
+      const overrideNote = hasOverrides ? '<span class="llm-error-meta">에이전트별 모델 라우팅 '+Number(llm.overrideCount || 0)+'건이 기본 모델보다 우선 적용됩니다.</span>' : '';
+      logActivity('🎚','ceo',(m.autoSelected ? '모델 자동 선택: ' : '모델 변경: ')+'<strong>'+escapeHtml(display)+'</strong>'+overrideNote+retryActions);
+      if (lastOfficePrompt) cmdInput.placeholder = '모델 변경 완료. 재시도 버튼을 누르거나 새 명령을 입력하세요.';
+      break;
+    }
+    case 'agentModelRoutingCleared': {
+      const llm = m.llm || {};
+      const display = renderLLMDisplay(llm);
+      if (cmdMeta) {
+        cmdMeta.textContent = display;
+        cmdMeta.title = renderLLMTitle(llm, '라우팅 초기화됨 · 클릭해서 모델 선택');
+        cmdMeta.classList.toggle('empty', !llm.model);
+      }
+      const retryActions = lastOfficePrompt ? renderErrorActions(true, false) : '';
+      logActivity('🎚','ceo','에이전트별 모델 라우팅 초기화 완료: '+Number(m.count || 0)+'건 → 기본 모델 <strong>'+escapeHtml(display)+'</strong> 사용'+retryActions);
+      if (lastOfficePrompt) cmdInput.placeholder = '라우팅 초기화 완료. 재시도 버튼을 누르거나 새 명령을 입력하세요.';
       break;
     }
     case 'conversationsLoaded': {
@@ -15757,8 +18822,19 @@ window.addEventListener('message', e => {
       break;
     }
     case 'error': {
-      logActivity('⚠️','ceo','<strong>오류:</strong> '+escapeHtml(m.value||''));
+      const llmMeta = renderLLMErrorMeta(m.llm);
+      const actions = renderErrorActions(!!lastOfficePrompt, !!(m.llm && m.llm.overrideCount));
+      logActivity('⚠️','ceo','<strong>오류:</strong> '+escapeHtml(m.value||'')+llmMeta+actions);
+      if (m.llm && cmdMeta) {
+        cmdMeta.textContent = renderLLMDisplay(m.llm) + ' · failed';
+        cmdMeta.title = renderLLMTitle(m.llm, '실패 · 클릭해서 모델 선택');
+        cmdMeta.classList.add('empty');
+      }
+      if (m.agent) settleAgentAfterError(m.agent);
+      if (m.agent) finishAgentCollaboration(m.agent);
+      if (m.fatal) resetOfficeRunUI();
       setSending(false);
+      cmdInput.placeholder = '한 줄 명령을 내리세요. 팀이 바로 움직입니다.';
       break;
     }
   }
@@ -17497,17 +20573,22 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                     // else fall back to the bundled pixel sprite.
                                     const customName = AGENTS[id].profileImage;
                                     let portraitUri: vscode.Uri;
+                                    const portraitPath = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}_portrait.png`);
                                     if (customName) {
                                         const customPath = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', customName);
                                         try {
                                             if (fs.existsSync(customPath.fsPath)) {
                                                 portraitUri = customPath;
+                                            } else if (fs.existsSync(portraitPath.fsPath)) {
+                                                portraitUri = portraitPath;
                                             } else {
                                                 portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
                                             }
                                         } catch {
                                             portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
                                         }
+                                    } else if (fs.existsSync(portraitPath.fsPath)) {
+                                        portraitUri = portraitPath;
                                     } else {
                                         portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
                                     }
@@ -19473,7 +22554,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         const agentModel = getAgentModel(entry.agentId, '') || defaultModel || '';
         const specialistSysPrompt = `${buildSpecialistPrompt(entry.agentId)}` +
             `\n\n[방금 시스템이 가져온 실제 데이터 — 이게 분석 근거]\n${toolOut.slice(0, 8000)}` +
-            `\n\n${readAgentSharedContext(entry.agentId, { lean: true })}` +
+            `\n\n${readAgentSharedContext(entry.agentId, { lean: true, query: prompt })}` +
             `\n\n[전문가 자가 분석 지침 — 반드시 따를 것]\n` +
             `당신은 ${a.name} (${a.role}) 입니다. 위 [실제 데이터]를 보고 **그 분야 전문가로서** 깊이 있게 분석하세요.\n` +
             `1. **현재 상태 진단** — 데이터의 숫자·패턴이 의미하는 바 (단순 나열 X, 해석)\n` +
@@ -19512,7 +22593,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             post({ type: 'agentStart', agent: 'ceo', task: '종합 요약' });
             post({ type: 'response', value: `👔 CEO: 사장님께 올릴 종합 정리 중...` });
             const ceoModel = getAgentModel('ceo', '') || defaultModel || '';
-            const ceoSysPrompt = `${_personalizePrompt(CEO_REPORT_PROMPT)}\n${readAgentSharedContext('ceo', { lean: true })}`;
+            const ceoSysPrompt = `${_personalizePrompt(CEO_REPORT_PROMPT)}\n${readAgentSharedContext('ceo', { lean: true, query: prompt })}`;
             const ceoUserMsg = `[사장님 명령]\n${prompt}\n\n[${a.emoji} ${a.name} 전문가 분석]\n${specialistContent.slice(0, 6000)}\n\n위 ${a.name}의 분석을 사장님이 30초에 파악할 수 있게 종합 요약하세요. ${a.name}의 결론과 액션을 충실히 반영하되, 너무 길지 않게.\n\n⚠️ "분석 결과를 제공해주시면", "데이터가 들어오면" 같은 placeholder 절대 금지 — 위 분석은 이미 제공됐음.`;
             try {
                 ceoSummary = await this._callAgentLLM(ceoSysPrompt, ceoUserMsg, ceoModel, 'ceo', false);
@@ -19597,7 +22678,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 let triageRaw = '';
                 try {
                     triageRaw = await this._callAgentLLM(
-                        `${SECRETARY_TRIAGE_PROMPT}\n${readAgentSharedContext('secretary')}${readRecentConversations(800)}`,
+                        `${SECRETARY_TRIAGE_PROMPT}\n${readAgentSharedContext('secretary', { query: prompt })}${readRecentConversations(800)}`,
                         prompt,
                         modelName,
                         'secretary',
@@ -19640,7 +22721,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 let chatReply = '';
                 try {
                     chatReply = await this._callAgentLLM(
-                        `${_personalizePrompt(CEO_CHAT_PROMPT)}\n${readAgentSharedContext('ceo')}${readRecentConversations(800)}`,
+                        `${_personalizePrompt(CEO_CHAT_PROMPT)}\n${readAgentSharedContext('ceo', { query: prompt })}${readRecentConversations(800)}`,
                         prompt,
                         modelName,
                         'ceo',
@@ -19738,7 +22819,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 }
                 ceoStage = 'readAgentSharedContext';
                 let shared = '';
-                try { shared = readAgentSharedContext('ceo'); }
+                try { shared = readAgentSharedContext('ceo', { query: prompt }); }
                 catch (sc: any) {
                     /* 두뇌 RAG 등이 폭주해도 CEO 호출은 계속 — 컨텍스트 일부 누락한 채 진행. */
                     console.error('[Connect AI] readAgentSharedContext 실패, 빈 컨텍스트로 계속:', sc?.message || sc);
@@ -19845,7 +22926,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 /* v2.89.95 — 디버그 보강. 'Maximum call stack' 같은 런타임 에러는
                    원인 추적을 위해 스택 첫 줄도 함께 노출 (사용자 신고 시 정확한 위치 확인). */
                 const stackTop = e?.stack ? String(e.stack).split('\n').slice(0, 3).join(' | ').slice(0, 300) : '';
-                post({ type: 'error', value: `⚠️ CEO 호출 실패: ${e.message}${detail ? '\n원인: ' + detail : ''}${stackTop ? '\n[stack] ' + stackTop : ''}${hint}` });
+                post({ type: 'error', value: `⚠️ CEO 호출 실패: ${e.message}${detail ? '\n원인: ' + detail : ''}${stackTop ? '\n[stack] ' + stackTop : ''}${hint}`, llm: _extractLLMErrorInfo(e) });
                 return;
             }
             post({ type: 'agentEnd', agent: 'ceo' });
@@ -19947,14 +23028,16 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 }
             }
             const koreanAlias: Record<string, string> = {
-                '유튜브': 'youtube', '인스타': 'instagram', '인스타그램': 'instagram',
-                '디자이너': 'designer', '디자인': 'designer',
-                '개발자': 'developer', '개발': 'developer',
-                '비즈니스': 'business', '경영': 'business',
-                '비서': 'secretary', '비서관': 'secretary',
-                '편집자': 'editor', '편집': 'editor',
-                '작가': 'writer', '카피라이터': 'writer',
-                '리서처': 'researcher', '연구원': 'researcher', '리서치': 'researcher',
+                '유진': 'youtube', '레오': 'youtube', '유튜브': 'youtube',
+                '리아': 'instagram', '인스타': 'instagram', '인스타그램': 'instagram',
+                '이안': 'designer', '디자이너': 'designer', '디자인': 'designer',
+                '태오': 'developer', '코다리': 'developer', '개발자': 'developer', '개발': 'developer',
+                '도윤': 'business', '현빈': 'business', '비즈니스': 'business', '경영': 'business', '전략': 'business',
+                '나래': 'secretary', '영숙': 'secretary', '비서': 'secretary', '비서관': 'secretary', '운영': 'secretary',
+                '하루': 'editor', '루나': 'editor', '편집자': 'editor', '편집': 'editor',
+                '문채': 'writer', '작가': 'writer', '카피라이터': 'writer', '문서': 'writer',
+                '서아': 'researcher', '리서처': 'researcher', '연구원': 'researcher', '리서치': 'researcher',
+                '아카': 'archivist', '아카이브': 'archivist', '자산화': 'archivist', '저장': 'archivist', 'vault': 'archivist', 'Vault': 'archivist',
             };
             const originalTasks = [...plan.tasks];
             plan.tasks = plan.tasks
@@ -20097,7 +23180,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                    경로를 잊고 "_agents/developer/test/" 같은 추측 경로로 list_files
                    호출해 실패하던 사고 차단. */
                 const recentFilesCtx = this._buildRecentFilesContext(t.agent);
-                const sysPrompt = `${buildSpecialistPrompt(t.agent)}${this._getProjectMemory()}${buildAgentConfigStatus(t.agent)}${realtimeData}${readAgentSharedContext(t.agent, { lean: useLeanContext })}${peerCtx}${hallucinationGuard}${recentFilesCtx}`;
+                const sysPrompt = `${buildSpecialistPrompt(t.agent)}${this._getProjectMemory()}${buildAgentConfigStatus(t.agent)}${realtimeData}${readAgentSharedContext(t.agent, { lean: useLeanContext, query: `${prompt}\n${t.task}` })}${peerCtx}${hallucinationGuard}${recentFilesCtx}`;
                 const userMsg = `[CEO의 지시]\n${t.task}\n\n[원 사용자 명령 참고]\n${prompt}`;
 
                 let out = '';
@@ -20238,6 +23321,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                        볼 수 있게 함. 이전엔 LLM 실패 = 에러 메시지만 out에 들어가서
                        "데이터 로드 실패"로 잘못 보고됨 (실제로는 데이터가 있는데도). */
                     const errBlock = `⚠️ ${a.name} LLM 호출 실패: ${e.message}${detail ? '\n원인: ' + detail : ''}${hint}`;
+                    post({ type: 'error', value: errBlock, llm: _extractLLMErrorInfo(e), agent: t.agent });
                     if (realtimeData && realtimeData.trim()) {
                         out = `${errBlock}\n\n---\n\n## 📊 LLM 실패에도 시스템이 가져온 실데이터는 보존됨\n\n${realtimeData}\n\n_위 데이터를 기반으로 다음 에이전트가 분석을 이어가야 합니다. "데이터 로드 실패"로 잘못 보고하지 마세요._`;
                     } else {
@@ -20636,7 +23720,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 let ceoNarrative = '';
                 try {
                     ceoNarrative = await this._callAgentLLM(
-                        `${_personalizePrompt(CEO_REPORT_PROMPT)}\n${readAgentSharedContext('ceo', { lean: true })}`,
+                        `${_personalizePrompt(CEO_REPORT_PROMPT)}\n${readAgentSharedContext('ceo', { lean: true, query: prompt })}`,
                         reportInput,
                         modelName,
                         'ceo',
@@ -20731,6 +23815,24 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 post({ type: 'decisionsLearned', decisions: learnedDecisions });
             }
 
+            const autoAsset = saveAutoAssetCapture({
+                prompt,
+                finalReport,
+                planBrief: plan.brief,
+                tasks: plan.tasks,
+                learnedDecisions,
+                sessionDir,
+            });
+            if (autoAsset.saved && autoAsset.relPath) {
+                appendAgentMemory('ceo', `${prompt} → 자산 ${autoAsset.relPath}`);
+                post({ type: 'systemNote', value: `💾 자산 저장: ${autoAsset.relPath}` });
+                if (autoAsset.reviewRelPath) {
+                    post({ type: 'systemNote', value: `📥 오늘 리뷰 갱신: ${autoAsset.reviewRelPath}` });
+                    post({ type: 'todayAutoCaptureReviewUpdated', status: readTodayAutoCaptureReviewStatus() });
+                }
+                post({ type: 'personalVaultPipelineStatus', status: readPersonalVaultPipelineStatus() });
+            }
+
             // 6) 종합 카드
             post({
                 type: 'corporateReport',
@@ -20799,7 +23901,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             if (isAborted()) {
                 this._broadcastCorporate({ type: 'error', value: '🛑 사용자가 중단했어요.' });
             } else {
-                this._broadcastCorporate({ type: 'error', value: `⚠️ 1인 기업 모드 오류: ${error.message}` });
+                this._broadcastCorporate({ type: 'error', value: `⚠️ 1인 기업 모드 오류: ${error.message}`, llm: _extractLLMErrorInfo(error) });
             }
         } finally {
             this._abortController = undefined;
@@ -20849,6 +23951,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
              기존 first-token / idle timeout(line 16910)이 그대로 막아줌. */
         const runTarget = async (target: _LLMTarget): Promise<string> => {
             let result = '';
+            try {
             if (target.isLMStudio) {
                 const body: any = {
                     model: target.model,
@@ -20916,6 +24019,9 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                 });
             }
             return result;
+            } catch (err: any) {
+                throw _attachLLMTargetToError(err, target, agentId);
+            }
         };
 
         const primary = await _resolveLocalLLMTarget(ollamaBase, modelName || defaultModel, null);
@@ -21043,17 +24149,23 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
         /* 호출 후보: 한글 닉네임·영문 id·역할 키워드 → agentId 매핑.
            우선순위 높은 것부터 (코다리 같은 고유 닉네임이 일반어 "개발자"보다 강함). */
         const candidates: Array<{ patterns: RegExp[]; agentId: string; agentName: string }> = [
-            { patterns: [/코다리[야아!,~ ]/, /코다리야/, /@developer\b/, /@코다리\b/], agentId: 'developer', agentName: '코다리' },
-            { patterns: [/현빈[아야!,~ ]/, /현빈아/, /@business\b/, /@현빈\b/], agentId: 'business', agentName: '현빈' },
-            { patterns: [/루나[야아!,~ ]/, /루나야/, /@editor\b/, /@루나\b/], agentId: 'editor', agentName: '루나' },
-            { patterns: [/레오[야아!,~ ]/, /레오야/, /@youtube\b/, /@레오\b/], agentId: 'youtube', agentName: '레오' },
-            { patterns: [/영숙[아야!,~ ]/, /영숙아/, /@secretary\b/, /@영숙\b/], agentId: 'secretary', agentName: '영숙' },
+            { patterns: [/태오[야아!,~ ]/, /태오야/, /코다리[야아!,~ ]/, /코다리야/, /@developer\b/, /@태오\b/, /@코다리\b/], agentId: 'developer', agentName: '태오' },
+            { patterns: [/도윤[아야!,~ ]/, /도윤아/, /현빈[아야!,~ ]/, /현빈아/, /@business\b/, /@도윤\b/, /@현빈\b/], agentId: 'business', agentName: '도윤' },
+            { patterns: [/하루[야아!,~ ]/, /하루야/, /루나[야아!,~ ]/, /루나야/, /@editor\b/, /@하루\b/, /@루나\b/], agentId: 'editor', agentName: '하루' },
+            { patterns: [/유진[아야!,~ ]/, /유진아/, /레오[야아!,~ ]/, /레오야/, /@youtube\b/, /@유진\b/, /@레오\b/], agentId: 'youtube', agentName: '유진' },
+            { patterns: [/나래[야아!,~ ]/, /나래야/, /영숙[아야!,~ ]/, /영숙아/, /@secretary\b/, /@나래\b/, /@영숙\b/], agentId: 'secretary', agentName: '나래' },
+            { patterns: [/리아[야아!,~ ]/, /리아야/, /@instagram\b/, /@리아\b/], agentId: 'instagram', agentName: '리아' },
+            { patterns: [/이안[아야!,~ ]/, /이안아/, /@designer\b/, /@이안\b/], agentId: 'designer', agentName: '이안' },
+            { patterns: [/문채[야아!,~ ]/, /문채야/, /@writer\b/, /@문채\b/], agentId: 'writer', agentName: '문채' },
+            { patterns: [/서아[야아!,~ ]/, /서아야/, /@researcher\b/, /@서아\b/], agentId: 'researcher', agentName: '서아' },
+            { patterns: [/아카[야아!,~ ]/, /아카야/, /@archivist\b/, /@아카\b/], agentId: 'archivist', agentName: '아카' },
             /* 역할 호칭 — 단, 자연스러운 명령에서 잘못 매칭 안 되게 "야"·"!"·"," 같은 호격 표지 필요 */
             { patterns: [/개발자[야아!,]/, /@developer\b/], agentId: 'developer', agentName: '개발자' },
             { patterns: [/디자이너[야아!,]/, /@designer\b/], agentId: 'designer', agentName: '디자이너' },
             { patterns: [/작가[야아!,]/, /@writer\b/], agentId: 'writer', agentName: '작가' },
             { patterns: [/리서처[야아!,]/, /@researcher\b/], agentId: 'researcher', agentName: '리서처' },
             { patterns: [/인스타[야아!,]/, /@instagram\b/], agentId: 'instagram', agentName: '인스타' },
+            { patterns: [/자산화[야아!,]/, /아카이브[야아!,]/, /@archivist\b/], agentId: 'archivist', agentName: '아카' },
         ];
         for (const c of candidates) {
             for (const p of c.patterns) {

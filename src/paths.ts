@@ -58,12 +58,17 @@ export function _isBrainDirExplicitlySet(): boolean {
     } catch { return false; }
 }
 
-/** 회사 폴더 위치. settings.json `companyDir` 우선 (별도 위치). 없으면 `<brain>/_company/`. */
+/** Runtime asset root. personalVaultPath wins; companyDir is legacy fallback; default stays <brain>/_company/. */
 export function getCompanyDir(): string {
     try {
-        const raw = vscode.workspace.getConfiguration('connectAiLab').get<string>('companyDir', '') || '';
-        const resolved = _resolvePathInput(raw);
-        if (resolved) return resolved;
-    } catch { /* config unavailable in some hot paths — fall through */ }
+        const cfg = vscode.workspace.getConfiguration('connectAiLab');
+        const personalRaw = cfg.get<string>('personalVaultPath', '') || '';
+        const personalResolved = _resolvePathInput(personalRaw);
+        if (personalResolved) return personalResolved;
+
+        const legacyRaw = cfg.get<string>('companyDir', '') || '';
+        const legacyResolved = _resolvePathInput(legacyRaw);
+        if (legacyResolved) return legacyResolved;
+    } catch { /* config unavailable in some hot paths -> fall through */ }
     return path.join(_getBrainDir(), COMPANY_SUBDIR);
 }

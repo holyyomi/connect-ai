@@ -2,16 +2,29 @@
 
 ## Project Context
 
-This repository is a VS Code/Cursor extension project for Connect AI.
+This repository is a VS Code/Cursor extension project for Connect AI with an active local web app called YOMI AI personal office.
 
 - Main extension entry: `src/extension.ts`
 - Build output: `out/extension.js`
 - Manifest: `package.json`
 - Core source folder: `src/`
 - Runtime assets and webviews: `assets/`
+- Personal office runtime: `web/personal-office/`
+- Personal office server: `web/personal-office/server.mjs`
+- Personal office UI: `web/personal-office/index.html`, `web/personal-office/app.js`, `web/personal-office/styles.css`
+- Staff/tool metadata: `web/personal-office/skills.json`, `web/personal-office/connections.json`
 - Current branch convention: `main` tracking `origin/main`
 
 `src/extension.ts` is large and carries most extension behavior. Treat edits to it as high-risk and keep changes narrowly scoped.
+
+The current personal office direction is Codex-first:
+
+- Codex CLI is the default chat/routing/task engine.
+- Claude Code CLI is manual-only via `/cc` or `/claude`.
+- Ollama/LM Studio are legacy fallback concepts, not the active default path.
+- Brave Search is excluded unless explicitly restored.
+- Exa/Firecrawl/Tavily are the current research API candidates.
+- Vault markdown output is the primary assetization path.
 
 ## Standing Rules
 
@@ -31,6 +44,30 @@ This repository is a VS Code/Cursor extension project for Connect AI.
 - After file edits, run only the verification commands authorized by the user.
 - If the user asks to stop after a specific check, stop after that check.
 - Report any command that could not be run and why.
+
+## Personal Office Verification
+
+Useful checks after personal office edits:
+
+```powershell
+node --check web\personal-office\server.mjs
+node --check web\personal-office\app.js
+```
+
+Browser verification can use Playwright when authorized:
+
+```powershell
+npx playwright --version
+```
+
+Check:
+
+- five tabs load and switch correctly
+- console is clean
+- office status shows only current work
+- staff cards show role-appropriate skills
+- Vault recent documents expand by title
+- settings page is readable and does not expose secrets
 
 ## Handoff Rules
 

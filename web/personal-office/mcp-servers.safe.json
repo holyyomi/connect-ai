@@ -1,0 +1,130 @@
+{
+  "mode": "safe_metadata_only",
+  "notes": [
+    "API 키 없이 바로 확인된 MCP: context7, playwright",
+    "uvx가 설치되어 있지 않아 fetch/git MCP는 실행 확인 전 상태입니다.",
+    "Playwright MCP는 브라우저 제어 권한이 있으므로 기본 비활성으로 유지합니다.",
+    "Git MCP는 status/diff/log만 허용하고 쓰기 작업은 차단합니다."
+  ],
+  "servers": {
+    "context7": {
+      "enabledByDefault": true,
+      "verified": true,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ],
+      "env": {},
+      "allowedTools": [
+        "resolve-library-id",
+        "get-library-docs"
+      ]
+    },
+    "playwright": {
+      "enabledByDefault": false,
+      "verified": true,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--isolated"
+      ],
+      "env": {},
+      "allowedTools": [
+        "browser_snapshot",
+        "browser_screenshot"
+      ],
+      "requiresConfirmation": true
+    },
+    "exa": {
+      "enabledByDefault": false,
+      "verified": false,
+      "blockedReason": "EXA_API_KEY is required.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "exa-mcp-server"
+      ],
+      "env": {
+        "EXA_API_KEY": "${EXA_API_KEY}"
+      },
+      "allowedTools": [
+        "semantic_search"
+      ]
+    },
+    "firecrawl": {
+      "enabledByDefault": false,
+      "verified": false,
+      "blockedReason": "FIRECRAWL_API_KEY is required.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "firecrawl-mcp"
+      ],
+      "env": {
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+      },
+      "allowedTools": [
+        "scrape",
+        "extract"
+      ]
+    },
+    "tavily": {
+      "enabledByDefault": false,
+      "verified": false,
+      "blockedReason": "TAVILY_API_KEY is required.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "tavily-mcp"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      },
+      "allowedTools": [
+        "search"
+      ]
+    },
+    "fetch": {
+      "enabledByDefault": false,
+      "verified": false,
+      "blockedReason": "uvx is not installed on this machine.",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "env": {},
+      "allowedTools": [
+        "fetch_url",
+        "extract_text"
+      ]
+    },
+    "git": {
+      "enabledByDefault": false,
+      "verified": false,
+      "blockedReason": "uvx is not installed on this machine.",
+      "command": "uvx",
+      "args": [
+        "mcp-server-git",
+        "--repository",
+        "."
+      ],
+      "env": {},
+      "allowedTools": [
+        "status",
+        "diff",
+        "log"
+      ],
+      "blockedTools": [
+        "add",
+        "commit",
+        "push",
+        "reset",
+        "checkout",
+        "rebase",
+        "clean"
+      ]
+    }
+  }
+}

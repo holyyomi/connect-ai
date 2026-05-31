@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YOMI AI 개인 사무실</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><strong>YOMI AI</strong><span>개인 AI 자산화 사무실</span></div>
+      <nav class="tabs" aria-label="앱 메뉴">
+        <button class="app-tab active" data-page="office" type="button" aria-current="page" aria-controls="page-office"><span>사무실</span><small>메인 화면</small></button>
+        <button class="app-tab" data-page="chat" type="button" aria-controls="page-chat"><span>대화</span><small>요미와 대화</small></button>
+        <button class="app-tab" data-page="agents" type="button" aria-controls="page-agents"><span>직원</span><small>역할/도구</small></button>
+        <button class="app-tab" data-page="vault" type="button" aria-controls="page-vault"><span>저장소</span><small>옵시디언</small></button>
+        <button class="app-tab" data-page="settings" type="button" aria-controls="page-settings"><span>설정</span><small>연결 상태</small></button>
+      </nav>
+      <div class="side-status"><span id="serverStatus">서버 확인 중</span><span id="vaultStatus">Vault 확인 중</span></div>
+    </aside>
+
+    <section class="main-panel">
+      <section id="page-chat" class="page" data-page="chat" hidden aria-hidden="true">
+        <div class="page-title-row">
+          <div><h1>대화</h1><p>Codex CLI와 대화하고 업무 지시를 바로 넘기는 집중 화면입니다.</p></div>
+          <span id="chatStatus" class="mini-pill">대화 준비 완료</span>
+        </div>
+        <div class="prompt-starters" aria-label="예시 프롬프트">
+          <button type="button" data-example-prompt="내 저장소에서 최근 문서를 요약하고 오늘 할 일을 3개로 정리해줘">저장소 요약</button>
+          <button type="button" data-example-prompt="이 아이디어를 유튜브 쇼츠와 인스타 릴스 콘텐츠로 바꿔줘">콘텐츠 변환</button>
+          <button type="button" data-example-prompt="오늘 처리해야 할 업무를 직원별로 나눠서 실행 계획을 만들어줘">업무 분배</button>
+        </div>
+        <div class="chat-workspace">
+          <section class="chat-browser">
+            <div class="browser-main">
+              <div class="card-head"><strong>작업 결과</strong><span id="chatResultMode">대기</span></div>
+              <pre id="chatResultPreview">하단 터미널에 입력하면 Codex CLI가 의도를 판단해 대화, 워크플로우, 저장소 검색, 코드 작업으로 처리합니다. Claude는 /cc 또는 /claude로 직접 호출할 때만 사용합니다.</pre>
+            </div>
+          </section>
+          <section class="chat-terminal">
+            <section class="chat-thread" id="chatThread">
+              <div class="chat-message assistant"><div class="chat-bubble-head"><strong>YOMI AI</strong><small>Codex CLI</small></div><p>이제 모드 선택 없이 입력하면 Codex CLI가 의도를 판단해 대화, 직원 워크플로우, 저장소 검색, 코드 작업으로 라우팅합니다. Claude는 /cc 또는 /claude로 직접 부를 때만 실행합니다.</p></div>
+            </section>
+            <form id="chatForm" class="chat-composer">
+              <textarea id="chatInput" rows="1" spellcheck="false" placeholder="무엇이든 입력하세요. 기본은 Codex CLI입니다. Claude는 /cc 또는 /claude로 직접 호출하세요."></textarea>
+              <button id="chatSendBtn" type="submit">보내기</button>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="page-office" class="page active office-page" data-page="office" aria-hidden="false">
+        <div class="page-title-row">
+          <div><h1>사무실</h1><p>직원들이 움직이는 업무 현황과 핵심 상황판을 한 화면에서 봅니다.</p></div>
+          <button class="mini-action" data-jump="chat" type="button">대화 열기</button>
+        </div>
+        <section class="onboarding-card" aria-labelledby="onboardingTitle">
+          <div>
+            <strong id="onboardingTitle"></strong>
+            <span>예시를 누르면 대화 탭에 바로 입력됩니다. 실행 전 문구를 바꿔도 됩니다.</span>
+          </div>
+          <div class="prompt-starters compact" aria-label="시작 예시">
+            <button type="button" data-example-prompt="내 저장소에서 최근 문서를 요약하고 오늘 할 일을 3개로 정리해줘">저장소 요약</button>
+            <button type="button" data-example-prompt="요미가 목표를 나누고 직원들에게 역할별로 일을 맡겨줘">직원 인계</button>
+            <button type="button" data-example-prompt="서아가 자료를 찾고 문채가 초안으로 정리해줘">리서치 초안</button>
+          </div>
+        </section>
+        <section class="office-main office-hero">
+          <section class="world-panel">
+            <div class="stage-shell">
+              <div class="stage-inner">
+                <img src="/assets/dev-office-map.png" alt="" class="stage-map" />
+                <svg id="stageEffects" class="stage-effects" viewBox="0 0 2912 1440" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <filter id="routeGlow" x="-20%" y="-20%" width="140%" height="140%">
+                      <feGaussianBlur stdDeviation="6" result="blur" />
+                      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                    </filter>
+                  </defs>
+                  <path id="route-ceo-path" data-agent-route="ceo" class="flow-route" d="M1456 648 C1456 640 1456 632 1456 624" />
+                  <path id="route-secretary-path" data-agent-route="secretary" class="flow-route" d="M1456 648 C1358 652 1248 690 1135 734" />
+                  <path id="route-researcher-path" data-agent-route="researcher" class="flow-route" d="M1456 648 C1190 540 910 448 640 446" />
+                  <path id="route-youtube-path" data-agent-route="youtube" class="flow-route" d="M1456 648 C1424 535 1392 410 1368 317" />
+                  <path id="route-instagram-path" data-agent-route="instagram" class="flow-route" d="M1456 648 C1528 545 1602 420 1659 331" />
+                  <path id="route-designer-path" data-agent-route="designer" class="flow-route" d="M1456 648 C1690 570 1942 458 2155 389" />
+                  <path id="route-developer-path" data-agent-route="developer" class="flow-route" d="M1456 648 C1400 800 1360 960 1339 1080" />
+                  <path id="route-business-path" data-agent-route="business" class="flow-route" d="M1456 648 C1745 628 2078 620 2330 677" />
+                  <path id="route-editor-path" data-agent-route="editor" class="flow-route" d="M1456 648 C1570 790 1668 940 1747 1066" />
+                  <path id="route-writer-path" data-agent-route="writer" class="flow-route" d="M1456 648 C1130 752 860 900 640 1022" />
+                  <path id="route-archivist-path" data-agent-route="archivist" class="flow-route" d="M1456 648 C1705 820 1938 1012 2126 1138" />
+                  <g class="core-aura"><circle cx="1456" cy="648" r="82" /><circle cx="1456" cy="648" r="124" /></g>
+                  <circle data-agent-route="ceo" class="flow-pulse" r="16"><animateMotion dur="2.1s" repeatCount="indefinite"><mpath href="#route-ceo-path" /></animateMotion></circle>
+                  <circle data-agent-route="secretary" class="flow-pulse" r="16"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#route-secretary-path" /></animateMotion></circle>
+                  <circle data-agent-route="researcher" class="flow-pulse" r="16"><animateMotion dur="2.7s" repeatCount="indefinite"><mpath href="#route-researcher-path" /></animateMotion></circle>
+                  <circle data-agent-route="youtube" class="flow-pulse" r="16"><animateMotion dur="2.3s" repeatCount="indefinite"><mpath href="#route-youtube-path" /></animateMotion></circle>
+                  <circle data-agent-route="instagram" class="flow-pulse" r="16"><animateMotion dur="2.35s" repeatCount="indefinite"><mpath href="#route-instagram-path" /></animateMotion></circle>
+                  <circle data-agent-route="designer" class="flow-pulse" r="16"><animateMotion dur="2.55s" repeatCount="indefinite"><mpath href="#route-designer-path" /></animateMotion></circle>
+                  <circle data-agent-route="developer" class="flow-pulse" r="16"><animateMotion dur="2.45s" repeatCount="indefinite"><mpath href="#route-developer-path" /></animateMotion></circle>
+                  <circle data-agent-route="business" class="flow-pulse" r="16"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#route-business-path" /></animateMotion></circle>
+                  <circle data-agent-route="editor" class="flow-pulse" r="16"><animateMotion dur="2.6s" repeatCount="indefinite"><mpath href="#route-editor-path" /></animateMotion></circle>
+                  <circle data-agent-route="writer" class="flow-pulse" r="16"><animateMotion dur="2.65s" repeatCount="indefinite"><mpath href="#route-writer-path" /></animateMotion></circle>
+                  <circle data-agent-route="archivist" class="flow-pulse" r="16"><animateMotion dur="2.75s" repeatCount="indefinite"><mpath href="#route-archivist-path" /></animateMotion></circle>
+                </svg>
+                <div id="collabLayer" class="collab-layer" aria-hidden="true"></div>
+                <div id="agentLayer" class="agent-layer"></div>
+                <div id="phaseBadge" class="phase-badge">대기 중</div>
+              </div>
+            </div>
+          </section>
+          <aside class="work-rail">
+            <section class="office-status-card">
+              <div class="card-head"><strong>지금 진행 상황</strong><span id="officeCurrentStatus">대기 중</span></div>
+              <p id="officeCurrentTask">대화 탭에서 업무를 지시하면 이곳에 진행 상태가 표시됩니다.</p>
+              <button id="resetBtn" class="mini-action" type="button">화면 초기화</button>
+            </section>
+            <div class="pipeline" id="pipeline"></div>
+            <section class="office-status-card">
+              <div class="card-head"><strong>직원 상태</strong><span>활성 / 대기</span></div>
+              <div class="office-agent-status" id="officeAgentStatus"></div>
+            </section>
+            <section class="office-status-card">
+              <div class="card-head"><strong>체인 로그</strong><span id="officeChainStatus">대기</span></div>
+              <div class="activity-log" id="activityLog"></div>
+            </section>
+          </aside>
+        </section>
+        <section class="office-dashboard-brief">
+          <div class="dashboard-focus-grid office-summary-grid">
+            <article class="focus-card primary"><span>지금 진행 중인 작업</span><strong id="dashboardFocusWork">대기 중</strong><small id="dashboardFocusMeta">실행 중인 직원 체인이 없습니다.</small></article>
+            <article class="focus-card"><span>오늘 처리 / 검토</span><div class="focus-stat-row"><strong id="dashboardTodayCount">0건</strong><b id="dashboardReviewRate">검토 대기</b></div><small id="dashboardTodayMeta">오늘 저장된 YOMI 보고서 기준</small></article>
+            <article class="focus-card attention"><span>주의가 필요한 것</span><strong id="dashboardAttention">확인 중</strong><small id="dashboardAttentionMeta">도구 키와 최근 오류를 확인합니다.</small></article>
+          </div>
+          <section class="work-card office-stage-summary">
+            <div class="card-head"><strong>진행 단계</strong><span id="officeSummaryStage">대기</span></div>
+            <div class="mini-pipeline office-mini-pipeline"><span>점화</span><span>근거</span><span>제작</span><span>튜닝</span><span>저장</span></div>
+          </section>
+        </section>
+        <section class="report-panel"><div class="card-head"><strong>진행 세부</strong><span id="saveNotice">대화 탭에서 실행 대기</span></div><pre id="reportText">사무실 탭은 진행 시각화 전용입니다. 업무 지시는 대화 탭에서 입력하세요.</pre></section>
+      </section>
+
+      <section id="page-agents" class="page" data-page="agents" hidden aria-hidden="true">
+        <div class="page-title-row"><div><h1>직원</h1><p>각 직원 카드에서 보유 스킬/도구를 바로 확인합니다.</p></div></div>
+        <div class="agent-skill-status" id="agentSkillStatus">스킬 관리 준비 중</div>
+        <div class="agent-list" id="agentList"></div>
+      </section>
+
+      <section id="page-vault" class="page" data-page="vault" hidden aria-hidden="true">
+        <div class="page-title-row"><div><h1>저장소</h1><p>옵시디언 Vault의 최근 문서, 분류, 연결 관계를 확인합니다.</p></div><button id="refreshReportsBtn" class="mini-action" type="button">새로고침</button></div>
+        <section class="work-card vault-graph-card">
+          <div class="card-head"><strong>옵시디언 그래프</strong><span id="vaultGraphMeta">연결 확인 중</span></div>
+          <div class="vault-graph-shell"><svg id="vaultGraph" viewBox="0 0 720 360" role="img" aria-label="옵시디언 문서 연결 그래프"></svg></div>
+        </section>
+        <section class="work-card vault-docs-card">
+          <div class="card-head"><strong>최근 저장 문서</strong><span id="reportCount">0</span></div>
+          <div id="recentReports" class="recent-reports"></div>
+        </section>
+        <div class="vault-page-grid vault-meta-grid">
+          <section class="work-card">
+            <div class="card-head"><strong>Vault 통계</strong><span id="vaultPath">경로 확인 중</span></div>
+            <div class="vault-stats" id="vaultStats"></div>
+          </section>
+          <section class="work-card"><div class="card-head"><strong>카테고리</strong><span>폴더 기준</span></div><div class="vault-chip-list" id="vaultCategoryCounts"></div></section>
+          <section class="work-card"><div class="card-head"><strong>태그</strong><span>마크다운 기준</span></div><div class="vault-chip-list" id="vaultTagCounts"></div></section>
+        </div>
+      </section>
+
+      <section id="page-settings" class="page" data-page="settings" hidden aria-hidden="true">
+        <div class="page-title-row"><div><h1>설정</h1><p>API, MCP, Codex, Claude, 저장소 연결을 한곳에서 관리합니다.</p></div></div>
+        <div class="settings-grid">
+          <article class="setting-card"><span>메인 엔진</span><strong id="aiStatus">확인 중</strong><small>Codex CLI 중심</small></article>
+          <article class="setting-card"><span>Codex 실행</span><strong id="codexStatus">확인 중</strong><small>대화/라우팅/업무 실행</small></article>
+          <article class="setting-card"><span>Claude 수동호출</span><strong id="claudeStatus">확인 중</strong><small>/cc, /claude 전용</small></article>
+          <article class="setting-card wide"><span>Vault</span><strong id="settingsVaultPath">경로 확인 중</strong><small>마크다운 저장 위치</small></article>
+        </div>
+        <section id="braveKeyGuide" class="brave-key-guide" hidden aria-hidden="true">
+          <div><strong></strong><span id="braveKeyStatus"></span></div>
+          <code></code>
+        </section>
+        <section class="work-card connection-hub-card">
+          <div class="card-head"><strong>연결 관리 허브</strong><span id="connectionStatus">비밀값 저장 안 함</span></div>
+          <div class="connection-layout">
+            <div>
+              <div class="connection-list" id="connectionList"></div>
+            </div>
+            <form id="connectionForm" class="connection-form">
+              <input id="connectionId" type="hidden" />
+              <label>이름<input id="connectionName" type="text" placeholder="예: Exa Search" autocomplete="off" /></label>
+              <label>종류<select id="connectionKind"><option value="api">API</option><option value="mcp">MCP</option><option value="model">모델</option><option value="storage">저장소</option><option value="automation">자동화</option></select></label>
+              <label>제공자<input id="connectionProvider" type="text" placeholder="brave, tavily, filesystem" autocomplete="off" /></label>
+              <label>환경변수 이름<input id="connectionEnvKeys" type="text" placeholder="EXA_API_KEY, TAVILY_API_KEY" autocomplete="off" /></label>
+              <label>MCP 서버<input id="connectionMcpServer" type="text" placeholder="예: brave-search" autocomplete="off" /></label>
+              <label>메모<textarea id="connectionNotes" rows="3" placeholder="실제 API 키 값은 저장하지 않습니다. 각자 .env 또는 환경변수에 입력하세요."></textarea></label>
+              <label class="connection-check"><input id="connectionEnabled" type="checkbox" checked /> 활성화</label>
+              <div class="connection-actions"><button type="submit">저장</button><button id="connectionResetBtn" type="button">새 연결</button></div>
+            </form>
+          </div>
+          <div class="connection-candidates" id="connectionCandidates"></div>
+          <section class="harness-scope-card" aria-labelledby="harnessScopeTitle">
+            <div class="card-head"><strong id="harnessScopeTitle">직원 하네스 권한 스코프</strong><span>안전모드</span></div>
+            <div class="harness-scope-list" id="harnessScopeList"></div>
+          </section>
+        </section>
+        <section class="work-card tool-settings-card">
+          <div class="card-head"><strong>스킬/도구 연결 상태</strong><span id="skillStatusSummary">확인 중</span></div>
+          <div class="tool-status-list" id="settingsToolStatus"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

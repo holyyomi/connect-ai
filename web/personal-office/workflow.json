@@ -1,0 +1,32 @@
+{
+  "defaultWorkflow": "content_handoff",
+  "workflows": {
+    "content_handoff": {
+      "name": "리서치-초안-저장",
+      "description": "서아가 근거를 모으고, 문채가 초안을 만들고, 아카가 저장 후보를 정리합니다.",
+      "evaluation": {
+        "enabled": true,
+        "agent": "secretary",
+        "afterStep": "draft",
+        "maxRetries": 1,
+        "criteria": {
+          "minLength": 220,
+          "requiredSections": ["입력 해석", "작업 결과", "다음 단계 인계"],
+          "requireEvidence": false
+        }
+      },
+      "steps": [
+        { "id": "research", "agent": "researcher", "label": "서아 리서치" },
+        { "id": "draft", "agent": "writer", "label": "문채 초안 작성" },
+        { "id": "archive", "agent": "archivist", "label": "아카 저장 후보 정리" }
+      ]
+    },
+    "dev_handoff": {
+      "name": "태오 파일 점검",
+      "description": "태오가 프로젝트 파일을 읽고 개발 관점 점검 결과를 정리합니다.",
+      "steps": [
+        { "id": "file_review", "agent": "developer", "label": "태오 파일 읽기" }
+      ]
+    }
+  }
+}

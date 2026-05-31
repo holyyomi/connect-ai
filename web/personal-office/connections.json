@@ -1,0 +1,559 @@
+{
+  "connections": [
+    {
+      "id": "codex_cli",
+      "name": "Codex CLI",
+      "kind": "model",
+      "provider": "codex",
+      "enabled": true,
+      "envKeys": [
+        "YOMI_AI_CODEX_COMMAND"
+      ],
+      "mcpServer": "",
+      "install": "",
+      "safeMode": false,
+      "allowedActions": [],
+      "blockedActions": [],
+      "scope": null,
+      "notes": "기존 codex-cli 인증 상태를 사용합니다."
+    },
+    {
+      "id": "claude_cli",
+      "name": "Claude Code CLI",
+      "kind": "model",
+      "provider": "claude-code",
+      "enabled": true,
+      "envKeys": [
+        "YOMI_AI_CLAUDE_COMMAND",
+        "YOMI_AI_CLAUDE_MODEL"
+      ],
+      "mcpServer": "",
+      "install": "",
+      "safeMode": true,
+      "allowedActions": [
+        "manual_chat",
+        "plan"
+      ],
+      "blockedActions": [
+        "auto_route",
+        "file_write",
+        "git_write",
+        "external_send"
+      ],
+      "scope": null,
+      "notes": "/cc 또는 /claude로 명시 호출할 때만 사용합니다."
+    },
+    {
+      "id": "obsidian_vault",
+      "name": "Obsidian Vault",
+      "kind": "storage",
+      "provider": "filesystem",
+      "enabled": true,
+      "envKeys": [
+        "YOMI_AI_PERSONAL_VAULT"
+      ],
+      "mcpServer": "",
+      "install": "",
+      "safeMode": false,
+      "allowedActions": [],
+      "blockedActions": [],
+      "scope": null,
+      "notes": "마크다운 저장소 경로입니다."
+    },
+    {
+      "id": "context7_mcp",
+      "name": "Context7 MCP",
+      "kind": "mcp",
+      "provider": "context7",
+      "enabled": true,
+      "envKeys": [],
+      "mcpServer": "context7",
+      "install": "npx -y @upstash/context7-mcp@latest",
+      "safeMode": true,
+      "allowedActions": [
+        "resolve-library-id",
+        "get-library-docs"
+      ],
+      "blockedActions": [
+        "write",
+        "external_send"
+      ],
+      "scope": {
+        "purpose": "library-docs",
+        "requiresApiKey": false
+      },
+      "notes": "태오용 최신 라이브러리 문서 조회입니다. API 키 없이 제한적으로 사용합니다."
+    },
+    {
+      "id": "playwright_mcp",
+      "name": "Playwright MCP",
+      "kind": "mcp",
+      "provider": "playwright",
+      "enabled": false,
+      "envKeys": [],
+      "mcpServer": "playwright",
+      "install": "npx -y @playwright/mcp@latest --isolated",
+      "safeMode": true,
+      "allowedActions": [
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_screenshot"
+      ],
+      "blockedActions": [
+        "external_send",
+        "file_write"
+      ],
+      "scope": {
+        "browser": "isolated",
+        "requiresConfirmation": true
+      },
+      "notes": "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 기본 비활성입니다."
+    },
+    {
+      "id": "exa_mcp",
+      "name": "Exa MCP",
+      "kind": "api",
+      "provider": "exa",
+      "enabled": true,
+      "envKeys": [
+        "EXA_API_KEY"
+      ],
+      "mcpServer": "exa",
+      "install": "npx -y exa-mcp-server",
+      "safeMode": true,
+      "allowedActions": [
+        "semantic_search"
+      ],
+      "blockedActions": [
+        "write",
+        "external_send"
+      ],
+      "scope": {
+        "purpose": "semantic-search",
+        "requiresApiKey": true
+      },
+      "notes": "시맨틱 검색 후보입니다. EXA_API_KEY를 .env에 넣으면 정상 연결됩니다."
+    },
+    {
+      "id": "firecrawl_mcp",
+      "name": "Firecrawl MCP",
+      "kind": "api",
+      "provider": "firecrawl",
+      "enabled": true,
+      "envKeys": [
+        "FIRECRAWL_API_KEY"
+      ],
+      "mcpServer": "firecrawl",
+      "install": "npx -y firecrawl-mcp",
+      "safeMode": true,
+      "allowedActions": [
+        "scrape",
+        "extract"
+      ],
+      "blockedActions": [
+        "write",
+        "external_send"
+      ],
+      "scope": {
+        "purpose": "web-scrape-extract",
+        "requiresApiKey": true
+      },
+      "notes": "웹 본문 추출/크롤링 후보입니다. FIRECRAWL_API_KEY를 .env에 넣으면 정상 연결됩니다."
+    },
+    {
+      "id": "fetch_mcp",
+      "name": "Fetch MCP",
+      "kind": "mcp",
+      "provider": "fetch",
+      "enabled": false,
+      "envKeys": [],
+      "mcpServer": "fetch",
+      "install": "uvx mcp-server-fetch",
+      "safeMode": true,
+      "allowedActions": [
+        "fetch_url",
+        "extract_text"
+      ],
+      "blockedActions": [
+        "post",
+        "upload",
+        "submit_form"
+      ],
+      "scope": {
+        "network": "read-only-http",
+        "requiresUserUrl": true
+      },
+      "notes": "웹페이지 본문 읽기 후보입니다. 안전모드에서는 실제 MCP 설치/실행 없이 메타데이터만 등록합니다."
+    },
+    {
+      "id": "git_mcp",
+      "name": "Git MCP",
+      "kind": "mcp",
+      "provider": "git",
+      "enabled": false,
+      "envKeys": [],
+      "mcpServer": "git",
+      "install": "uvx mcp-server-git",
+      "safeMode": true,
+      "allowedActions": [
+        "status",
+        "diff",
+        "log"
+      ],
+      "blockedActions": [
+        "add",
+        "commit",
+        "push",
+        "reset",
+        "checkout",
+        "rebase",
+        "clean"
+      ],
+      "scope": {
+        "repository": "current-workspace",
+        "write": false
+      },
+      "notes": "태오용 Git 읽기 전용 후보입니다. Git 쓰기는 사용자 확인 없이는 허용하지 않습니다."
+    },
+    {
+      "id": "tavily_search",
+      "name": "Tavily Search",
+      "kind": "api",
+      "provider": "tavily",
+      "enabled": true,
+      "envKeys": [
+        "TAVILY_API_KEY"
+      ],
+      "mcpServer": "tavily",
+      "install": "npx -y tavily-mcp",
+      "safeMode": true,
+      "allowedActions": [
+        "search"
+      ],
+      "blockedActions": [
+        "write",
+        "external_send"
+      ],
+      "scope": {
+        "purpose": "optional-search-fallback",
+        "required": false
+      },
+      "notes": "검색 백업 후보입니다. TAVILY_API_KEY를 .env에 넣으면 정상 연결됩니다."
+    },
+    {
+      "id": "filesystem",
+      "name": "파일시스템",
+      "kind": "mcp",
+      "provider": "internal",
+      "enabled": true,
+      "envKeys": [],
+      "mcpServer": "",
+      "install": "",
+      "safeMode": false,
+      "allowedActions": [
+        "read"
+      ],
+      "blockedActions": [
+        "delete",
+        "move",
+        "overwrite"
+      ],
+      "scope": {
+        "workspace": "read-mostly",
+        "vaultOutput": "50_Outputs only when confirmed policy allows"
+      },
+      "notes": "프로젝트 파일 읽기 도구입니다."
+    }
+  ],
+  "candidates": [
+    {
+      "name": "Tavily 검색 대안",
+      "kind": "api",
+      "provider": "tavily",
+      "envKeys": [
+        "TAVILY_API_KEY"
+      ],
+      "mcpServer": "tavily",
+      "notes": "선택 대안이며 필수 아님."
+    },
+    {
+      "name": "Context7 MCP",
+      "kind": "mcp",
+      "provider": "context7",
+      "envKeys": [],
+      "mcpServer": "context7",
+      "notes": "키 없이 라이브러리 문서 조회."
+    },
+    {
+      "name": "Playwright MCP",
+      "kind": "mcp",
+      "provider": "playwright",
+      "envKeys": [],
+      "mcpServer": "playwright",
+      "notes": "브라우저 검증 후보. 기본 비활성."
+    },
+    {
+      "name": "Exa 검색",
+      "kind": "api",
+      "provider": "exa",
+      "envKeys": [
+        "EXA_API_KEY"
+      ],
+      "mcpServer": "exa",
+      "notes": "무료 티어라도 키 필요. 시맨틱 검색 후보."
+    },
+    {
+      "name": "Firecrawl 본문추출",
+      "kind": "api",
+      "provider": "firecrawl",
+      "envKeys": [
+        "FIRECRAWL_API_KEY"
+      ],
+      "mcpServer": "firecrawl",
+      "notes": "무료 티어라도 키 필요. 웹 본문 추출 후보."
+    },
+    {
+      "name": "Fetch MCP",
+      "kind": "mcp",
+      "provider": "fetch",
+      "envKeys": [],
+      "mcpServer": "fetch",
+      "notes": "웹 본문 읽기 후보."
+    },
+    {
+      "name": "Git MCP",
+      "kind": "mcp",
+      "provider": "git",
+      "envKeys": [],
+      "mcpServer": "git",
+      "notes": "읽기 전용 후보."
+    },
+    {
+      "name": "옵시디언",
+      "kind": "storage",
+      "provider": "filesystem",
+      "envKeys": [
+        "YOMI_AI_PERSONAL_VAULT"
+      ],
+      "mcpServer": "",
+      "notes": "Vault 저장소."
+    }
+  ],
+  "harnessScopes": {
+    "mode": "safe_metadata_only",
+    "policy": "직원은 자신에게 배정된 스킬에 해당하는 MCP/도구만 호출할 수 있습니다. 파일 쓰기, Git 쓰기, 외부 전송, 비용 발생 작업은 사용자 확인 없이는 실행하지 않습니다.",
+    "agents": {
+      "ceo": {
+        "allowedConnections": [
+          "obsidian_vault",
+          "filesystem"
+        ],
+        "allowedTools": [
+          "planner",
+          "vault_search",
+          "file_read"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "secretary": {
+        "allowedConnections": [
+          "obsidian_vault"
+        ],
+        "allowedTools": [
+          "checklist_ticket",
+          "vault_search"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "researcher": {
+        "allowedConnections": [
+          "fetch_mcp",
+          "obsidian_vault",
+          "exa_mcp",
+          "firecrawl_mcp",
+          "tavily_search"
+        ],
+        "allowedTools": [
+          "codex_research",
+          "web_fetch",
+          "pdf_research",
+          "screenshot_evidence",
+          "vault_search",
+          "exa_search",
+          "firecrawl_extract",
+          "tavily_search"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "business": {
+        "allowedConnections": [
+          "obsidian_vault"
+        ],
+        "allowedTools": [
+          "codex_research",
+          "data_analysis",
+          "notebook_analysis",
+          "planner"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "developer": {
+        "allowedConnections": [
+          "filesystem",
+          "git_mcp",
+          "context7_mcp",
+          "playwright_mcp"
+        ],
+        "allowedTools": [
+          "file_read",
+          "context7_docs",
+          "browser_check",
+          "security_review",
+          "playwright_mcp_skill",
+          "tdd_testing",
+          "file_write",
+          "git"
+        ],
+        "deniedActions": [
+          "git_commit",
+          "git_push",
+          "git_reset",
+          "external_send"
+        ],
+        "requiresConfirmation": [
+          "file_write",
+          "git",
+          "playwright_mcp_skill"
+        ]
+      },
+      "writer": {
+        "allowedConnections": [
+          "obsidian_vault"
+        ],
+        "allowedTools": [
+          "vault_search",
+          "drafting",
+          "copywriting",
+          "storytelling"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "editor": {
+        "allowedConnections": [
+          "obsidian_vault"
+        ],
+        "allowedTools": [
+          "vault_search",
+          "content_edit",
+          "tone_check"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "designer": {
+        "allowedConnections": [
+          "fetch_mcp",
+          "playwright_mcp"
+        ],
+        "allowedTools": [
+          "source_synthesis",
+          "web_fetch",
+          "screenshot_evidence",
+          "browser_check",
+          "design_template"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": [
+          "playwright_mcp_skill"
+        ]
+      },
+      "youtube": {
+        "allowedConnections": [
+          "fetch_mcp"
+        ],
+        "allowedTools": [
+          "source_synthesis",
+          "web_fetch",
+          "video_template",
+          "seo_geo"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "instagram": {
+        "allowedConnections": [
+          "fetch_mcp"
+        ],
+        "allowedTools": [
+          "source_synthesis",
+          "web_fetch",
+          "sns_template",
+          "seo_geo",
+          "copywriting"
+        ],
+        "deniedActions": [
+          "file_write",
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": []
+      },
+      "archivist": {
+        "allowedConnections": [
+          "obsidian_vault",
+          "filesystem"
+        ],
+        "allowedTools": [
+          "vault_search",
+          "file_write",
+          "tagging_rag"
+        ],
+        "deniedActions": [
+          "git_write",
+          "external_send"
+        ],
+        "requiresConfirmation": [
+          "file_write"
+        ]
+      }
+    }
+  }
+}

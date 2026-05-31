@@ -1,106 +1,193 @@
-<p align="center">
-  <img src="assets/icon.png" width="120" alt="Connect AI Logo" />
-</p>
+# Connect AI
 
-<h1 align="center">Connect AI v2 (P-Reinforce)</h1>
+Connect AI is a VS Code/Cursor extension project with a local-first personal AI office called **YOMI AI**.
 
-<p align="center">
-  <strong>100% Local · 100% Offline · Autonomous Knowledge Engine</strong><br/>
-  VS Code / Cursor 확장 프로그램으로, 당신의 낡은 IDE를 최상위 에이전트 대학(A.U)의 심장으로 진화시킵니다.
-</p>
+The current working direction is no longer "Ollama/LM Studio as the primary chatbot." The practical runtime is:
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-2.1.30-blue" alt="version" />
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
-  <img src="https://img.shields.io/badge/integration-Agent_University-purple" alt="integration" />
-  <img src="https://img.shields.io/badge/engine-Ollama%20%7C%20LM%20Studio-orange" alt="engine" />
-</p>
+- **Codex CLI** as the default chat, routing, analysis, and task engine.
+- **Claude Code CLI** as an optional manual assistant, called only with `/cc` or `/claude`.
+- **Obsidian/Vault markdown output** for reusable reports and work assets.
+- **Role-based YOMI staff orchestration** for research, writing, editing, development, design, SNS, video, strategy, operations, and assetization.
+- **API/MCP-style tool registry** for Exa, Firecrawl, Tavily, Context7, Playwright, Git, Fetch, and filesystem capabilities.
 
----
+This project is still local-first, but it is **not 100% offline** when Codex CLI, Claude Code CLI, Exa, Firecrawl, Tavily, or other external tools are enabled.
 
-## 🌟 Overview: The P-Reinforce Architecture
+## Repository Map
 
-Connect AI v2.1.30은 단순한 코딩 에이전트를 넘어섭니다. **P-Reinforce 아키텍처**를 기반으로 설계된 이 에이전트는 사용자의 모든 정보와 지시를 받아들여 **스스로 의미를 분석하고, 폴더를 생성하고, 마크다운 위키 파일로 정리하여 클라우드에 자동 백업**하는 자율 지식 정원사(Autonomous Gardener)입니다.
+| Path | Purpose |
+| --- | --- |
+| `src/extension.ts` | Main VS Code/Cursor extension entry. Large, high-risk file. Keep edits narrow. |
+| `out/extension.js` | Generated extension build output. Do not edit unless explicitly requested. |
+| `package.json` | Extension manifest, commands, settings, and scripts. |
+| `assets/` | Runtime assets, webview assets, templates, pixel characters, and seeds. |
+| `web/personal-office/` | YOMI AI personal office web app and local server. |
+| `docs/` | Project direction and handoff-oriented documents. |
+| `AGENTS.md` | Working rules for Codex and future agents. |
+| `ARCHITECTURE.md` | Current architecture reference. |
 
----
+## YOMI AI Personal Office
 
-## ⚡ Core Features
+The personal office is the current user-facing operating surface.
 
-### 1. 🧠 Agent University (A.U) 완벽 연동
-Agent University 웹 플랫폼과 실시간으로 통신합니다. 
-웹에서 버튼 한 번 누르는 즉시, 로컬 VS Code의 `4825` 포트를 통해 프리미엄 브레인 팩(Premium Brain Pack) 지식이 로컬 인공지능 뇌(`~/.connect-ai-brain`)에 자동 주입되어 신경망을 확장합니다.
+It has five main tabs:
 
-### 2. 📂 자율 지식 구조화 (Zero-Interaction Styling)
-유저가 던져주는 원시 데이터(Raw Data)를 에이전트가 스스로 판단해 `10_Wiki`, `00_Raw`, `🚀 Skills` 와 같은 완벽한 P-Reinforce 템플릿 규격의 Markdown 파일로 분할-조립하여 저장합니다.
+- `사무실`: visual office/status board
+- `대화`: Codex-first chat and command input
+- `직원`: staff roles, skills, and tool toggles
+- `저장소`: recent Vault outputs and graph view
+- `설정`: Codex, Claude, Vault, API, MCP, and tool status
 
-### 3. ☁️ 클라우드 동기화 (Auto-Git Sync 100%)
-로컬 PC에서 파일 생성이 일어나는 순간, 에이전트가 스스로 GitHub 저장소에 `git add`, `commit`, `push`를 수행합니다. 
-마스터는 이제 지루한 푸시 커맨드를 입력할 필요가 없습니다.
+Run it locally:
 
-### 4. 🔗 설치형 모델 자동 감지 (Dynamic Model Detection)
-Ollama 또는 LM Studio에 설치된 모델을 내부 API(`v1/models`)를 호출하여 자동 감지하고, UI의 스위치 보드(드롭다운)에 연결합니다. 어떤 모델을 쓸지 번거롭게 입력하지 마십시오.
+```powershell
+node web\personal-office\server.mjs
+```
 
----
+Default URL:
 
-## ⚒️ Agent Capabilities (에이전트 권한)
+```text
+http://127.0.0.1:17331
+```
 
-로컬 머신의 파일 시스템과 터미널에 대한 통제권을 인공지능에게 부여합니다. (100% 안전한 권한 승인 기반)
+If the port is already in use:
 
-| Action | Description |
-|:--|:--|
-| **📄 Create Files** | 새로운 파일과 폴더를 생성합니다 |
-| **✏️ Edit Files** | 기존 파일 내의 코드를 수정합니다 |
-| **🗑️ Delete Files** | 불필요한 파일을 즉각 파쇄합니다 |
-| **📖 Read Files** | 마스터의 프로젝트 파일을 읽어 맥락을 파악합니다 |
-| **📂 Browse Directories** | 디렉토리 구조를 분석합니다 |
-| **🖥️ Run Commands** | `npm run build`, `git push` 등 터미널 명령을 수행합니다 |
+```powershell
+$env:PORT=17332
+node web\personal-office\server.mjs
+```
 
----
+## Runtime Engines
 
-## 📥 Installation (설치 방법)
+### Default: Codex CLI
 
-### A.U 멤버십 유저 (Recommended)
-1. 상단 탭의 [Releases](https://github.com/wonseokjung/connect-ai/releases) 메뉴로 진입.
-2. 최신 `v2.1.30.vsix` 파일을 다운로드.
-3. VS Code 에서 `Cmd+Shift+P` → **Extensions: Install from VSIX** → 다운받은 파일 선택
+Codex CLI is the default route for normal chat, intent classification, code tasks, and office workflow orchestration.
 
-### 개발자 빌드 (Build from Source)
-```bash
-git clone https://github.com/wonseokjung/connect-ai.git
-cd connect-ai
+Optional environment variable:
+
+```text
+YOMI_AI_CODEX_COMMAND
+```
+
+If unset, the server tries to use the installed `codex` command.
+
+### Optional: Claude Code CLI
+
+Claude Code CLI is manual-only. It is not used by the default router.
+
+Use:
+
+```text
+/cc your request
+/claude your request
+```
+
+Optional environment variables:
+
+```text
+YOMI_AI_CLAUDE_COMMAND
+YOMI_AI_CLAUDE_MODEL
+YOMI_AI_CLAUDE_MAX_BUDGET_USD
+```
+
+### Legacy Local Models
+
+Ollama and LM Studio were part of earlier experiments and may still appear in older extension code/settings. They are not required for the current YOMI personal office path when Codex CLI is available.
+
+Do not reintroduce Ollama/LM Studio as the default engine unless the product direction explicitly changes.
+
+## Search And Research APIs
+
+Brave Search is no longer the default path.
+
+Current research-oriented keys:
+
+```text
+EXA_API_KEY
+FIRECRAWL_API_KEY
+TAVILY_API_KEY
+```
+
+Store keys in `.env` or user environment variables. Do not print, commit, or copy secret values into docs, logs, or connection JSON files.
+
+Current intended usage:
+
+- Exa: semantic/web research
+- Firecrawl: webpage extraction and scraping
+- Tavily: search fallback
+- Codex/Vault: keyless reasoning and local knowledge use
+
+## Skills, MCP, And Permissions
+
+The app separates two ideas:
+
+- **Skill**: instructions for how a staff member should work.
+- **MCP/API/tool connection**: what external or local capability can be called.
+
+Important files:
+
+```text
+web/personal-office/skills.json
+web/personal-office/connections.json
+web/personal-office/mcp-servers.safe.json
+```
+
+Safety policy:
+
+- Staff should only use tools mapped to their role.
+- File writes, Git writes, destructive actions, external sends, and cost-bearing actions require user confirmation.
+- Playwright MCP is treated as sensitive because it can control a browser.
+- Git MCP is read-only by default: status, diff, log.
+- `fetch_mcp` and `git_mcp` may require `uvx`; they are optional candidates, not core requirements.
+
+## Vault Output
+
+YOMI stores reusable outputs as markdown in the personal Vault.
+
+Default Vault path:
+
+```text
+C:\Users\a0104\Desktop\MY\obsidian
+```
+
+Default output area:
+
+```text
+50_Outputs/YOMI AI/
+```
+
+The app should automatically save clearly reusable reports and ask the user when filename, location, overwrite, external transfer, cost, or instruction ambiguity makes the next step unsafe.
+
+## Development Notes
+
+Install/build/package commands should be run only when explicitly authorized:
+
+```powershell
 npm install
 npm run compile
 npx vsce package
 ```
 
----
+Useful read-only checks:
 
-## ⚙️ Engine Setup (엔진 설정 방법)
-
-### ✅ LM Studio (Apple Silicon, Windows) - 권장
-1. [lmstudio.ai](https://lmstudio.ai/) 에서 설치
-2. Gemma 3, Llama 3 또는 Qwen Coder 등 원하는 모델 로드
-3. **Developer 탭(좌측 `<>` 메뉴)** 진입 후 **Start Server** 클릭
-4. Connect AI의 ⚙️ 채팅방 설정에서 엔진을 "LM Studio"로 선택 (자동 모델 인덱싱 완료)
-
-### ✅ Ollama (Mac, Linux)
-```bash
-brew install ollama
-ollama pull gemma3   # 원하는 모델 풀링
+```powershell
+node --check web\personal-office\server.mjs
+node --check web\personal-office\app.js
+rg "Codex CLI|Claude Code CLI|Exa|Firecrawl|Tavily|Vault" README.md ARCHITECTURE.md web\personal-office docs
 ```
-Connect AI에서 설정만 "Ollama"로 바꿔주시면 끝납니다.
 
----
+For browser verification, Playwright Chromium may be installed separately:
 
-## 🔒 Privacy (완벽한 보안)
+```powershell
+npx playwright install chromium
+```
 
-- **Zero Cloud API:** 당신의 코드는 외부 클라우드 통신망을 타지 않습니다.
-- **Zero Telemetry:** 모든 연산력은 100% Local Inference 환경에서 이루어집니다.
-- 기업 보안 등급에 준하는 극강의 밀폐형 로컬 지식망 생성을 보장합니다.
+## Documentation Rules
 
----
+Keep docs aligned with the current working system:
 
-<p align="center">
-  <strong>Built for Antigravity & Agent University</strong><br/>
-  Designed by <a href="https://github.com/wonseokjung">Jay</a> × Connect AI Architect
-</p>
+- Codex CLI is the default engine.
+- Claude Code CLI is manual-only.
+- Ollama/LM Studio are legacy fallback concepts, not the active primary path.
+- Brave Search is excluded unless deliberately restored.
+- Exa/Firecrawl/Tavily are the active research API candidates.
+- Do not claim "100% offline" while cloud CLIs/APIs are enabled.

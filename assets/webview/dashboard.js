@@ -2,6 +2,19 @@ const vscode = acquireVsCodeApi();
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const fmt = (n) => { n = Number(n)||0; if(n>=1e9) return (n/1e9).toFixed(1)+'B'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return String(n); };
+const portraitModeClass = (a) => (a && a.profileImageMode ? ' ' + esc(a.profileImageMode) : '');
+function renderPortrait(a, baseClass, fallbackClass) {
+  if (a && a.profileImageUri) {
+    return '<div class="' + baseClass + portraitModeClass(a) + '" style="background-image:url(' + esc(a.profileImageUri) + ')"></div>';
+  }
+  return '<div class="' + baseClass + ' ' + fallbackClass + '">' + esc((a && a.emoji) || '🤖') + '</div>';
+}
+function renderHeroPortrait(a) {
+  if (a && a.profileImageUri) {
+    return '<div class="adm-hero' + portraitModeClass(a) + '" style="background-image:url(' + esc(a.profileImageUri) + ')"></div>';
+  }
+  return '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">' + esc(a && a.emoji) + '</div></div>';
+}
 
 /* Animated count-up — eases from current displayed number to target. */
 function animateNum(el, targetRaw) {
@@ -261,9 +274,7 @@ function render(s) {
     teamBody.innerHTML = s.agentTeam.map(a => {
       const isLocked = (a.lockable && !a.hired);
       const isInactive = (!isLocked && a.togglable && !a.active);
-      const photoHtml = a.profileImageUri
-        ? '<div class="agent-photo" style="background-image:url(\'' + esc(a.profileImageUri) + '\')"></div>'
-        : '<div class="agent-photo no-photo">' + esc(a.emoji) + '</div>';
+      const photoHtml = renderPortrait(a, 'agent-photo', 'no-photo');
       const taskBadge = (a.openTasks > 0)
         ? '<div class="agent-task-badge" title="' + a.openTasks + '건 진행 중">' + a.openTasks + '</div>'
         : '';
@@ -877,10 +888,7 @@ function openHirePinModal(a){
     '<div class="hire-pin-card">'+
       '<div class="hire-pin-eyebrow">▣ INCOMING TRANSMISSION</div>'+
       '<div class="hire-pin-portrait">'+
-        (a.profileImageUri
-          ? '<div class="hp-photo" style="background-image:url(\''+esc(a.profileImageUri)+'\')"></div>'
-          : '<div class="hp-photo hp-emoji">'+esc(a.emoji||'❓')+'</div>'
-        )+
+        renderPortrait(a, 'hp-photo', 'hp-emoji')+
         '<div class="hp-glitch"></div>'+
       '</div>'+
       '<div class="hire-pin-meta">'+
@@ -979,10 +987,7 @@ function openActivateModal(a){
     '<div class="activate-card">'+
       '<div class="activate-eyebrow">▣ ACTIVATE EMPLOYEE</div>'+
       '<div class="activate-portrait">'+
-        (a.profileImageUri
-          ? '<div class="ap-photo" style="background-image:url(\''+esc(a.profileImageUri)+'\')"></div>'
-          : '<div class="ap-photo ap-emoji">'+esc(a.emoji||'🤖')+'</div>'
-        )+
+        renderPortrait(a, 'ap-photo', 'ap-emoji')+
       '</div>'+
       '<div class="activate-name">'+esc(a.emoji||'')+' '+esc(a.name||'')+'</div>'+
       '<div class="activate-role">'+esc(a.role||'')+'</div>'+
@@ -1019,9 +1024,7 @@ function showAgentDetailModal(a){
   bd.className = 'adm-backdrop';
   bd.style.setProperty('--ag', a.color || '#FBBF24');
   bd.style.setProperty('--ag-glow', (a.color||'#FBBF24')+'33');
-  const hero = a.profileImageUri
-    ? '<div class="adm-hero" style="background-image:url(\''+esc(a.profileImageUri)+'\')"></div>'
-    : '<div class="adm-hero adm-hero-emoji"><div class="adm-hero-emoji-glyph">'+esc(a.emoji)+'</div></div>';
+  const hero = renderHeroPortrait(a);
   const skillsActive = (a.skills||[]).filter(s => s.enabled && !s.locked).length;
   const stats = ''
     + '<div class="adm-stat"><div class="adm-stat-icon">📚</div><div class="adm-stat-num">'+(a.verifiedCount||0)+'</div></div>'
