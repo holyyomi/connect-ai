@@ -35,15 +35,13 @@
           <section class="chat-browser">
             <div class="browser-main">
               <div class="card-head"><strong>작업 결과</strong><span id="chatResultMode">대기</span></div>
-              <pre id="chatResultPreview">하단 터미널에 입력하면 Codex CLI가 의도를 판단해 대화, 워크플로우, 저장소 검색, 코드 작업으로 처리합니다. Claude는 /cc 또는 /claude로 직접 호출할 때만 사용합니다.</pre>
+              <pre id="chatResultPreview">대화 결과가 여기에 표시됩니다.</pre>
             </div>
           </section>
           <section class="chat-terminal">
-            <section class="chat-thread" id="chatThread">
-              <div class="chat-message assistant"><div class="chat-bubble-head"><strong>YOMI AI</strong><small>Codex CLI</small></div><p>이제 모드 선택 없이 입력하면 Codex CLI가 의도를 판단해 대화, 직원 워크플로우, 저장소 검색, 코드 작업으로 라우팅합니다. Claude는 /cc 또는 /claude로 직접 부를 때만 실행합니다.</p></div>
-            </section>
+            <section class="chat-thread" id="chatThread"></section>
             <form id="chatForm" class="chat-composer">
-              <textarea id="chatInput" rows="1" spellcheck="false" placeholder="무엇이든 입력하세요. 기본은 Codex CLI입니다. Claude는 /cc 또는 /claude로 직접 호출하세요."></textarea>
+              <textarea id="chatInput" rows="1" spellcheck="false" placeholder="메시지 입력"></textarea>
               <button id="chatSendBtn" type="submit">보내기</button>
             </form>
           </section>

@@ -295,14 +295,16 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .vault-chip strong { color: var(--accent); font-family: Consolas, monospace; font-size: 12px; }
 .vault-graph-card { margin-bottom: 10px; }
 .vault-docs-card { margin-top: 10px; }
-.recent-reports { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; max-height: 360px; overflow: auto; }
-.report-item { width: 100%; border: 1px solid rgba(255,255,255,.09); border-radius: 7px; background: rgba(255,255,255,.035); color: var(--text); padding: 10px; text-align: left; }
-.report-item summary { cursor: pointer; list-style-position: outside; }
-.report-item summary strong { display: inline; color: var(--bright); }
-.report-item summary small { display: block; margin: 5px 0 0 18px; }
+.recent-reports { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; max-height: 280px; overflow: auto; }
+.report-item { width: 100%; border: 1px solid rgba(255,255,255,.08); border-radius: 6px; background: rgba(255,255,255,.03); color: var(--text); padding: 0; text-align: left; }
+.report-item summary { display: flex; align-items: center; min-height: 30px; cursor: pointer; list-style-position: inside; padding: 6px 8px; }
+.report-item summary::marker { color: var(--accent); font-size: 10px; }
+.report-item summary strong { min-width: 0; color: var(--bright); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .report-item[open] { border-color: rgba(65,242,122,.24); background: rgba(65,242,122,.045); }
+.report-item[open] summary strong { white-space: normal; }
+.report-detail { border-top: 1px solid rgba(255,255,255,.08); padding: 7px 9px 8px; }
 .report-item strong, .report-item span, .report-item small { display: block; overflow-wrap: anywhere; }
-.report-item span, .report-item small { color: var(--dim); margin-top: 4px; }
+.report-item span, .report-item small { color: var(--dim); margin-top: 3px; font-size: 11px; line-height: 1.35; }
 .vault-graph-shell { height: 460px; border: 1px solid rgba(65,242,122,.12); border-radius: 8px; background: radial-gradient(circle at center, rgba(65,242,122,.06), rgba(0,0,0,.12)); overflow: hidden; }
 .vault-graph-card .vault-graph-shell { height: min(58vh, 620px); min-height: 430px; }
 .vault-graph-shell svg { width: 100%; height: 100%; display: block; }

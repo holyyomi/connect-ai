@@ -627,7 +627,7 @@ function renderConnectionCard(connection) {
       </div>
       <b>${escapeHtml(connection.statusLabel || connection.status || "")}</b>
       <div class="connection-row-actions">
-        <button type="button" data-connection-action="toggle" data-connection-id="${escapeHtml(connection.id)}" data-enabled="${connection.enabled ? "false" : "true"}">${connection.enabled ? "비활성" : "활성"}</button>
+        <button type="button" data-connection-action="toggle" data-connection-id="${escapeHtml(connection.id)}" data-enabled="${connection.enabled ? "false" : "true"}">${connection.enabled ? "끄기" : "켜기"}</button>
         <button type="button" data-connection-action="edit" data-connection-id="${escapeHtml(connection.id)}">수정</button>
         <button type="button" data-connection-action="delete" data-connection-id="${escapeHtml(connection.id)}">삭제</button>
       </div>
@@ -935,9 +935,12 @@ async function loadRecentReports() {
     }
     nodes.recentReports.innerHTML = data.recentDocs.map((doc) => `
       <details class="report-item">
-        <summary><strong>${escapeHtml(doc.title)}</strong><small>${escapeHtml(doc.created || "")}</small></summary>
-        <span>${escapeHtml(doc.displayPath || cleanDisplayPath(doc.relPath))}</span>
-        <small>${escapeHtml(doc.folder || "루트")}${doc.tags?.length ? ` · #${doc.tags.map(escapeHtml).join(" #")}` : ""}</small>
+        <summary><strong>${escapeHtml(doc.title)}</strong></summary>
+        <div class="report-detail">
+          <span>${escapeHtml(doc.displayPath || cleanDisplayPath(doc.relPath))}</span>
+          <small>${escapeHtml(doc.created || "")}</small>
+          <small>${escapeHtml(doc.folder || "루트")}${doc.tags?.length ? ` · #${doc.tags.map(escapeHtml).join(" #")}` : ""}</small>
+        </div>
       </details>
     `).join("");
   } catch (error) {
@@ -1438,7 +1441,7 @@ function handleChatKeydown(event) {
 function initializeStaticCopy() {
   if (nodes.chatResultPreview) nodes.chatResultPreview.textContent = "대화 결과가 여기에 표시됩니다.";
   const intro = nodes.chatThread?.querySelector(".chat-message.assistant p");
-  if (intro) intro.textContent = "입력하세요. 기본은 Codex이고, Claude는 /cc 또는 /claude로 직접 호출합니다.";
+  if (intro) intro.textContent = "";
   if (nodes.connectionProvider) nodes.connectionProvider.placeholder = "exa, tavily, firecrawl, filesystem";
   if (nodes.connectionEnvKeys) nodes.connectionEnvKeys.placeholder = "EXA_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY";
   if (nodes.connectionMcpServer) nodes.connectionMcpServer.placeholder = "예: context7, tavily, exa";

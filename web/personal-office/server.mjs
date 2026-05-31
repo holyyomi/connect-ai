@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -129,11 +129,11 @@ function defaultConnectionsConfig() {
       { id: "claude_cli", name: "Claude Code CLI", kind: "model", provider: "claude-code", enabled: true, envKeys: ["YOMI_AI_CLAUDE_COMMAND", "YOMI_AI_CLAUDE_MODEL"], safeMode: true, allowedActions: ["manual_chat", "plan"], blockedActions: ["auto_route", "file_write", "git_write", "external_send"], notes: "/cc 또는 /claude로 명시 호출할 때만 사용합니다." },
       { id: "obsidian_vault", name: "Obsidian Vault", kind: "storage", provider: "filesystem", enabled: true, envKeys: ["YOMI_AI_PERSONAL_VAULT"], notes: "마크다운 저장소 경로입니다." },
       { id: "context7_mcp", name: "Context7 MCP", kind: "mcp", provider: "context7", enabled: true, envKeys: [], mcpServer: "context7", install: "npx -y @upstash/context7-mcp@latest", safeMode: true, allowedActions: ["resolve-library-id", "get-library-docs"], blockedActions: ["write", "external_send"], notes: "태오용 최신 라이브러리 문서 조회입니다. API 키 없이 제한적으로 사용합니다." },
-      { id: "playwright_mcp", name: "Playwright MCP", kind: "mcp", provider: "playwright", enabled: false, envKeys: [], mcpServer: "playwright", install: "npx -y @playwright/mcp@latest --isolated", safeMode: true, allowedActions: ["browser_snapshot", "browser_click", "browser_type", "browser_screenshot"], blockedActions: ["external_send", "file_write"], notes: "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 기본 비활성입니다." },
+      { id: "playwright_mcp", name: "Playwright MCP", kind: "mcp", provider: "playwright", enabled: true, envKeys: [], mcpServer: "playwright", install: "npx -y @playwright/mcp@latest --isolated", safeMode: true, allowedActions: ["browser_snapshot", "browser_click", "browser_type", "browser_screenshot"], blockedActions: ["external_send", "file_write"], notes: "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 실제 실행은 사용자 확인 후 진행합니다." },
       { id: "exa_mcp", name: "Exa MCP", kind: "api", provider: "exa", enabled: true, envKeys: ["EXA_API_KEY"], mcpServer: "exa", install: "npx -y exa-mcp-server", safeMode: true, allowedActions: ["semantic_search"], blockedActions: ["write", "external_send"], notes: "시맨틱 검색 후보입니다. EXA_API_KEY를 .env에 넣으면 정상 연결됩니다." },
       { id: "firecrawl_mcp", name: "Firecrawl MCP", kind: "api", provider: "firecrawl", enabled: true, envKeys: ["FIRECRAWL_API_KEY"], mcpServer: "firecrawl", install: "npx -y firecrawl-mcp", safeMode: true, allowedActions: ["scrape", "extract"], blockedActions: ["write", "external_send"], notes: "웹 본문 추출/크롤링 후보입니다. FIRECRAWL_API_KEY를 .env에 넣으면 정상 연결됩니다." },
-      { id: "fetch_mcp", name: "Fetch MCP", kind: "mcp", provider: "fetch", enabled: false, envKeys: [], mcpServer: "fetch", install: "uvx mcp-server-fetch", safeMode: true, notes: "웹페이지 본문 읽기 후보입니다. 안전모드에서는 메타데이터만 등록합니다." },
-      { id: "git_mcp", name: "Git MCP", kind: "mcp", provider: "git", enabled: false, envKeys: [], mcpServer: "git", install: "uvx mcp-server-git", safeMode: true, allowedActions: ["status", "diff", "log"], blockedActions: ["add", "commit", "push", "reset", "checkout", "rebase", "clean"], notes: "태오용 Git 읽기 전용 후보입니다. 쓰기 작업은 확인 없이 허용하지 않습니다." },
+      { id: "fetch_mcp", name: "Fetch MCP", kind: "mcp", provider: "fetch", enabled: true, envKeys: [], mcpServer: "fetch", install: "uvx mcp-server-fetch", safeMode: true, notes: "웹페이지 본문 읽기 후보입니다. uvx 설치 상태를 확인해 연결 가능 여부를 표시합니다." },
+      { id: "git_mcp", name: "Git MCP", kind: "mcp", provider: "git", enabled: true, envKeys: [], mcpServer: "git", install: "uvx mcp-server-git", safeMode: true, allowedActions: ["status", "diff", "log"], blockedActions: ["add", "commit", "push", "reset", "checkout", "rebase", "clean"], notes: "태오용 Git 읽기 전용 후보입니다. 쓰기 작업은 확인 없이 허용하지 않습니다." },
       { id: "tavily_search", name: "Tavily Search", kind: "api", provider: "tavily", enabled: true, envKeys: ["TAVILY_API_KEY"], mcpServer: "tavily", install: "npx -y tavily-mcp", safeMode: true, notes: "검색 백업 후보입니다. TAVILY_API_KEY를 .env에 넣으면 정상 연결됩니다." },
       { id: "filesystem", name: "파일시스템", kind: "mcp", provider: "internal", enabled: true, envKeys: [], notes: "프로젝트 파일 읽기 도구입니다." }
     ],
@@ -267,6 +267,24 @@ function containsSecretPayload(input) {
   return false;
 }
 
+const commandAvailabilityCache = new Map();
+
+function commandExists(command) {
+  const name = String(command || "").trim();
+  if (!name) return false;
+  if (commandAvailabilityCache.has(name)) return commandAvailabilityCache.get(name);
+  const result = process.platform === "win32"
+    ? spawnSync("where.exe", [name], { stdio: "ignore" })
+    : spawnSync("sh", ["-lc", `command -v ${JSON.stringify(name)}`], { stdio: "ignore" });
+  const ok = result.status === 0;
+  commandAvailabilityCache.set(name, ok);
+  return ok;
+}
+
+function installCommandName(install) {
+  return String(install || "").trim().split(/\s+/)[0] || "";
+}
+
 function connectionStatusMeta(status) {
   return {
     normal: { label: "정상", tone: "ok" },
@@ -298,6 +316,12 @@ async function buildConnectionsState() {
       const command = claudeCommand();
       status = command ? "normal" : "disconnected";
       detail = command ? `명령: ${command} · /cc, /claude 수동호출 전용` : "claude 명령을 찾지 못했습니다.";
+    } else if (connection.kind === "mcp" && connection.install) {
+      const command = installCommandName(connection.install);
+      status = commandExists(command) ? "normal" : "disconnected";
+      detail = status === "normal"
+        ? `MCP 등록됨: ${connection.mcpServer || connection.provider}`
+        : `${command} 명령이 필요합니다. 설치 명령: ${connection.install}`;
     } else if (requiresEnv && connection.envKeys.length && envState.some((item) => !item.present)) {
       status = "key_required";
       detail = `${envState.filter((item) => !item.present).map((item) => item.name).join(", ")} 환경변수가 필요합니다.`;
@@ -443,6 +467,74 @@ function extractMarkdownTags(content) {
   return [...tags].filter((tag) => !/^\d+$/.test(tag)).slice(0, 30);
 }
 
+const graphStopWords = new Set([
+  "yomi", "ai", "web", "office", "output", "outputs", "auto", "capture", "draft",
+  "50", "개인", "사무실", "보고서", "작업", "최종", "진행", "정리", "요약",
+  "업무", "문서", "오늘", "내일", "최근", "결과", "저장", "생성", "관리"
+]);
+
+function normalizeGraphToken(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\.md$/i, "")
+    .replace(/^#+/, "")
+    .trim()
+    .toLowerCase();
+}
+
+function graphRelationTokens(doc, content = "") {
+  const tokens = new Set();
+  for (const tag of doc.tags || []) {
+    const normalized = normalizeGraphToken(tag);
+    if (normalized && !graphStopWords.has(normalized)) tokens.add(`tag:${normalized}`);
+  }
+  const folder = normalizeGraphToken(doc.folder);
+  if (folder && folder !== "루트" && !graphStopWords.has(folder)) tokens.add(`folder:${folder}`);
+
+  const headings = [...String(content || "").matchAll(/^#{1,3}\s+(.+)$/gm)]
+    .slice(0, 10)
+    .map((match) => match[1])
+    .join(" ");
+  const source = `${doc.title || ""} ${headings}`;
+  for (const raw of source.split(/[^\p{L}\p{N}_-]+/gu)) {
+    const token = normalizeGraphToken(raw);
+    if (token.length < 2 || /^\d+$/.test(token) || graphStopWords.has(token)) continue;
+    tokens.add(`kw:${token}`);
+    if (tokens.size >= 24) break;
+  }
+  return [...tokens];
+}
+
+function pushGraphBucket(buckets, token, relPath) {
+  if (!token || !relPath) return;
+  if (!buckets.has(token)) buckets.set(token, []);
+  const bucket = buckets.get(token);
+  if (!bucket.includes(relPath) && bucket.length < 24) bucket.push(relPath);
+}
+
+function addVaultGraphEdge(edgeMap, degree, source, target, reason, weight = 1) {
+  if (!source || !target || source === target) return;
+  const [a, b] = [source, target].sort((left, right) => left.localeCompare(right, "ko"));
+  const key = `${a}<->${b}`;
+  const existing = edgeMap.get(key);
+  if (existing) {
+    existing.weight = Math.min(10, (existing.weight || 1) + weight);
+    if (reason && !existing.reasons.includes(reason)) existing.reasons.push(reason);
+  } else {
+    edgeMap.set(key, { source: a, target: b, weight, reasons: reason ? [reason] : [] });
+  }
+  degree.set(source, (degree.get(source) || 0) + weight);
+  degree.set(target, (degree.get(target) || 0) + weight);
+}
+
+function isLowValueVaultOverviewDoc(doc) {
+  const relPath = String(doc?.relPath || "");
+  const title = `${doc?.title || ""} ${path.basename(relPath, ".md")}`;
+  const autoGenerated = /(^|\/)50_Outputs\/(YOMI AI|Web Office)\//i.test(relPath)
+    || (doc?.tags || []).some((tag) => ["auto-asset", "personal-office", "yomi-ai"].includes(normalizeGraphToken(tag)));
+  return autoGenerated && isTrivialAutoSaveInput(title);
+}
+
 function topEntries(map, limit = 12) {
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ko")).slice(0, limit).map(([label, count]) => ({ label, count }));
 }
@@ -528,6 +620,7 @@ async function buildVaultOverview(limit = 12) {
   const tags = new Map();
   const docs = [];
   const keyToRelPath = new Map();
+  const relationBuckets = new Map();
 
   for (const file of files) {
     const title = reportTitleFromPath(file.relPath);
@@ -536,8 +629,9 @@ async function buildVaultOverview(limit = 12) {
     keyToRelPath.set(normalizeNoteKey(file.relPath), file.relPath);
     keyToRelPath.set(normalizeNoteKey(title), file.relPath);
     keyToRelPath.set(normalizeNoteKey(path.basename(file.relPath, ".md")), file.relPath);
-    docs.push({ ...file, title, folder, links: [], tags: [] });
+    docs.push({ ...file, title, folder, links: [], tags: [], graphTokens: [] });
   }
+  const docsByRelPath = new Map(docs.map((doc) => [doc.relPath, doc]));
 
   const scannedDocs = docs.slice(0, 700);
   for (const doc of scannedDocs) {
@@ -549,8 +643,11 @@ async function buildVaultOverview(limit = 12) {
     }
     doc.links = extractObsidianLinks(content);
     doc.tags = extractMarkdownTags(content);
+    doc.graphTokens = graphRelationTokens(doc, content);
     for (const tag of doc.tags) tags.set(tag, (tags.get(tag) || 0) + 1);
+    for (const token of doc.graphTokens) pushGraphBucket(relationBuckets, token, doc.relPath);
   }
+  const overviewDocs = docs.filter((doc) => !isLowValueVaultOverviewDoc(doc));
 
   const edgeMap = new Map();
   const degree = new Map();
@@ -559,20 +656,31 @@ async function buildVaultOverview(limit = 12) {
       const targetKey = normalizeNoteKey(link);
       const targetRel = keyToRelPath.get(targetKey) || keyToRelPath.get(normalizeNoteKey(path.basename(targetKey)));
       if (!targetRel || targetRel === doc.relPath) continue;
-      const edgeKey = `${doc.relPath}->${targetRel}`;
-      if (edgeMap.has(edgeKey)) continue;
-      edgeMap.set(edgeKey, { source: doc.relPath, target: targetRel });
-      degree.set(doc.relPath, (degree.get(doc.relPath) || 0) + 1);
-      degree.set(targetRel, (degree.get(targetRel) || 0) + 1);
+      addVaultGraphEdge(edgeMap, degree, doc.relPath, targetRel, "link", 4);
     }
   }
 
-  const graphDocs = docs
+  for (const [token, relPaths] of relationBuckets) {
+    const uniqueRelPaths = [...new Set(relPaths)]
+      .filter((relPath) => docsByRelPath.has(relPath))
+      .sort((a, b) => (docsByRelPath.get(b)?.mtimeMs || 0) - (docsByRelPath.get(a)?.mtimeMs || 0))
+      .slice(0, 8);
+    if (uniqueRelPaths.length < 2) continue;
+    const weight = token.startsWith("tag:") ? 3 : token.startsWith("folder:") ? 1 : 2;
+    for (let index = 0; index < uniqueRelPaths.length - 1; index += 1) {
+      const maxPairIndex = Math.min(uniqueRelPaths.length, index + 4);
+      for (let pairIndex = index + 1; pairIndex < maxPairIndex; pairIndex += 1) {
+        addVaultGraphEdge(edgeMap, degree, uniqueRelPaths[index], uniqueRelPaths[pairIndex], token, weight);
+      }
+    }
+  }
+
+  const graphDocs = overviewDocs
     .filter((doc) => (degree.get(doc.relPath) || 0) > 0)
     .sort((a, b) => (degree.get(b.relPath) || 0) - (degree.get(a.relPath) || 0) || b.mtimeMs - a.mtimeMs)
     .slice(0, 28);
   if (graphDocs.length < 10) {
-    for (const doc of docs.slice(0, 10)) if (!graphDocs.some((item) => item.relPath === doc.relPath)) graphDocs.push(doc);
+    for (const doc of overviewDocs.slice(0, 10)) if (!graphDocs.some((item) => item.relPath === doc.relPath)) graphDocs.push(doc);
   }
   const graphIds = new Set(graphDocs.map((doc) => doc.relPath));
   const graphEdges = [...edgeMap.values()].filter((edge) => graphIds.has(edge.source) && graphIds.has(edge.target)).slice(0, 80);
@@ -582,7 +690,7 @@ async function buildVaultOverview(limit = 12) {
     connected: true,
     path: vaultRoot,
     totalMarkdown: files.length,
-    recentDocs: docs.slice(0, Math.max(1, Math.min(30, limit))).map((doc) => ({
+    recentDocs: overviewDocs.slice(0, Math.max(1, Math.min(30, limit))).map((doc) => ({
       title: doc.title,
       relPath: doc.relPath,
       displayPath: displayReportPath(doc.relPath),
@@ -1140,7 +1248,23 @@ async function runOfficeTask(task) {
     "- 필요한 산출물 형식을 정하고 이어서 실행합니다.",
     "- 저장 가치가 있는 결과는 Vault에 남깁니다."
   ].join("\n");
-  const saved = await saveReportToVault(task, report, assigned);
+  const assessment = assessReusableOrchestration({
+    report,
+    capsule: {
+      originalInput: task,
+      normalizedTask: task,
+      staffing: { level: workflowRun.steps.length >= 3 ? "deep" : "quick" }
+    },
+    subtasks: workflowRun.steps.map((step) => ({
+      status: ["completed", "reworked"].includes(step.status) ? "completed" : "failed"
+    })),
+    plan: {}
+  });
+  let saved = { ok: false, skipped: true, reason: assessment.reason };
+  if (assessment.shouldSave) {
+    saved = await saveReportToVault(task, report, assigned);
+    if (saved?.ok) saved.reason = assessment.reason;
+  }
   return { report, assigned, workflowRun, saved, llm: { provider: "codex-cli", model: "exec", used: true } };
 }
 
@@ -1800,11 +1924,21 @@ async function buildYomiFinalReport(job) {
   }
 }
 
+function isTrivialAutoSaveInput(input) {
+  const text = String(input || "").normalize("NFKC").trim();
+  if (!text) return true;
+  const casualPattern = /(오늘\s*뭐\s*하면|뭐\s*하면\s*좋|뭐\s*할까|뭘\s*할까|할\s*일\s*추천|추천해\s*줘|잡담|가볍게|심심|아무거나|간단히)/i;
+  const durableAssetPattern = /(보고서|전략|기획안|분석|조사|자료|초안|문서|콘텐츠|매뉴얼|가이드|템플릿|로드맵|프로세스|정책|자산화|저장)/i;
+  return casualPattern.test(text) && !durableAssetPattern.test(text);
+}
+
 function assessReusableOrchestration(job) {
   if (job.plan?.questionRequired || job.capsule?.needsQuestion) {
     return { shouldSave: false, reason: "사용자 확인이 필요한 작업이라 자동 저장하지 않았습니다." };
   }
-  if (!job.report || String(job.report).trim().length < 240) {
+  const reportText = String(job.report || "");
+  const reportLength = reportText.trim().length;
+  if (!job.report || reportLength < 320) {
     return { shouldSave: false, reason: "재사용 가능한 보고서 분량이 부족해 자동 저장하지 않았습니다." };
   }
   const completed = (job.subtasks || []).filter((step) => step.status === "completed");
@@ -1813,8 +1947,17 @@ function assessReusableOrchestration(job) {
     return { shouldSave: false, reason: "실패한 직원 산출물이 있어 자동 저장하지 않았습니다." };
   }
   const input = `${job.capsule?.originalInput || ""} ${job.capsule?.normalizedTask || ""}`;
-  const assetKeyword = /(보고서|계획|전략|자료|초안|문서|콘텐츠|기획|정리|분석|조사|자산|저장|매뉴얼|체크리스트)/i.test(input);
-  if (assetKeyword || completed.length >= 2 || String(job.report).length >= 900 || job.capsule?.staffing?.level === "deep") {
+  if (isTrivialAutoSaveInput(input)) {
+    return { shouldSave: false, reason: "단발성 추천/잡담으로 판단해 자동 저장하지 않았습니다." };
+  }
+  const durableAssetKeyword = /(보고서|전략|자료|초안|문서|콘텐츠|기획안|분석|조사|자산|저장|매뉴얼|가이드|템플릿|로드맵|프로세스|정책)/i.test(input);
+  const staffingLevel = job.capsule?.staffing?.level || "";
+  if (
+    (durableAssetKeyword && reportLength >= 520) ||
+    (completed.length >= 2 && reportLength >= 720) ||
+    reportLength >= 1200 ||
+    (staffingLevel === "deep" && reportLength >= 640)
+  ) {
     return { shouldSave: true, reason: "최종 보고서와 직원 산출물이 재사용 가치 기준을 충족했습니다." };
   }
   return { shouldSave: false, reason: "짧은 단발성 업무로 판단해 자동 저장하지 않았습니다." };

@@ -89,7 +89,7 @@
       "name": "Playwright MCP",
       "kind": "mcp",
       "provider": "playwright",
-      "enabled": false,
+      "enabled": true,
       "envKeys": [],
       "mcpServer": "playwright",
       "install": "npx -y @playwright/mcp@latest --isolated",
@@ -108,7 +108,7 @@
         "browser": "isolated",
         "requiresConfirmation": true
       },
-      "notes": "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 기본 비활성입니다."
+      "notes": "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 실제 실행은 사용자 확인 후 진행합니다."
     },
     {
       "id": "exa_mcp",
@@ -166,7 +166,7 @@
       "name": "Fetch MCP",
       "kind": "mcp",
       "provider": "fetch",
-      "enabled": false,
+      "enabled": true,
       "envKeys": [],
       "mcpServer": "fetch",
       "install": "uvx mcp-server-fetch",
@@ -184,14 +184,14 @@
         "network": "read-only-http",
         "requiresUserUrl": true
       },
-      "notes": "웹페이지 본문 읽기 후보입니다. 안전모드에서는 실제 MCP 설치/실행 없이 메타데이터만 등록합니다."
+      "notes": "웹페이지 본문 읽기 후보입니다. uvx 설치 상태를 확인해 연결 가능 여부를 표시합니다."
     },
     {
       "id": "git_mcp",
       "name": "Git MCP",
       "kind": "mcp",
       "provider": "git",
-      "enabled": false,
+      "enabled": true,
       "envKeys": [],
       "mcpServer": "git",
       "install": "uvx mcp-server-git",
@@ -291,7 +291,7 @@
       "provider": "playwright",
       "envKeys": [],
       "mcpServer": "playwright",
-      "notes": "브라우저 검증 후보. 기본 비활성."
+      "notes": "브라우저 검증 후보. 실제 실행 전 확인."
     },
     {
       "name": "Exa 검색",
