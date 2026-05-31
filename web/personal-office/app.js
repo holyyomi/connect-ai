@@ -33,6 +33,7 @@ const nodes = {
   activityLog: document.getElementById("activityLog"),
   reportText: document.getElementById("reportText"),
   saveNotice: document.getElementById("saveNotice"),
+  humanLoopPanel: document.getElementById("humanLoopPanel"),
   officeCurrentStatus: document.getElementById("officeCurrentStatus"),
   officeCurrentTask: document.getElementById("officeCurrentTask"),
   officeAgentStatus: document.getElementById("officeAgentStatus"),
@@ -440,6 +441,7 @@ function resetOffice() {
   if (nodes.activityLog) nodes.activityLog.innerHTML = "";
   if (nodes.reportText) nodes.reportText.textContent = "사무실 탭은 진행 시각화 전용입니다. 업무 지시는 대화 탭에서 입력하세요.";
   if (nodes.saveNotice) nodes.saveNotice.textContent = "대화 탭에서 실행 대기";
+  hideHumanLoopPanel();
   if (nodes.phaseBadge) nodes.phaseBadge.textContent = "대기 중";
   if (nodes.cmdMeta) nodes.cmdMeta.textContent = "요미 대기";
   latestOfficeTask = "";
@@ -1027,13 +1029,14 @@ function officeJobStatusLabel(status = "") {
     completed_with_errors: "일부 실패",
     failed: "실패",
     waiting_question: "확인 필요",
+    cancelled: "취소",
     planned: "계획"
   })[status] || status || "대기";
 }
 
 function taskQueueTone(status = "") {
   if (["failed"].includes(status)) return "bad";
-  if (["waiting_question", "completed_with_errors", "retrying"].includes(status)) return "warn";
+  if (["waiting_question", "completed_with_errors", "retrying", "cancelled"].includes(status)) return "warn";
   return "";
 }
 
@@ -1045,7 +1048,7 @@ function formatQueueTime(value) {
 }
 
 function jobFinished(status = "") {
-  return ["completed", "completed_with_errors", "failed", "waiting_question"].includes(status);
+  return ["completed", "completed_with_errors", "failed", "waiting_question", "cancelled"].includes(status);
 }
 
 function renderJobLogs(logs = []) {
@@ -1081,7 +1084,7 @@ function currentSubtaskAgentIds(subtasks = [], jobStatus = "") {
 }
 
 function officeJobDone(status = "") {
-  return ["completed", "completed_with_errors", "failed", "waiting_question"].includes(status);
+  return ["completed", "completed_with_errors", "failed", "waiting_question", "cancelled"].includes(status);
 }
 
 function officeJobSummary(job = {}) {
@@ -1101,6 +1104,7 @@ function currentOfficeJobSummary(subtasks = [], currentIds = []) {
 }
 
 function renderOfficeWorkflowResult(run, task, saved, report = "") {
+  hideHumanLoopPanel();
   latestOfficeTask = task || latestOfficeTask;
   const steps = run?.steps || [];
   if (nodes.activityLog) {
@@ -1197,6 +1201,36 @@ function renderOfficePlanResult(officePlan, originalMessage = "") {
   });
 }
 
+function hideHumanLoopPanel() {
+  if (!nodes.humanLoopPanel) return;
+  nodes.humanLoopPanel.hidden = true;
+  nodes.humanLoopPanel.innerHTML = "";
+}
+
+function renderHumanLoopPanel(job = {}) {
+  if (!nodes.humanLoopPanel) return;
+  const question = job.humanLoopQuestion || job.plan?.humanLoopQuestion || job.capsule?.humanLoopQuestion;
+  if (job.status !== "waiting_question" || !question?.choices?.length) {
+    hideHumanLoopPanel();
+    return;
+  }
+  const reasons = question.reasons?.length ? question.reasons : job.plan?.questionReasons || job.capsule?.questionReasons || [];
+  nodes.humanLoopPanel.hidden = false;
+  nodes.humanLoopPanel.innerHTML = `
+    <strong>${escapeHtml(question.title || "확인 필요")}</strong>
+    <p>${escapeHtml(question.message || "진행 전 확인이 필요합니다.")}</p>
+    ${reasons.length ? `<ul class="human-loop-reasons">${reasons.map((item) => `<li>${escapeHtml(item.reason || item.id || item)}</li>`).join("")}</ul>` : ""}
+    <div class="human-loop-actions">
+      ${question.choices.map((choice) => `
+        <button type="button" class="${choice.id === "cancel" ? "secondary" : ""}" data-human-loop-choice="${escapeHtml(choice.id)}" data-job-id="${escapeHtml(job.id)}">
+          ${escapeHtml(choice.label || choice.id)}${choice.recommended ? " · 추천" : ""}
+          <small>${escapeHtml(choice.description || "")}</small>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderOfficeJobResult(job, originalMessage = "", announceFinal = false) {
   if (!job) return;
   const capsule = job.capsule || {};
@@ -1223,6 +1257,7 @@ function renderOfficeJobResult(job, originalMessage = "", announceFinal = false)
   if (nodes.phaseBadge) nodes.phaseBadge.textContent = officeJobStatusLabel(job.status);
   if (nodes.saveNotice) nodes.saveNotice.textContent = job.saved?.reason || "2단계 자동 저장 안 함";
   const reportText = job.report || "직원들이 병렬로 산출물을 만들고 있습니다.";
+  renderHumanLoopPanel(job);
   setOfficeProgress({
     status: `직원 실행 · ${officeJobStatusLabel(job.status)}`,
     task: capsule.goal || latestOfficeTask,
@@ -1235,13 +1270,15 @@ function renderOfficeJobResult(job, originalMessage = "", announceFinal = false)
       `- 모드: ${job.mode || "parallel_worker_pool"}`,
       `- 배정 규모: ${job.capsule?.staffing?.level || "standard"} · ${job.subtasks?.length || 0}명`,
       `- 저장: ${job.saved?.ok ? job.saved.relPath : job.saved?.reason || "대기"}`,
+      job.humanLoopAnswer ? `- 확인 응답: ${job.humanLoopAnswer.label}` : "",
       "",
       "## 현재 진행",
       currentOfficeJobSummary(subtasks, currentIds),
+      job.status === "waiting_question" ? `\n## 확인 필요\n${(job.humanLoopQuestion?.reasons || job.plan?.questionReasons || []).map((item) => `- ${item.reason || item.id}`).join("\n")}` : "",
       "",
       "## 요미 최종 보고",
       reportText
-    ].join("\n")
+    ].filter(Boolean).join("\n")
   });
   if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `작업 ID: ${job.id} · ${officeJobStatusLabel(job.status)}`;
   if (nodes.chatResultPreview) {
@@ -1253,13 +1290,15 @@ function renderOfficeJobResult(job, originalMessage = "", announceFinal = false)
       `상태: ${officeJobStatusLabel(job.status)}`,
       `배정 규모: ${job.capsule?.staffing?.level || "standard"} · ${job.subtasks?.length || 0}명`,
       `저장: ${job.saved?.ok ? job.saved.relPath : job.saved?.reason || "대기"}`,
+      job.humanLoopAnswer ? `확인 응답: ${job.humanLoopAnswer.label}` : "",
       "",
       "## 현재 진행",
       currentOfficeJobSummary(subtasks, currentIds),
+      job.status === "waiting_question" ? `\n## 확인 필요\n${(job.humanLoopQuestion?.reasons || job.plan?.questionReasons || []).map((item) => `- ${item.reason || item.id}`).join("\n")}` : "",
       "",
       "## 요미 최종 보고",
       reportText
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
   if (announceFinal && officeJobDone(job.status) && !completedOfficeJobIds.has(job.id)) {
     completedOfficeJobIds.add(job.id);
@@ -1300,8 +1339,40 @@ function startOfficeJobPolling(jobId, originalMessage = "") {
   pollOfficeJob(jobId, originalMessage);
 }
 
+async function answerHumanLoop(jobId, choiceId) {
+  if (!jobId || !choiceId) return;
+  const buttons = nodes.humanLoopPanel?.querySelectorAll("button") || [];
+  buttons.forEach((button) => { button.disabled = true; });
+  if (nodes.saveNotice) nodes.saveNotice.textContent = "확인 응답 처리 중";
+  try {
+    const response = await fetch("/api/orchestration-job/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: jobId, choiceId })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    const job = data.job;
+    renderOfficeJobResult(job, job.capsule?.originalInput || "", false);
+    await loadTaskQueue({ resume: false });
+    if (!officeJobDone(job.status)) startOfficeJobPolling(job.id, job.capsule?.originalInput || "");
+    else renderOfficeJobResult(job, job.capsule?.originalInput || "", true);
+    addChatMessage("assistant", choiceId === "cancel" ? "확인 단계에서 작업을 취소했습니다." : "확인 완료. 직원 실행을 재개합니다.", "YOMI AI", "확인 응답");
+  } catch (error) {
+    if (nodes.saveNotice) nodes.saveNotice.textContent = `확인 처리 실패: ${error.message}`;
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+function handleHumanLoopClick(event) {
+  const button = event.target.closest("button[data-human-loop-choice]");
+  if (!button || !nodes.humanLoopPanel?.contains(button)) return;
+  return answerHumanLoop(button.dataset.jobId || activeOfficeJobId, button.dataset.humanLoopChoice || "");
+}
+
 function renderCodexJobResult(job, announceFinal = false) {
   if (!job) return;
+  hideHumanLoopPanel();
   latestOfficeTask = job.task || latestOfficeTask;
   const activeIds = jobFinished(job.status) ? [] : ["developer"];
   renderAgents(activeIds.length ? ["developer"] : [], { developer: officeJobStatusLabel(job.status) });
@@ -1642,6 +1713,7 @@ if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handle
 if (nodes.connectionResetBtn) nodes.connectionResetBtn.addEventListener("click", resetConnectionForm);
 if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleConnectionClick);
 if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
+if (nodes.humanLoopPanel) nodes.humanLoopPanel.addEventListener("click", handleHumanLoopClick);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);

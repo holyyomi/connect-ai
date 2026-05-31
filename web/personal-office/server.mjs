@@ -108,7 +108,7 @@ const defaultStyleProfile = {
 };
 const codexJobs = new Map();
 const orchestrationJobs = new Map();
-const finalJobStatuses = new Set(["completed", "completed_with_errors", "failed", "waiting_question"]);
+const finalJobStatuses = new Set(["completed", "completed_with_errors", "failed", "waiting_question", "cancelled"]);
 
 function appendJobLog(job, message, actor = "system", level = "info") {
   if (!job) return;
@@ -131,6 +131,7 @@ function serverJobStatusLabel(status = "") {
     completed_with_errors: "일부 실패",
     failed: "실패",
     waiting_question: "확인 필요",
+    cancelled: "취소",
     planned: "계획"
   })[status] || status || "대기";
 }
@@ -1680,6 +1681,48 @@ function detectHumanLoopReasons(text, workType) {
   return Array.from(new Map(reasons.map((item) => [item.id, item])).values()).map((item) => ({ id: item.id, reason: item.reason }));
 }
 
+function buildHumanLoopQuestion(reasons = []) {
+  const riskyIds = new Set(["overwrite", "external_send", "cost_or_quota", "secret_or_auth", "git_write", "unclear_save_target"]);
+  const risky = reasons.some((item) => riskyIds.has(item.id));
+  const choices = risky
+    ? [
+        {
+          id: "safe_plan",
+          label: "안전 분석만 진행",
+          description: "파일 쓰기, Git 쓰기, 외부 전송, 비용 발생 없이 계획과 산출물만 만듭니다.",
+          recommended: true
+        },
+        {
+          id: "cancel",
+          label: "취소",
+          description: "작업을 멈추고 큐에 취소 상태로 남깁니다.",
+          recommended: false
+        }
+      ]
+    : [
+        {
+          id: "continue_as_written",
+          label: "현재 지시로 진행",
+          description: "지금 입력을 기준으로 직원 실행을 재개합니다.",
+          recommended: true
+        },
+        {
+          id: "cancel",
+          label: "취소",
+          description: "작업을 멈추고 큐에 취소 상태로 남깁니다.",
+          recommended: false
+        }
+      ];
+  return {
+    title: risky ? "안전모드로 진행할까요?" : "현재 지시로 진행할까요?",
+    message: risky
+      ? "위험하거나 되돌리기 어려운 작업 가능성이 있어 멈췄습니다. 안전 분석은 실제 변경 없이 진행합니다."
+      : "지시가 모호해서 멈췄습니다. 현재 입력 그대로 진행하거나 취소할 수 있습니다.",
+    reasons,
+    choices
+  };
+}
+
 function inferTaskEffort(text, workType) {
   const value = String(text || "");
   const compact = value.replace(/\s+/g, "");
@@ -1811,6 +1854,7 @@ function createYomiTaskCapsule(message, route) {
   const title = compactLine(route.task || message, 36) || "새 업무";
   const questionReasons = detectHumanLoopReasons(route.task || message, workType);
   const staffing = inferTaskEffort(route.task || message, workType);
+  const humanLoopQuestion = questionReasons.length ? buildHumanLoopQuestion(questionReasons) : null;
   return {
     id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     createdAt: new Date().toISOString(),
@@ -1848,6 +1892,7 @@ function createYomiTaskCapsule(message, route) {
     },
     needsQuestion: questionReasons.length > 0,
     questionReasons,
+    humanLoopQuestion,
     humanLoopRules
   };
 }
@@ -1880,6 +1925,7 @@ function createYomiAssignmentPlan(capsule) {
     subtasks,
     questionRequired: capsule.needsQuestion,
     questionReasons: capsule.questionReasons,
+    humanLoopQuestion: capsule.humanLoopQuestion,
     nextAction: capsule.needsQuestion ? "사용자 확인 후 실행 계획 확정" : "2단계 병렬 직원 실행 대기"
   };
 }
@@ -1945,6 +1991,8 @@ function publicOrchestrationJob(job) {
     completedAt: job.completedAt,
     capsule: job.capsule,
     plan: job.plan,
+    humanLoopQuestion: job.humanLoopQuestion || job.plan?.humanLoopQuestion || job.capsule?.humanLoopQuestion || null,
+    humanLoopAnswer: job.humanLoopAnswer || null,
     subtasks: job.subtasks,
     report: job.report || "",
     error: job.error || "",
@@ -2319,6 +2367,8 @@ function createOrchestrationJob(message, route, orchestration) {
     route,
     capsule: orchestration.capsule,
     plan: orchestration.plan,
+    humanLoopQuestion: orchestration.plan.humanLoopQuestion || orchestration.capsule.humanLoopQuestion || null,
+    humanLoopAnswer: null,
     subtasks: (orchestration.plan.subtasks || []).map((step) => ({ ...step, output: "", error: "", attempts: 0 })),
     report: "",
     error: "",
@@ -2338,6 +2388,78 @@ function createOrchestrationJob(message, route, orchestration) {
     });
   });
   return job;
+}
+
+function resolveHumanLoopChoice(question, choiceId) {
+  const choices = question?.choices || [];
+  return choices.find((choice) => choice.id === choiceId) || null;
+}
+
+function resumeOrchestrationJob(job, choice, note = "") {
+  job.humanLoopAnswer = {
+    choiceId: choice.id,
+    label: choice.label,
+    note: String(note || "").trim(),
+    answeredAt: new Date().toISOString()
+  };
+  job.capsule = {
+    ...job.capsule,
+    needsQuestion: false,
+    humanLoopQuestion: null,
+    resolvedQuestionReasons: job.capsule?.questionReasons || [],
+    questionReasons: [],
+    constraints: [
+      ...(job.capsule?.constraints || []),
+      choice.id === "safe_plan"
+        ? "사용자가 안전 분석만 진행을 선택했다. 실제 파일 쓰기, Git 쓰기, 외부 전송, 비용 발생은 하지 않는다."
+        : "사용자가 현재 지시 기준으로 진행을 선택했다."
+    ]
+  };
+  job.plan = {
+    ...job.plan,
+    questionRequired: false,
+    questionReasons: [],
+    humanLoopQuestion: null,
+    nextAction: "사용자 확인 완료 후 병렬 직원 실행"
+  };
+  job.humanLoopQuestion = null;
+  job.status = "queued";
+  job.updatedAt = new Date().toISOString();
+  for (const step of job.subtasks || []) {
+    if (step.status === "planned") step.status = "queued";
+  }
+  appendJobLog(job, `사용자 선택: ${choice.label}. 작업을 재개합니다.`, "ceo");
+  queueMicrotask(() => {
+    runOrchestrationJob(job).catch((error) => {
+      job.status = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+      job.updatedAt = new Date().toISOString();
+      appendJobLog(job, `직원 실행 재개 실패: ${job.error}`, "ceo", "error");
+      recordWorkflowError("요미 병렬 실행 재개", job.error);
+    });
+  });
+  return job;
+}
+
+function answerOrchestrationQuestion(input = {}) {
+  const id = String(input.id || "");
+  const choiceId = String(input.choiceId || input.choice || "");
+  const job = orchestrationJobs.get(id);
+  if (!job) throw new Error("요미 직원 실행 작업을 찾을 수 없습니다");
+  if (job.status !== "waiting_question") throw new Error("현재 확인 대기 상태가 아닙니다");
+  const choice = resolveHumanLoopChoice(job.humanLoopQuestion || job.plan?.humanLoopQuestion || job.capsule?.humanLoopQuestion, choiceId);
+  if (!choice) throw new Error("선택지를 찾을 수 없습니다");
+  if (choice.id === "cancel") {
+    job.status = "cancelled";
+    job.completedAt = new Date().toISOString();
+    job.updatedAt = job.completedAt;
+    job.humanLoopAnswer = { choiceId: choice.id, label: choice.label, note: String(input.note || "").trim(), answeredAt: job.completedAt };
+    job.saved = { ok: false, skipped: true, reason: "사용자가 확인 단계에서 작업을 취소했습니다." };
+    appendJobLog(job, "사용자가 작업을 취소했습니다.", "ceo", "warn");
+    setOrchestrationRuntime(job, "사용자 취소", "failed");
+    return job;
+  }
+  return resumeOrchestrationJob(job, choice, input.note);
 }
 
 async function generateCodexConversation(message) {
@@ -2611,6 +2733,14 @@ const server = createServer(async (request, response) => {
       const job = orchestrationJobs.get(String(url.searchParams.get("id") || ""));
       if (!job) return sendJson(response, 404, { ok: false, error: "요미 직원 실행 작업을 찾을 수 없습니다" });
       return sendJson(response, 200, { ok: true, job: publicOrchestrationJob(job) });
+    }
+    if (request.method === "POST" && url.pathname === "/api/orchestration-job/answer") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, { ok: true, job: publicOrchestrationJob(answerOrchestrationQuestion(body)) });
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
     }
     if (!request.method || !["GET", "HEAD"].includes(request.method)) return sendText(response, 405, "Method not allowed");
     if (url.pathname.startsWith("/assets/")) return await serveAssetFile(response, url.pathname.slice("/assets/".length));
