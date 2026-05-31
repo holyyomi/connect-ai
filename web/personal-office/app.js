@@ -37,6 +37,8 @@ const nodes = {
   officeCurrentTask: document.getElementById("officeCurrentTask"),
   officeAgentStatus: document.getElementById("officeAgentStatus"),
   officeChainStatus: document.getElementById("officeChainStatus"),
+  taskQueueStatus: document.getElementById("taskQueueStatus"),
+  taskQueueList: document.getElementById("taskQueueList"),
   officeSummaryStage: document.getElementById("officeSummaryStage"),
   agentList: document.getElementById("agentList"),
   agentSkillStatus: document.getElementById("agentSkillStatus"),
@@ -51,6 +53,8 @@ const nodes = {
   aiStatus: document.getElementById("aiStatus"),
   codexStatus: document.getElementById("codexStatus"),
   claudeStatus: document.getElementById("claudeStatus"),
+  styleProfileStatus: document.getElementById("styleProfileStatus"),
+  styleProfileMeta: document.getElementById("styleProfileMeta"),
   vaultStatus: document.getElementById("vaultStatus"),
   vaultPath: document.getElementById("vaultPath"),
   reportCount: document.getElementById("reportCount"),
@@ -114,7 +118,11 @@ let latestOfficeTask = "";
 let skillUpdateBusy = false;
 let officeJobPollTimer = null;
 let activeOfficeJobId = "";
+let codexJobPollTimer = null;
+let activeCodexJobId = "";
+let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
+const completedCodexJobIds = new Set();
 const agentPositions = Object.fromEntries(agents.map((agent) => [agent.id, { x: agent.x, y: agent.y }]));
 const phaseMeetingSpots = [
   { ceo: { x: 50, y: 45 }, secretary: { x: 43, y: 50 } },
@@ -423,6 +431,9 @@ function resetOffice() {
   if (officeJobPollTimer) clearInterval(officeJobPollTimer);
   officeJobPollTimer = null;
   activeOfficeJobId = "";
+  if (codexJobPollTimer) clearInterval(codexJobPollTimer);
+  codexJobPollTimer = null;
+  activeCodexJobId = "";
   resetAgentPositions();
   clearCollaborationCue();
   nodes.agentLayer?.querySelectorAll(".agent").forEach((el) => el.classList.remove("walking", "working"));
@@ -888,6 +899,8 @@ function updateDashboard(data) {
   if (nodes.aiStatus) nodes.aiStatus.textContent = providerLabel(data.llm?.provider);
   if (nodes.codexStatus) nodes.codexStatus.textContent = data.codex?.available ? "정상" : "대기";
   if (nodes.claudeStatus) nodes.claudeStatus.textContent = data.claude?.available ? "수동 호출 가능" : "대기";
+  if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = data.context?.styleProfile?.enabled ? "RAG+톤 적용" : "프로필 꺼짐";
+  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = data.context?.styleProfile?.label || "Vault RAG와 톤 프로필";
   if (nodes.dashboardLastReport) nodes.dashboardLastReport.textContent = data.lastReport?.displayPath || cleanDisplayPath(data.lastReport?.relPath) || "저장된 보고서 없음";
   const current = data.workflow?.current || {};
   if (nodes.dashboardWorkflowStatus) nodes.dashboardWorkflowStatus.textContent = workflowStatusLabel(current.status);
@@ -1016,6 +1029,39 @@ function officeJobStatusLabel(status = "") {
     waiting_question: "확인 필요",
     planned: "계획"
   })[status] || status || "대기";
+}
+
+function taskQueueTone(status = "") {
+  if (["failed"].includes(status)) return "bad";
+  if (["waiting_question", "completed_with_errors", "retrying"].includes(status)) return "warn";
+  return "";
+}
+
+function formatQueueTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function jobFinished(status = "") {
+  return ["completed", "completed_with_errors", "failed", "waiting_question"].includes(status);
+}
+
+function renderJobLogs(logs = []) {
+  if (!nodes.activityLog) return;
+  nodes.activityLog.innerHTML = "";
+  const rows = logs.slice(-8).reverse();
+  if (!rows.length) {
+    nodes.activityLog.innerHTML = '<div class="empty">아직 표시할 로그가 없습니다.</div>';
+    return;
+  }
+  rows.forEach((log) => {
+    const row = document.createElement("div");
+    row.className = `log-row ${log.level === "error" || log.level === "warn" ? "warn" : ""}`;
+    row.innerHTML = `<strong>${escapeHtml(log.actor || "system")}</strong><span>${escapeHtml(formatQueueTime(log.createdAt))}</span><p>${escapeHtml(log.message || "")}</p>`;
+    nodes.activityLog.append(row);
+  });
 }
 
 function subtaskStatusMap(subtasks = []) {
@@ -1232,6 +1278,7 @@ async function pollOfficeJob(jobId, originalMessage = "") {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const job = data.job;
     renderOfficeJobResult(job, originalMessage, true);
+    await loadTaskQueue({ resume: false });
     if (officeJobDone(job.status) && officeJobPollTimer) {
       clearInterval(officeJobPollTimer);
       officeJobPollTimer = null;
@@ -1251,6 +1298,139 @@ function startOfficeJobPolling(jobId, originalMessage = "") {
     if (activeOfficeJobId) pollOfficeJob(activeOfficeJobId, originalMessage);
   }, 1800);
   pollOfficeJob(jobId, originalMessage);
+}
+
+function renderCodexJobResult(job, announceFinal = false) {
+  if (!job) return;
+  latestOfficeTask = job.task || latestOfficeTask;
+  const activeIds = jobFinished(job.status) ? [] : ["developer"];
+  renderAgents(activeIds.length ? ["developer"] : [], { developer: officeJobStatusLabel(job.status) });
+  renderOfficeAgentStatus(activeIds, { developer: { status: job.status, label: officeJobStatusLabel(job.status), detail: "Codex CLI" } });
+  renderPipeline(-1, job.status === "completed");
+  renderJobLogs(job.logs || []);
+  if (nodes.phaseBadge) nodes.phaseBadge.textContent = officeJobStatusLabel(job.status);
+  if (nodes.saveNotice) nodes.saveNotice.textContent = job.saved?.ok ? `Vault 저장 완료: ${job.saved.relPath}` : job.saved?.reason || "코덱스 작업 저장 대기";
+  const output = job.output?.trim() || job.stderr?.trim() || job.error || "Codex CLI가 작업을 실행 중입니다.";
+  setOfficeProgress({
+    status: `코덱스 · ${officeJobStatusLabel(job.status)}`,
+    task: job.task || "코덱스 작업",
+    chainStatus: job.status,
+    detail: [
+      "# 코덱스 작업",
+      "",
+      `- 작업 ID: ${job.id}`,
+      `- 상태: ${officeJobStatusLabel(job.status)}`,
+      job.commandLabel ? `- 실행: ${job.commandLabel}` : "",
+      `- 저장: ${job.saved?.ok ? job.saved.relPath : job.saved?.reason || "대기"}`,
+      "",
+      "## 출력",
+      output
+    ].filter(Boolean).join("\n")
+  });
+  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `작업 ID: ${job.id} · ${officeJobStatusLabel(job.status)}`;
+  if (nodes.chatResultPreview) {
+    nodes.chatResultPreview.textContent = [
+      "# 코덱스 작업",
+      "",
+      `입력: ${job.task || ""}`,
+      `작업 ID: ${job.id}`,
+      `상태: ${officeJobStatusLabel(job.status)}`,
+      `저장: ${job.saved?.ok ? job.saved.relPath : job.saved?.reason || "대기"}`,
+      "",
+      "## 출력",
+      output
+    ].join("\n");
+  }
+  if (announceFinal && jobFinished(job.status) && !completedCodexJobIds.has(job.id)) {
+    completedCodexJobIds.add(job.id);
+    addChatMessage("assistant", compactReply(output, 900), "YOMI AI", officeJobStatusLabel(job.status));
+  }
+}
+
+async function pollCodexJob(jobId) {
+  if (!jobId) return;
+  try {
+    const response = await fetch(`/api/codex-job?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const job = data.job;
+    renderCodexJobResult(job, true);
+    await loadTaskQueue({ resume: false });
+    if (jobFinished(job.status) && codexJobPollTimer) {
+      clearInterval(codexJobPollTimer);
+      codexJobPollTimer = null;
+      activeCodexJobId = "";
+      await refreshState();
+    }
+  } catch (error) {
+    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `코덱스 상태 확인 실패: ${error.message}`;
+  }
+}
+
+function startCodexJobPolling(jobId) {
+  if (!jobId) return;
+  if (codexJobPollTimer) clearInterval(codexJobPollTimer);
+  activeCodexJobId = jobId;
+  codexJobPollTimer = setInterval(() => {
+    if (activeCodexJobId) pollCodexJob(activeCodexJobId);
+  }, 2200);
+  pollCodexJob(jobId);
+}
+
+function renderTaskQueue(state = {}) {
+  if (!nodes.taskQueueList) return;
+  const jobs = state.jobs || [];
+  if (nodes.taskQueueStatus) {
+    const running = state.summary?.running || 0;
+    nodes.taskQueueStatus.textContent = running ? `${running}개 실행 중` : jobs.length ? `${jobs.length}개 기록` : "대기";
+  }
+  if (!jobs.length) {
+    nodes.taskQueueList.innerHTML = '<div class="office-agent-empty">대기 중인 작업이 없습니다.</div>';
+    return;
+  }
+  nodes.taskQueueList.innerHTML = jobs.slice(0, 8).map((job) => {
+    const active = job.id === activeOfficeJobId || job.id === activeCodexJobId ? " active" : "";
+    const tone = taskQueueTone(job.status);
+    return `
+      <button class="task-queue-item ${tone}${active}" type="button" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">
+        <strong>${escapeHtml(job.title || job.id)}</strong>
+        <span>${escapeHtml(job.type === "codex" ? "Codex" : "직원")}</span>
+        <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
+        <p>${escapeHtml(job.progress || job.detail || "")}</p>
+      </button>
+    `;
+  }).join("");
+}
+
+async function loadTaskQueue(options = {}) {
+  if (!nodes.taskQueueList) return null;
+  const { resume = false } = options;
+  try {
+    const response = await fetch("/api/task-queue?limit=20", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    renderTaskQueue(data);
+    if (resume && !taskQueueLoadedOnce) {
+      taskQueueLoadedOnce = true;
+      const running = (data.jobs || []).find((job) => ["running", "queued", "retrying", "finalizing"].includes(job.status));
+      if (running?.type === "office") startOfficeJobPolling(running.id, running.title || "");
+      if (running?.type === "codex") startCodexJobPolling(running.id);
+    }
+    return data;
+  } catch (error) {
+    if (nodes.taskQueueStatus) nodes.taskQueueStatus.textContent = "로드 실패";
+    nodes.taskQueueList.innerHTML = `<div class="empty">작업 큐 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
+function handleTaskQueueClick(event) {
+  const button = event.target.closest("button[data-job-id]");
+  if (!button || !nodes.taskQueueList?.contains(button)) return;
+  const id = button.dataset.jobId || "";
+  const type = button.dataset.jobType || "";
+  if (type === "office") return startOfficeJobPolling(id, "");
+  if (type === "codex") return startCodexJobPolling(id);
 }
 
 function showYomiRoutingPending(message) {
@@ -1298,6 +1478,7 @@ function updateChatResultPanel(data, originalMessage) {
         renderOfficeJobResult(data.officeJob, originalMessage, false);
         if (!officeJobDone(data.officeJob.status)) startOfficeJobPolling(data.officeJob.id, originalMessage);
         else renderOfficeJobResult(data.officeJob, originalMessage, true);
+        loadTaskQueue({ resume: false });
       }
       return;
     }
@@ -1331,6 +1512,8 @@ function updateChatResultPanel(data, originalMessage) {
       "",
       data.reply || ""
     ].filter(Boolean).join("\n");
+    if (job?.id) startCodexJobPolling(job.id);
+    loadTaskQueue({ resume: false });
     return;
   }
 
@@ -1357,7 +1540,7 @@ function updateChatResultPanel(data, originalMessage) {
     return;
   }
 
-  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = data.sources?.length ? `참조 문서 ${data.sources.length}개` : "일반 대화";
+  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = data.context?.sourceCount ? `자동 Vault 참조 ${data.context.sourceCount}개 · ${data.context.profile?.label || "톤 프로필"}` : data.sources?.length ? `참조 문서 ${data.sources.length}개` : "일반 대화";
   nodes.chatResultPreview.textContent = [
     "# 최근 응답",
     "",
@@ -1404,6 +1587,7 @@ async function submitChat(event) {
       await refreshState();
       await loadRecentReports();
     }
+    await loadTaskQueue({ resume: false });
   } catch (error) {
     addChatMessage("assistant", `처리 실패: ${error.message}`, "YOMI AI", "오류");
     nodes.chatStatus.textContent = "오류";
@@ -1457,6 +1641,7 @@ if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkill
 if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handleConnectionSubmit);
 if (nodes.connectionResetBtn) nodes.connectionResetBtn.addEventListener("click", resetConnectionForm);
 if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleConnectionClick);
+if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
@@ -1470,4 +1655,6 @@ renderAgentsList();
 refreshState();
 loadRecentReports();
 loadConnectionsState();
+loadTaskQueue({ resume: true });
 setInterval(refreshState, 15000);
+setInterval(() => loadTaskQueue({ resume: false }), 5000);

@@ -12,6 +12,7 @@ const assetsRoot = path.join(projectRoot, "assets");
 const workflowConfigPath = path.join(webRoot, "workflow.json");
 const skillsConfigPath = path.join(webRoot, "skills.json");
 const connectionsConfigPath = path.join(webRoot, "connections.json");
+const styleProfilePath = path.join(webRoot, "style-profile.json");
 
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) return;
@@ -85,8 +86,59 @@ const defaultAutomationRules = {
   keywords: ["자산", "저장", "정리", "계획", "결정", "절차", "아이디어", "자동화", "프롬프트", "RAG", "옵시디언"]
 };
 let automationRules = { ...defaultAutomationRules, keywords: [...defaultAutomationRules.keywords] };
+
+const defaultStyleProfile = {
+  label: "YOMI 기본 개인 톤",
+  enabled: true,
+  voice: [
+    "한국어로 바로 실행 가능한 답을 먼저 제시한다.",
+    "과한 설명보다 판단, 이유, 다음 행동을 짧고 명확하게 쓴다.",
+    "사용자를 사장님처럼 존중하되 과장된 칭찬이나 장식적 표현은 줄인다."
+  ],
+  format: [
+    "긴 글은 짧은 제목과 불릿으로 나눈다.",
+    "중요한 결과물은 목표, 핵심 판단, 실행 순서, 남은 리스크 순서로 정리한다.",
+    "Vault에 재사용될 수 있는 산출물은 나중에 검색하기 쉬운 키워드를 자연스럽게 포함한다."
+  ],
+  avoid: [
+    "고정 안내문, 사용법 반복, 불필요한 모드 설명",
+    "근거 없는 확정 표현",
+    "실행하지 않은 일을 완료한 것처럼 쓰기"
+  ]
+};
 const codexJobs = new Map();
 const orchestrationJobs = new Map();
+const finalJobStatuses = new Set(["completed", "completed_with_errors", "failed", "waiting_question"]);
+
+function appendJobLog(job, message, actor = "system", level = "info") {
+  if (!job) return;
+  if (!Array.isArray(job.logs)) job.logs = [];
+  job.logs.push({ createdAt: new Date().toISOString(), actor, level, message: String(message || "") });
+  job.logs = job.logs.slice(-80);
+}
+
+function publicJobLogs(job, limit = 40) {
+  return Array.isArray(job?.logs) ? job.logs.slice(-limit) : [];
+}
+
+function serverJobStatusLabel(status = "") {
+  return ({
+    queued: "대기",
+    running: "실행 중",
+    retrying: "재시도",
+    finalizing: "취합 중",
+    completed: "완료",
+    completed_with_errors: "일부 실패",
+    failed: "실패",
+    waiting_question: "확인 필요",
+    planned: "계획"
+  })[status] || status || "대기";
+}
+
+function jobTimeValue(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -596,6 +648,91 @@ async function searchVaultMarkdown(query, limit = 6) {
   return { connected: true, query: cleanQuery, results: results.slice(0, Math.max(1, Math.min(12, limit))) };
 }
 
+function normalizeStyleProfile(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const list = (key) => {
+    const value = Array.isArray(source[key]) ? source[key] : defaultStyleProfile[key];
+    return value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 12);
+  };
+  return {
+    label: String(source.label || defaultStyleProfile.label),
+    enabled: source.enabled !== false,
+    voice: list("voice"),
+    format: list("format"),
+    avoid: list("avoid")
+  };
+}
+
+async function readStyleProfile() {
+  if (!(await exists(styleProfilePath))) return normalizeStyleProfile(defaultStyleProfile);
+  return normalizeStyleProfile(await readJson(styleProfilePath, defaultStyleProfile));
+}
+
+function formatStyleProfilePrompt(profile) {
+  if (!profile?.enabled) return "";
+  return [
+    "## 사용자 톤/스타일 프로필",
+    `프로필: ${profile.label}`,
+    "",
+    "### 말투",
+    ...profile.voice.map((item) => `- ${item}`),
+    "",
+    "### 형식",
+    ...profile.format.map((item) => `- ${item}`),
+    "",
+    "### 피할 것",
+    ...profile.avoid.map((item) => `- ${item}`)
+  ].join("\n");
+}
+
+function formatVaultContextPrompt(sources = []) {
+  if (!sources.length) {
+    return [
+      "## 자동 Vault 참조",
+      "관련 Vault 자산을 찾지 못했습니다. 사용자가 준 입력과 현재 역할에 근거해 진행합니다."
+    ].join("\n");
+  }
+  return [
+    "## 자동 Vault 참조",
+    "아래 문서는 사용자의 기존 자산에서 자동으로 찾은 참고자료입니다. 직접 관련 있는 내용만 반영하고, 부족하면 부족하다고 밝힙니다.",
+    "",
+    ...sources.map((item, index) => [
+      `### 참고 ${index + 1}. ${item.title}`,
+      `- 경로: ${item.displayPath || item.relPath}`,
+      `- 점수: ${item.score}`,
+      "",
+      item.excerpt
+    ].join("\n"))
+  ].join("\n\n");
+}
+
+function publicContextSummary(context = {}) {
+  const sources = context.sources || [];
+  return {
+    profile: context.profile ? { label: context.profile.label, enabled: context.profile.enabled } : null,
+    vaultConnected: Boolean(context.vaultConnected),
+    sourceCount: sources.length,
+    sources: sources.map((item) => ({ title: item.title, relPath: item.relPath, displayPath: item.displayPath, score: item.score }))
+  };
+}
+
+async function buildPersonalContext(query, options = {}) {
+  const profile = await readStyleProfile();
+  const search = await searchVaultMarkdown(query, options.limit || 4);
+  const sources = (search.results || [])
+    .filter((item) => !isLowValueVaultOverviewDoc(item))
+    .slice(0, Math.max(0, Math.min(8, Number(options.limit || 4))));
+  return {
+    profile,
+    vaultConnected: Boolean(search.connected),
+    sources,
+    promptBlock: [
+      formatStyleProfilePrompt(profile),
+      formatVaultContextPrompt(sources)
+    ].filter(Boolean).join("\n\n")
+  };
+}
+
 async function listRecentReports(limit = 12) {
   const vaultRoot = await findVaultRoot();
   if (!vaultRoot) return { ok: true, reports: [] };
@@ -879,6 +1016,7 @@ function publicWorkflowRuntime() {
 
 async function buildOfficeState() {
   const vaultRoot = await findVaultRoot();
+  const styleProfile = await readStyleProfile();
   const reportDirs = vaultRoot ? reportFolderNames.map((folderName) => path.join(vaultRoot, "50_Outputs", folderName)) : [];
   const latest = (vaultRoot ? await Promise.all(reportDirs.map((dir) => latestMarkdownFile(dir))) : []).filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null;
   const counts = { autoCaptures: 0, knowledgeDrafts: 0, autoDigests: 0, dailyReviews: 0, webOfficeReports: 0 };
@@ -906,6 +1044,11 @@ async function buildOfficeState() {
     claude: { available: true, command: claudeCommand(), manualOnly: true },
     workflow: publicWorkflowRuntime(),
     skills: await buildSkillsState(),
+    context: {
+      autoRag: true,
+      styleProfile: { label: styleProfile.label, enabled: styleProfile.enabled },
+      vaultContextLimit: 4
+    },
     vault: { connected: Boolean(vaultRoot), path: vaultRoot },
     counts,
     today,
@@ -1131,10 +1274,14 @@ async function runClaudeText(prompt, label) {
 
 async function runCodexWorkflowStep({ task, workflowName, step, agent, previousSteps = [], reworkNotes = "" }) {
   const previous = previousSteps.map((item, index) => `### 이전 단계 ${index + 1}: ${item.label} · ${item.agentName}\n${item.content}`).join("\n\n") || "이전 단계 없음";
+  const context = await buildPersonalContext(`${task} ${workflowName} ${step.label || ""} ${agent?.role || ""}`, { limit: 4 });
   const prompt = [
     "너는 YOMI AI 개인 사무실의 직원 에이전트다.",
     "아래 역할에 맞춰 실제 산출물을 한국어 Markdown으로 작성한다.",
     "삭제, 이동, 외부 시스템 변경 같은 위험한 명령은 실행하지 말고 필요한 경우 제안만 한다.",
+    "사용자 톤/스타일 프로필과 자동 Vault 참조를 우선 반영하되, 관련성이 낮은 자료는 억지로 쓰지 않는다.",
+    "",
+    context.promptBlock,
     "",
     `워크플로우: ${workflowName}`,
     `직원: ${agent?.name || step.agent}`,
@@ -1280,7 +1427,8 @@ function publicCodexJob(job) {
     output: String(job.output || "").slice(-16000),
     stderr: String(job.stderr || "").slice(-8000),
     error: job.error || "",
-    saved: job.saved || null
+    saved: job.saved || null,
+    logs: publicJobLogs(job)
   };
 }
 
@@ -1322,8 +1470,10 @@ function createCodexJob(task) {
     stderr: "",
     exitCode: null,
     error: "",
-    saved: null
+    saved: null,
+    logs: []
   };
+  appendJobLog(job, "코덱스 작업이 큐에 등록되었습니다.", "taeo");
   codexJobs.set(job.id, job);
   runCodexJob(job, command);
   return job;
@@ -1332,18 +1482,33 @@ function createCodexJob(task) {
 function runCodexJob(job, command) {
   job.status = "running";
   job.updatedAt = new Date().toISOString();
+  appendJobLog(job, "Codex CLI 실행을 시작했습니다.", "taeo");
   const child = spawn(command, ["exec", "--sandbox", "read-only", job.task], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   const timer = setTimeout(() => {
     job.error = "timeout";
+    appendJobLog(job, "제한 시간을 넘겨 작업을 중단합니다.", "taeo", "warn");
     child.kill();
   }, codexTimeoutMs);
-  child.stdout.on("data", (chunk) => { job.output = (job.output + chunk.toString()).slice(-maxCodexOutputBytes); });
-  child.stderr.on("data", (chunk) => { job.stderr = (job.stderr + chunk.toString()).slice(-maxCodexOutputBytes); });
+  child.stdout.on("data", (chunk) => {
+    job.output = (job.output + chunk.toString()).slice(-maxCodexOutputBytes);
+    const now = Date.now();
+    if (!job.lastStreamLogAt || now - job.lastStreamLogAt > 2200) {
+      appendJobLog(job, `출력을 수신 중입니다. 현재 ${job.output.length.toLocaleString("ko-KR")}자`, "taeo");
+      job.lastStreamLogAt = now;
+    }
+    job.updatedAt = new Date().toISOString();
+  });
+  child.stderr.on("data", (chunk) => {
+    job.stderr = (job.stderr + chunk.toString()).slice(-maxCodexOutputBytes);
+    appendJobLog(job, "오류 출력이 감지되었습니다.", "taeo", "warn");
+    job.updatedAt = new Date().toISOString();
+  });
   child.on("error", async (error) => {
     clearTimeout(timer);
     job.status = "failed";
     job.error = error.message;
     job.updatedAt = new Date().toISOString();
+    appendJobLog(job, `실행 실패: ${job.error}`, "taeo", "error");
     await saveCodexJobReport(job);
   });
   child.on("close", async (code) => {
@@ -1351,6 +1516,7 @@ function runCodexJob(job, command) {
     job.exitCode = code;
     job.status = code === 0 && !job.error ? "completed" : "failed";
     job.updatedAt = new Date().toISOString();
+    appendJobLog(job, job.status === "completed" ? "코덱스 작업이 완료되었습니다." : `코덱스 작업이 실패했습니다. 종료 코드: ${code}`, "taeo", job.status === "completed" ? "info" : "error");
     await saveCodexJobReport(job);
   });
 }
@@ -1783,7 +1949,71 @@ function publicOrchestrationJob(job) {
     report: job.report || "",
     error: job.error || "",
     llm: job.llm,
-    saved: job.saved || null
+    saved: job.saved || null,
+    logs: publicJobLogs(job),
+    context: publicContextSummary(job.context)
+  };
+}
+
+function taskQueueCodexRow(job) {
+  const latestOutput = String(job.output || job.stderr || job.error || "").trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] || "";
+  return {
+    type: "codex",
+    id: job.id,
+    title: job.task || "코덱스 작업",
+    status: job.status,
+    statusLabel: serverJobStatusLabel(job.status),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: finalJobStatuses.has(job.status) ? job.updatedAt : "",
+    detail: job.commandLabel || "Codex CLI",
+    progress: latestOutput.slice(0, 180),
+    saved: job.saved || null,
+    activeAgentIds: job.status === "running" ? ["developer"] : [],
+    logs: publicJobLogs(job, 8)
+  };
+}
+
+function taskQueueOrchestrationRow(job) {
+  const subtasks = job.subtasks || [];
+  const completed = subtasks.filter((step) => step.status === "completed").length;
+  const current = subtasks.find((step) => ["running", "retrying"].includes(step.status))
+    || subtasks.find((step) => step.status === "queued")
+    || subtasks.find((step) => !["completed", "failed"].includes(step.status));
+  return {
+    type: "office",
+    id: job.id,
+    title: job.capsule?.normalizedTask || job.capsule?.goal || job.message || "요미 직원 실행",
+    status: job.status,
+    statusLabel: serverJobStatusLabel(job.status),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt || (finalJobStatuses.has(job.status) ? job.updatedAt : ""),
+    detail: `${completed}/${subtasks.length || 0}명 완료 · ${job.capsule?.staffing?.level || "standard"}`,
+    progress: current ? `${current.agentName || current.agentId} · ${current.label || "진행 중"} · ${serverJobStatusLabel(current.status)}` : (job.error || job.saved?.reason || ""),
+    saved: job.saved || null,
+    activeAgentIds: finalJobStatuses.has(job.status) ? [] : subtasks.filter((step) => ["running", "retrying", "queued"].includes(step.status)).map((step) => step.agentId).filter(Boolean),
+    logs: publicJobLogs(job, 8)
+  };
+}
+
+function buildTaskQueueState(limit = 20) {
+  const jobs = [
+    ...[...orchestrationJobs.values()].map(taskQueueOrchestrationRow),
+    ...[...codexJobs.values()].map(taskQueueCodexRow)
+  ]
+    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  const running = jobs.filter((job) => ["queued", "running", "retrying", "finalizing"].includes(job.status));
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      total: jobs.length,
+      running: running.length,
+      attention: jobs.filter((job) => ["failed", "waiting_question", "completed_with_errors"].includes(job.status)).length
+    },
+    jobs
   };
 }
 
@@ -1811,10 +2041,14 @@ function orchestrationOutputSummary(subtasks = []) {
 async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [] }) {
   const agent = resolveAgent(subtask.agentId) || { name: subtask.agentName, role: subtask.role, work: "" };
   const previous = previousOutputs.length ? orchestrationOutputSummary(previousOutputs) : "이전 그룹 산출물 없음";
+  const contextBlock = job.context?.promptBlock || "";
   const prompt = [
     "너는 YOMI AI 개인 사무실의 직원 에이전트다.",
     "현재 단계는 병렬 직원 실행 단계이며, 실제 파일 쓰기, Git 쓰기, 외부 전송은 하지 않는다.",
     "아래 작업캡슐과 네 역할에 맞춰 한국어 Markdown 산출물을 작성한다.",
+    "사용자 톤/스타일 프로필과 자동 Vault 참조를 우선 반영하되, 직접 관련 있는 내용만 사용한다.",
+    "",
+    contextBlock,
     "",
     "## 작업캡슐",
     JSON.stringify(job.capsule, null, 2),
@@ -1846,6 +2080,7 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
   subtask.startedAt = new Date().toISOString();
   subtask.updatedAt = subtask.startedAt;
   subtask.attempts = 1;
+  appendJobLog(job, `${subtask.agentName || subtask.agentId} 실행 시작: ${subtask.label}`, subtask.agentId || "agent");
   if (subtask.agentId) workflowRuntime.agentTaskCounts[subtask.agentId] = (workflowRuntime.agentTaskCounts[subtask.agentId] || 0) + 1;
   try {
     const generated = await runYomiSubtaskAttempt({ job, subtask, previousOutputs });
@@ -1854,12 +2089,14 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
     subtask.status = "completed";
     subtask.completedAt = new Date().toISOString();
     subtask.updatedAt = subtask.completedAt;
+    appendJobLog(job, `${subtask.agentName || subtask.agentId} 완료: ${subtask.label}`, subtask.agentId || "agent");
     return subtask;
   } catch (firstError) {
     subtask.status = "retrying";
     subtask.error = firstError instanceof Error ? firstError.message : String(firstError);
     subtask.updatedAt = new Date().toISOString();
     subtask.attempts = 2;
+    appendJobLog(job, `${subtask.agentName || subtask.agentId} 재시도: ${subtask.error}`, subtask.agentId || "agent", "warn");
     try {
       const generated = await runYomiSubtaskAttempt({ job, subtask, previousOutputs });
       subtask.output = generated.text;
@@ -1868,12 +2105,14 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
       subtask.error = "";
       subtask.completedAt = new Date().toISOString();
       subtask.updatedAt = subtask.completedAt;
+      appendJobLog(job, `${subtask.agentName || subtask.agentId} 재시도 후 완료: ${subtask.label}`, subtask.agentId || "agent");
       return subtask;
     } catch (secondError) {
       subtask.status = "failed";
       subtask.error = secondError instanceof Error ? secondError.message : String(secondError);
       subtask.completedAt = new Date().toISOString();
       subtask.updatedAt = subtask.completedAt;
+      appendJobLog(job, `${subtask.agentName || subtask.agentId} 실패: ${subtask.error}`, subtask.agentId || "agent", "error");
       recordWorkflowError(`${subtask.agentName} · ${subtask.label}`, subtask.error);
       return subtask;
     }
@@ -1881,11 +2120,15 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
 }
 
 async function buildYomiFinalReport(job) {
+  const contextBlock = job.context?.promptBlock || "";
   const prompt = [
     "너는 YOMI AI의 총괄 매니저 요미다.",
     "직원별 병렬 산출물을 하나의 최종 보고서로 취합한다.",
     "실패한 직원이 있으면 숨기지 말고 실패 사유와 대체 판단을 명시한다.",
     "파일 저장, Git 쓰기, 외부 전송은 하지 않는다.",
+    "사용자 톤/스타일 프로필을 지키고, 자동 Vault 참조에서 직접 관련 있는 기존 자산만 녹여낸다.",
+    "",
+    contextBlock,
     "",
     "## 작업캡슐",
     JSON.stringify(job.capsule, null, 2),
@@ -2008,12 +2251,16 @@ async function runOrchestrationJob(job) {
   if (job.plan?.questionRequired) {
     job.status = "waiting_question";
     job.updatedAt = new Date().toISOString();
+    appendJobLog(job, "사용자 확인이 필요해 실행을 멈췄습니다.", "ceo", "warn");
     setOrchestrationRuntime(job, "사용자 확인 대기", "failed");
     return;
   }
   job.status = "running";
   job.startedAt = new Date().toISOString();
   job.updatedAt = job.startedAt;
+  job.context = job.context || await buildPersonalContext(`${job.capsule?.normalizedTask || job.message || ""} ${job.capsule?.workType || ""}`, { limit: 5 });
+  appendJobLog(job, `자동 Vault 참조 ${job.context.sources.length}개와 톤 프로필을 적용했습니다.`, "archivist");
+  appendJobLog(job, "직원 병렬 실행을 시작했습니다.", "ceo");
   setOrchestrationRuntime(job, "직원 실행 시작", "running");
   const groups = new Map();
   for (const subtask of job.subtasks) {
@@ -2026,19 +2273,23 @@ async function runOrchestrationJob(job) {
     for (const groupIndex of Array.from(groups.keys()).sort((a, b) => a - b)) {
       const group = groups.get(groupIndex);
       setOrchestrationRuntime(job, `병렬 그룹 ${groupIndex + 1}`, "running");
+      appendJobLog(job, `병렬 그룹 ${groupIndex + 1} 실행 중 · ${group.length}명`, "ceo");
       job.updatedAt = new Date().toISOString();
       const groupResults = await Promise.all(group.map((subtask) => executeOrchestrationSubtask(job, subtask, completedOutputs.slice())));
       completedOutputs.push(...groupResults);
       job.updatedAt = new Date().toISOString();
+      appendJobLog(job, `병렬 그룹 ${groupIndex + 1} 완료`, "ceo");
     }
     const failed = job.subtasks.filter((step) => step.status === "failed");
     job.status = failed.length ? "failed" : "finalizing";
     setOrchestrationRuntime(job, failed.length ? "실패 포함 취합" : "요미 최종 취합", failed.length ? "failed" : "evaluating");
+    appendJobLog(job, failed.length ? "실패 항목을 포함해 최종 취합합니다." : "요미가 최종 보고서를 취합합니다.", "ceo", failed.length ? "warn" : "info");
     job.report = await buildYomiFinalReport(job);
     job.status = failed.length ? "completed_with_errors" : "completed";
     await saveReusableOrchestrationAssets(job);
     job.completedAt = new Date().toISOString();
     job.updatedAt = job.completedAt;
+    appendJobLog(job, job.status === "completed" ? "직원 실행이 완료되었습니다." : "직원 실행이 일부 실패로 완료되었습니다.", "ceo", failed.length ? "warn" : "info");
     workflowRuntime.runCount += 1;
     if (failed.length) workflowRuntime.statusCounts.failed += 1;
     else workflowRuntime.statusCounts.success += 1;
@@ -2048,6 +2299,7 @@ async function runOrchestrationJob(job) {
     job.error = error instanceof Error ? error.message : String(error);
     job.completedAt = new Date().toISOString();
     job.updatedAt = job.completedAt;
+    appendJobLog(job, `직원 실행 중단: ${job.error}`, "ceo", "error");
     workflowRuntime.statusCounts.failed += 1;
     setOrchestrationRuntime(job, "중단", "failed");
     recordWorkflowError("요미 병렬 실행", job.error);
@@ -2071,14 +2323,17 @@ function createOrchestrationJob(message, route, orchestration) {
     report: "",
     error: "",
     saved: { ok: false, skipped: true, reason: "완료 후 재사용 가치가 있으면 Vault 50_Outputs에 자동 저장합니다." },
-    llm: { provider: "codex-cli", model: "parallel-worker-pool", used: false }
+    llm: { provider: "codex-cli", model: "parallel-worker-pool", used: false },
+    logs: []
   };
+  appendJobLog(job, "요미 작업이 큐에 등록되었습니다.", "ceo");
   orchestrationJobs.set(job.id, job);
   queueMicrotask(() => {
     runOrchestrationJob(job).catch((error) => {
       job.status = "failed";
       job.error = error instanceof Error ? error.message : String(error);
       job.updatedAt = new Date().toISOString();
+      appendJobLog(job, `직원 실행 예약 실패: ${job.error}`, "ceo", "error");
       recordWorkflowError("요미 병렬 실행", job.error);
     });
   });
@@ -2086,23 +2341,32 @@ function createOrchestrationJob(message, route, orchestration) {
 }
 
 async function generateCodexConversation(message) {
+  const context = await buildPersonalContext(message, { limit: 4 });
   const prompt = [
     "너는 YOMI AI의 총괄 매니저 요미다.",
     "사용자의 질문에 한국어로 직접 답한다.",
     "고정 안내문이나 사용법 안내로 빠지지 말고, 요청한 산출물을 바로 제공한다.",
     "외부 최신 정보가 필요하지만 확인할 수 없으면 그 한계를 짧게 밝히고 일반적인 답을 제공한다.",
+    "사용자 톤/스타일 프로필을 지키고, 자동 Vault 참조가 직접 관련 있으면 답변에 반영한다.",
+    "",
+    context.promptBlock,
     "",
     `사용자 입력: ${message}`
   ].join("\n");
-  return await runCodexText(prompt, "대화 응답 생성");
+  const generated = await runCodexText(prompt, "대화 응답 생성");
+  return { ...generated, context: publicContextSummary(context) };
 }
 
 async function generateClaudeConversation(message) {
+  const profile = await readStyleProfile();
   const prompt = [
     "너는 YOMI AI 개인 사무실에서 사용자가 명시적으로 호출한 Claude Code CLI다.",
     "사용자가 /cc 또는 /claude 명령을 썼을 때만 이 호출이 실행된다.",
     "한국어로 답하고, 요청한 산출물을 바로 제공한다.",
     "이 호출은 안전한 계획 모드다. 파일 수정, 삭제, Git 쓰기, 외부 전송 같은 상태 변경은 실행하지 말고 필요한 경우 확인 질문이나 제안으로만 남긴다.",
+    "사용자 톤/스타일 프로필을 지킨다.",
+    "",
+    formatStyleProfilePrompt(profile),
     "",
     `사용자 요청: ${message}`
   ].join("\n");
@@ -2110,6 +2374,7 @@ async function generateClaudeConversation(message) {
 }
 
 async function generateCodexVaultAnswer(message, sources) {
+  const profile = await readStyleProfile();
   const sourceText = sources.length
     ? sources.map((item, index) => `자료 ${index + 1}\n제목: ${item.title}\n경로: ${item.displayPath || item.relPath}\n발췌: ${item.excerpt}`).join("\n\n")
     : "검색된 자료 없음";
@@ -2117,6 +2382,9 @@ async function generateCodexVaultAnswer(message, sources) {
     "너는 YOMI AI의 저장소 분석 담당이다.",
     "아래 Vault 검색 결과만 근거로 사용자 질문에 답한다.",
     "자료가 부족하면 부족하다고 말하고, 다음에 어떤 키워드로 찾으면 좋을지 제안한다.",
+    "사용자 톤/스타일 프로필을 지킨다.",
+    "",
+    formatStyleProfilePrompt(profile),
     "",
     `사용자 질문: ${message}`,
     "",
@@ -2212,6 +2480,7 @@ async function runChatMessage({ message }) {
   if (route.intent === "vault") {
     const search = await searchVaultMarkdown(route.task || message, 5);
     const sources = search.results || [];
+    const profile = await readStyleProfile();
     const generated = await generateCodexVaultAnswer(message, sources);
     return {
       intent: "vault",
@@ -2219,6 +2488,7 @@ async function runChatMessage({ message }) {
       reply: generated.text,
       sources,
       llm: { provider: "codex-cli", model: "exec", used: true },
+      context: { profile: { label: profile.label, enabled: profile.enabled }, vaultConnected: search.connected, sourceCount: sources.length, sources },
       capture: { ok: false, skipped: true, reason: "저장소 검색 답변은 자동 저장하지 않았습니다" }
     };
   }
@@ -2228,8 +2498,9 @@ async function runChatMessage({ message }) {
     intent: "general",
     modeLabel: "Codex 대화",
     reply: generated.text,
-    sources: [],
+    sources: generated.context?.sources || [],
     llm: { provider: "codex-cli", model: "exec", used: true },
+    context: generated.context,
     capture: { ok: false, skipped: true, reason: "B 단계에서는 채팅 저장 정책을 변경하지 않았습니다" }
   };
 }
@@ -2287,6 +2558,12 @@ const server = createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || "127.0.0.1"}`);
     if (request.method === "GET" && url.pathname === "/api/health") return sendJson(response, 200, { ok: true });
     if (request.method === "GET" && url.pathname === "/api/office-state") return sendJson(response, 200, await buildOfficeState());
+    if (request.method === "GET" && url.pathname === "/api/task-queue") return sendJson(response, 200, buildTaskQueueState(Math.max(1, Math.min(50, Number(url.searchParams.get("limit") || 20)))));
+    if (request.method === "GET" && url.pathname === "/api/context-profile") {
+      const limit = Math.max(1, Math.min(8, Number(url.searchParams.get("limit") || 4)));
+      const context = await buildPersonalContext(String(url.searchParams.get("q") || ""), { limit });
+      return sendJson(response, 200, { ok: true, context: publicContextSummary(context) });
+    }
     if (request.method === "GET" && url.pathname === "/api/skills-state") return sendJson(response, 200, await buildSkillsState());
     if (request.method === "POST" && url.pathname === "/api/skills-state") {
       const body = await readJsonBody(request);

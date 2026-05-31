@@ -117,6 +117,10 @@
               <div class="card-head"><strong>직원 상태</strong><span>활성 / 대기</span></div>
               <div class="office-agent-status" id="officeAgentStatus"></div>
             </section>
+            <section class="office-status-card task-queue-card">
+              <div class="card-head"><strong>작업 큐</strong><span id="taskQueueStatus">확인 중</span></div>
+              <div class="task-queue-list" id="taskQueueList"></div>
+            </section>
             <section class="office-status-card">
               <div class="card-head"><strong>체인 로그</strong><span id="officeChainStatus">대기</span></div>
               <div class="activity-log" id="activityLog"></div>
@@ -169,6 +173,7 @@
           <article class="setting-card"><span>메인 엔진</span><strong id="aiStatus">확인 중</strong><small>Codex CLI 중심</small></article>
           <article class="setting-card"><span>Codex 실행</span><strong id="codexStatus">확인 중</strong><small>대화/라우팅/업무 실행</small></article>
           <article class="setting-card"><span>Claude 수동호출</span><strong id="claudeStatus">확인 중</strong><small>/cc, /claude 전용</small></article>
+          <article class="setting-card"><span>개인화</span><strong id="styleProfileStatus">확인 중</strong><small id="styleProfileMeta">Vault RAG와 톤 프로필</small></article>
           <article class="setting-card wide"><span>Vault</span><strong id="settingsVaultPath">경로 확인 중</strong><small>마크다운 저장 위치</small></article>
         </div>
         <section id="braveKeyGuide" class="brave-key-guide" hidden aria-hidden="true">
