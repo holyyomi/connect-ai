@@ -121,7 +121,11 @@ const nodes = {
   chatProvider: document.getElementById("chatProvider"),
   chatMemory: document.getElementById("chatMemory"),
   chatRunMeta: document.getElementById("chatRunMeta"),
-  chatSources: document.getElementById("chatSources")
+  chatSources: document.getElementById("chatSources"),
+  chatSessionList: document.getElementById("chatSessionList"),
+  newChatSessionBtn: document.getElementById("newChatSessionBtn"),
+  skillCandidateStatus: document.getElementById("skillCandidateStatus"),
+  skillCandidateList: document.getElementById("skillCandidateList")
 };
 
 let phaseTimer = null;
@@ -136,6 +140,9 @@ let officeJobPollTimer = null;
 let activeOfficeJobId = "";
 let codexJobPollTimer = null;
 let activeCodexJobId = "";
+let activeChatSessionId = "";
+let chatSessionsState = { sessions: [] };
+let skillCandidatesState = { candidates: [] };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
 const completedCodexJobIds = new Set();
@@ -1231,6 +1238,136 @@ function renderChatSources(sources = []) {
   nodes.chatSources.innerHTML = sources.map((item) => `<div class="chat-source"><strong>${escapeHtml(item.title || "문서")}</strong><span>${escapeHtml(item.displayPath || item.relPath || "")}</span><small>${escapeHtml(item.excerpt || "")}</small></div>`).join("");
 }
 
+function renderChatSessions(state = chatSessionsState) {
+  chatSessionsState = state || { sessions: [] };
+  if (!nodes.chatSessionList) return;
+  const sessions = chatSessionsState.sessions || [];
+  if (!sessions.length) {
+    nodes.chatSessionList.innerHTML = '<div class="empty">대화 기록 없음</div>';
+    return;
+  }
+  nodes.chatSessionList.innerHTML = sessions.slice(0, 18).map((session) => `
+    <button class="chat-session-item ${session.id === activeChatSessionId ? "active" : ""}" type="button" data-session-id="${escapeHtml(session.id)}">
+      <strong>${escapeHtml(session.title || "새 대화")}</strong>
+      <span>${escapeHtml(session.lastMode || `${session.turnCount || 0}턴`)}</span>
+      <small>${escapeHtml(session.lastUser || "")}</small>
+    </button>
+  `).join("");
+}
+
+function renderSessionTurns(session) {
+  if (!session || !nodes.chatThread) return;
+  nodes.chatThread.innerHTML = "";
+  for (const turn of session.turns || []) {
+    addChatMessage("user", turn.user || "", "나", "기록");
+    const meta = turn.capture?.ok ? "Vault 저장" : turn.skillCandidateIds?.length ? "스킬 후보" : turn.modeLabel || "기록";
+    addChatMessage("assistant", turn.assistant || "", "YOMI AI", meta);
+  }
+  if (nodes.chatMemory) nodes.chatMemory.textContent = `${session.turnCount || session.turns?.length || 0}턴 기록`;
+}
+
+async function loadChatSessions(selectId = "") {
+  if (!nodes.chatSessionList) return null;
+  try {
+    const url = selectId ? `/api/chat-sessions?id=${encodeURIComponent(selectId)}` : "/api/chat-sessions";
+    const response = await fetch(url, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    chatSessionsState = data;
+    if (!activeChatSessionId && data.sessions?.[0]) activeChatSessionId = data.sessions[0].id;
+    renderChatSessions(data);
+    if (data.selected) {
+      activeChatSessionId = data.selected.id;
+      renderChatSessions(data);
+      renderSessionTurns(data.selected);
+    }
+    return data;
+  } catch (error) {
+    nodes.chatSessionList.innerHTML = `<div class="empty">대화 기록 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
+function startNewChatSession() {
+  activeChatSessionId = "";
+  if (nodes.chatThread) nodes.chatThread.innerHTML = "";
+  if (nodes.chatMemory) nodes.chatMemory.textContent = "새 대화";
+  renderChatSessions(chatSessionsState);
+}
+
+function handleChatSessionClick(event) {
+  const button = event.target.closest("button[data-session-id]");
+  if (!button || !nodes.chatSessionList?.contains(button)) return;
+  loadChatSessions(button.dataset.sessionId || "");
+}
+
+function renderSkillCandidates(state = skillCandidatesState) {
+  skillCandidatesState = state || { candidates: [] };
+  if (!nodes.skillCandidateList) return;
+  const candidates = (skillCandidatesState.candidates || []).filter((candidate) => candidate.status !== "dismissed").slice(0, 12);
+  const pending = candidates.filter((candidate) => candidate.status === "pending");
+  if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = pending.length ? `${pending.length}개 대기` : "대기";
+  if (!candidates.length) {
+    nodes.skillCandidateList.innerHTML = '<div class="empty">스킬 후보 없음</div>';
+    return;
+  }
+  nodes.skillCandidateList.innerHTML = candidates.map((candidate) => `
+    <article class="skill-candidate-item ${escapeHtml(candidate.status || "")}">
+      <strong>${escapeHtml(candidate.title || candidate.id)}</strong>
+      <span>${escapeHtml((candidate.agentIds || []).map((id) => agents.find((agent) => agent.id === id)?.name || id).join(", "))}</span>
+      <small>${escapeHtml(candidate.description || "")}</small>
+      <div class="connection-row-actions">
+        ${candidate.status === "approved" ? `<b>적용됨</b>` : `
+          <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">스킬 적용</button>
+          <button type="button" data-skill-candidate-action="dismiss" data-candidate-id="${escapeHtml(candidate.id)}">숨김</button>
+        `}
+      </div>
+    </article>
+  `).join("");
+}
+
+async function loadSkillCandidates() {
+  if (!nodes.skillCandidateList) return null;
+  try {
+    const response = await fetch("/api/skill-candidates", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderSkillCandidates(data);
+    return data;
+  } catch (error) {
+    if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = "로드 실패";
+    nodes.skillCandidateList.innerHTML = `<div class="empty">스킬 후보 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
+async function handleSkillCandidateClick(event) {
+  const button = event.target.closest("button[data-skill-candidate-action]");
+  if (!button || !nodes.skillCandidateList?.contains(button)) return;
+  button.disabled = true;
+  const action = button.dataset.skillCandidateAction || "";
+  const id = button.dataset.candidateId || "";
+  try {
+    const response = await fetch("/api/skill-candidates", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, id })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    if (data.skills) renderSkillsState(data.skills);
+    await loadSkillCandidates();
+    if (action === "approve") {
+      addChatMessage("assistant", "대화에서 만든 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI AI", "스킬 적용");
+      if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = "스킬 적용 완료";
+    }
+  } catch (error) {
+    if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = `처리 실패: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function compactReply(text, maxLength = 520) {
   const value = String(text || "").trim();
   if (value.length <= maxLength) return value;
@@ -1746,7 +1883,14 @@ function updateChatResultPanel(data, originalMessage) {
   const modeLabel = data.modeLabel || "일반대화";
   nodes.chatResultMode.textContent = modeLabel;
   if (nodes.chatProvider) nodes.chatProvider.textContent = providerLabel(data.llm?.provider);
-  if (nodes.chatMemory) nodes.chatMemory.textContent = `대화 기록 ${nodes.chatThread.querySelectorAll(".chat-message").length}개`;
+  if (nodes.chatMemory) {
+    const capture = data.memory?.capture || data.capture;
+    nodes.chatMemory.textContent = capture?.ok
+      ? `Vault 저장: ${capture.relPath}`
+      : data.memory?.skillCandidateIds?.length
+        ? `스킬 후보 ${data.memory.skillCandidateIds.length}개`
+        : capture?.reason || `대화 기록 ${nodes.chatThread.querySelectorAll(".chat-message").length}개`;
+  }
 
   if (data.intent === "office") {
     if (data.officePlan) {
@@ -1856,9 +2000,10 @@ async function submitChat(event) {
     showYomiRoutingPending(message.replace(/^\/업무\s*/i, ""));
   }
   try {
-    const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) });
+    const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, sessionId: activeChatSessionId }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (data.memory?.session?.id) activeChatSessionId = data.memory.session.id;
     const modeLabel = data.modeLabel || "일반대화";
     const bubbleReply = data.intent === "office"
       ? data.officePlan
@@ -1877,6 +2022,8 @@ async function submitChat(event) {
     nodes.chatStatus.textContent = modeLabel;
     renderChatSources(data.sources || []);
     updateChatResultPanel(data, message);
+    await loadChatSessions();
+    await loadSkillCandidates();
     if ((data.intent === "office" && !data.officePlan) || data.intent === "codex") {
       await refreshState();
       await loadRecentReports();
@@ -1940,6 +2087,9 @@ if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventLis
 if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);
 if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
 if (nodes.humanLoopPanel) nodes.humanLoopPanel.addEventListener("click", handleHumanLoopClick);
+if (nodes.chatSessionList) nodes.chatSessionList.addEventListener("click", handleChatSessionClick);
+if (nodes.newChatSessionBtn) nodes.newChatSessionBtn.addEventListener("click", startNewChatSession);
+if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click", handleSkillCandidateClick);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
@@ -1955,6 +2105,8 @@ refreshState();
 loadRecentReports();
 loadConnectionsState();
 loadAutomationTriggersState();
+loadChatSessions();
+loadSkillCandidates();
 loadTaskQueue({ resume: true });
 setInterval(refreshState, 15000);
 setInterval(loadAutomationTriggersState, 10000);

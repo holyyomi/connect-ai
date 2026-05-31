@@ -14,6 +14,9 @@ const skillsConfigPath = path.join(webRoot, "skills.json");
 const connectionsConfigPath = path.join(webRoot, "connections.json");
 const automationTriggersConfigPath = path.join(webRoot, "automation-triggers.json");
 const styleProfilePath = path.join(webRoot, "style-profile.json");
+const runtimeRoot = path.join(webRoot, "runtime");
+const chatSessionsPath = path.join(runtimeRoot, "chat-sessions.json");
+const skillCandidatesPath = path.join(runtimeRoot, "skill-candidates.json");
 
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) return;
@@ -181,6 +184,11 @@ async function readJson(filePath, fallback) {
   } catch (error) {
     return { ...fallback, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function writeJsonFile(filePath, value) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function defaultConnectionsConfig() {
@@ -1457,6 +1465,358 @@ async function exportVaultDocument(input = {}) {
   };
 }
 
+function defaultChatSessionsState() {
+  return { sessions: [] };
+}
+
+function normalizeChatSessionsState(input = {}) {
+  const sessions = Array.isArray(input.sessions) ? input.sessions : [];
+  return {
+    sessions: sessions.map((session) => ({
+      id: String(session.id || ""),
+      title: String(session.title || "새 대화"),
+      createdAt: String(session.createdAt || ""),
+      updatedAt: String(session.updatedAt || ""),
+      turns: Array.isArray(session.turns) ? session.turns.map((turn) => ({
+        id: String(turn.id || ""),
+        createdAt: String(turn.createdAt || ""),
+        user: String(turn.user || ""),
+        assistant: String(turn.assistant || ""),
+        intent: String(turn.intent || ""),
+        modeLabel: String(turn.modeLabel || ""),
+        capture: turn.capture && typeof turn.capture === "object" ? turn.capture : null,
+        skillCandidateIds: normalizeStringList(turn.skillCandidateIds || []),
+        sources: Array.isArray(turn.sources) ? turn.sources.slice(0, 6) : []
+      })) : []
+    })).filter((session) => session.id)
+  };
+}
+
+async function readChatSessionsState() {
+  if (!(await exists(chatSessionsPath))) return defaultChatSessionsState();
+  return normalizeChatSessionsState(await readJson(chatSessionsPath, defaultChatSessionsState()));
+}
+
+async function writeChatSessionsState(state) {
+  const normalized = normalizeChatSessionsState(state);
+  normalized.sessions = normalized.sessions
+    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, 80)
+    .map((session) => ({ ...session, turns: session.turns.slice(-80) }));
+  await writeJsonFile(chatSessionsPath, normalized);
+  return normalized;
+}
+
+function publicChatSessionSummary(session) {
+  const lastTurn = session.turns?.[session.turns.length - 1] || {};
+  return {
+    id: session.id,
+    title: session.title,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    turnCount: session.turns?.length || 0,
+    lastUser: compactLine(lastTurn.user || "", 90),
+    lastMode: lastTurn.modeLabel || ""
+  };
+}
+
+function publicChatSession(session) {
+  return {
+    ...publicChatSessionSummary(session),
+    turns: (session.turns || []).map((turn) => ({
+      ...turn,
+      assistant: String(turn.assistant || "").slice(0, 12000)
+    }))
+  };
+}
+
+async function buildChatSessionsState(input = {}) {
+  const state = await readChatSessionsState();
+  const selected = input.id ? state.sessions.find((session) => session.id === String(input.id)) : null;
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    sessions: state.sessions.map(publicChatSessionSummary),
+    selected: selected ? publicChatSession(selected) : null
+  };
+}
+
+function getOrCreateChatSession(state, sessionId, firstMessage) {
+  const existing = state.sessions.find((session) => session.id === sessionId);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const session = {
+    id: `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    title: compactLine(firstMessage, 44) || "새 대화",
+    createdAt: now,
+    updatedAt: now,
+    turns: []
+  };
+  state.sessions.unshift(session);
+  return session;
+}
+
+function isLowValueConversation(message = "") {
+  const value = String(message || "").trim();
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length < 14) return true;
+  if (/^(진행|다음|좋아|오케이|ㅇㅋ|링크|고마워|감사|수정해|계속|해줘)[.!?~]*$/i.test(compact)) return true;
+  if (/(오늘\s*뭐\s*하면|뭐하지|뭘\s*해야|안녕|테스트|ㅋㅋ|ㅎㅎ)/i.test(value) && compact.length < 40) return true;
+  return false;
+}
+
+function assessConversationMemory(message, result = {}) {
+  const userText = String(message || "");
+  const replyText = String(result.reply || "");
+  const joined = `${userText}\n${replyText}`;
+  if (!automationRules.chatAssetCapture) return { shouldSave: false, shouldSkill: false, reason: "대화 자동 자산화가 꺼져 있습니다." };
+  if (isLowValueConversation(userText)) return { shouldSave: false, shouldSkill: false, reason: "일회성 짧은 대화라 저장하지 않았습니다." };
+
+  const explicitMemory = /(기억|저장|메모|앞으로|항상|절대|하지\s*마|하지말|내\s*(규칙|원칙|기준|방식|말투|스타일|선호)|이렇게\s*해|기본값|원칙)/i.test(userText);
+  const durableWork = /(규칙|원칙|기준|정책|체크리스트|템플릿|프로세스|워크플로우|자동화|반복|매뉴얼|가이드|절차|포맷|프롬프트|운영\s*방식)/i.test(joined);
+  const skillIntent = /(스킬|skill|스킬로|템플릿|프로세스|워크플로우|반복|항상|앞으로|기본\s*방식|내\s*방식)/i.test(userText);
+  const workIntent = ["office", "codex"].includes(result.intent);
+  const substantial = userText.length >= 70 && replyText.length >= 500;
+  const shouldSave = explicitMemory || durableWork || workIntent || substantial;
+  const shouldSkill = (skillIntent || (durableWork && explicitMemory)) && userText.length >= 20;
+  return {
+    shouldSave,
+    shouldSkill,
+    reason: shouldSave
+      ? explicitMemory
+        ? "사용자 규칙/선호/기억 요청으로 저장했습니다."
+        : durableWork
+          ? "반복 가능한 절차나 기준이 포함되어 저장했습니다."
+          : workIntent
+            ? "업무 실행 맥락이라 세션 자산으로 기록했습니다."
+            : "충분히 긴 대화 산출물이라 저장했습니다."
+      : "재사용 가치가 낮아 Vault 저장은 건너뛰었습니다."
+  };
+}
+
+async function saveConversationMemoryToVault({ session, turn, assessment }) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return { ok: false, skipped: true, reason: "Vault 경로를 찾지 못했습니다." };
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const outDir = path.join(vaultRoot, "50_Outputs", primaryReportFolder, "Conversation Assets", day);
+  await mkdir(outDir, { recursive: true });
+  const title = compactLine(turn.user || session.title || "대화 자산", 52);
+  const fullPath = path.join(outDir, `${stamp}-${slugify(title)}.md`);
+  const relPath = path.relative(vaultRoot, fullPath).replace(/\\/g, "/");
+  const frontmatter = [
+    "---",
+    `type: ${yamlString("yomi_ai_conversation_asset")}`,
+    `created: ${now.toISOString()}`,
+    `session: ${yamlString(session.id)}`,
+    `turn: ${yamlString(turn.id)}`,
+    `intent: ${yamlString(turn.intent)}`,
+    `tags: [${["yomi-ai", "personal-office", "conversation-memory", "auto-asset"].map(yamlString).join(", ")}]`,
+    "---"
+  ].join("\n");
+  const body = [
+    `# ${title}`,
+    "",
+    `- 저장 이유: ${assessment.reason}`,
+    `- 대화 모드: ${turn.modeLabel || turn.intent || "general"}`,
+    "",
+    "## 사용자 입력",
+    turn.user,
+    "",
+    "## 요미 응답",
+    turn.assistant,
+    turn.sources?.length ? `\n## 참고 문서\n${turn.sources.map((item, index) => `${index + 1}. ${item.title || "문서"} · ${item.displayPath || item.relPath || ""}`).join("\n")}` : ""
+  ].filter(Boolean).join("\n");
+  await writeFile(fullPath, `${frontmatter}\n\n${body}\n`, "utf8");
+  return { ok: true, relPath, fullPath, reason: assessment.reason };
+}
+
+function defaultSkillCandidatesState() {
+  return { candidates: [] };
+}
+
+function normalizeSkillCandidate(input = {}) {
+  const title = compactLine(input.title || input.label || "대화 기반 스킬", 42);
+  const id = String(input.id || `skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
+  const agentIds = normalizeStringList(input.agentIds || ["ceo", "writer", "archivist"]).filter((idValue) => specialistRoles.some((agent) => agent.id === idValue));
+  return {
+    id,
+    title,
+    description: String(input.description || "").trim() || `${title}에 맞춰 반복 업무를 처리합니다.`,
+    instructions: String(input.instructions || "").trim(),
+    agentIds: agentIds.length ? agentIds : ["ceo", "writer", "archivist"],
+    toolId: slugId(input.toolId || `memory-${title}`),
+    status: String(input.status || "pending"),
+    sourceSessionId: String(input.sourceSessionId || ""),
+    sourceTurnId: String(input.sourceTurnId || ""),
+    createdAt: String(input.createdAt || new Date().toISOString()),
+    updatedAt: String(input.updatedAt || input.createdAt || new Date().toISOString()),
+    appliedAt: String(input.appliedAt || "")
+  };
+}
+
+function normalizeSkillCandidatesState(input = {}) {
+  const candidates = Array.isArray(input.candidates) ? input.candidates : [];
+  return { candidates: candidates.map(normalizeSkillCandidate).filter((candidate) => candidate.id) };
+}
+
+async function readSkillCandidatesState() {
+  if (!(await exists(skillCandidatesPath))) return defaultSkillCandidatesState();
+  return normalizeSkillCandidatesState(await readJson(skillCandidatesPath, defaultSkillCandidatesState()));
+}
+
+async function writeSkillCandidatesState(state) {
+  const normalized = normalizeSkillCandidatesState(state);
+  normalized.candidates = normalized.candidates
+    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, 120);
+  await writeJsonFile(skillCandidatesPath, normalized);
+  return normalized;
+}
+
+function candidateAgentsFromText(text = "") {
+  const value = String(text || "");
+  const ids = new Set(["ceo", "archivist"]);
+  if (/(글|문서|블로그|카피|원고|스토리|콘텐츠)/i.test(value)) ids.add("writer");
+  if (/(편집|검수|문법|톤|말투)/i.test(value)) ids.add("editor");
+  if (/(개발|코드|테스트|git|배포|버그)/i.test(value)) ids.add("developer");
+  if (/(조사|리서치|근거|자료|트렌드|검색)/i.test(value)) ids.add("researcher");
+  if (/(전략|기획|시장|사업|분석)/i.test(value)) ids.add("business");
+  if (/(디자인|화면|UI|이미지)/i.test(value)) ids.add("designer");
+  if (/(영상|유튜브|릴스)/i.test(value)) ids.add("youtube");
+  if (/(SNS|인스타|스레드|트위터|X)/i.test(value)) ids.add("instagram");
+  return [...ids].filter((id) => specialistRoles.some((agent) => agent.id === id)).slice(0, 5);
+}
+
+async function createSkillCandidateFromTurn({ session, turn, assessment }) {
+  const state = await readSkillCandidatesState();
+  const sourceKey = `${session.id}:${turn.id}`;
+  const existing = state.candidates.find((candidate) => `${candidate.sourceSessionId}:${candidate.sourceTurnId}` === sourceKey);
+  if (existing) return existing;
+  const title = compactLine(turn.user.replace(/스킬로|만들어|기억|저장/gi, " ").trim(), 38) || "대화 기반 스킬";
+  const candidate = normalizeSkillCandidate({
+    title,
+    description: assessment.reason,
+    instructions: [
+      "이 스킬은 사용자의 대화에서 추출한 반복 가능한 업무 방식이다.",
+      "사용자 입력의 의도, 선호, 금지 조건을 먼저 확인하고 그 기준을 이후 산출물에 적용한다.",
+      "사소한 요청에는 필요한 담당자만 투입하고, 중요한 업무에는 근거/검수/저장 단계를 포함한다.",
+      "",
+      "## 원본 사용자 입력",
+      turn.user,
+      "",
+      "## 참고 응답",
+      compactLine(turn.assistant, 1200)
+    ].join("\n"),
+    agentIds: candidateAgentsFromText(`${turn.user}\n${turn.assistant}`),
+    sourceSessionId: session.id,
+    sourceTurnId: turn.id
+  });
+  state.candidates.unshift(candidate);
+  await writeSkillCandidatesState(state);
+  return candidate;
+}
+
+async function buildSkillCandidatesState() {
+  const state = await readSkillCandidatesState();
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    candidates: state.candidates
+  };
+}
+
+async function applySkillCandidate(candidateId) {
+  const state = await readSkillCandidatesState();
+  const candidate = state.candidates.find((item) => item.id === String(candidateId));
+  if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
+  const config = normalizeSkillsConfig(await readJson(skillsConfigPath, { agentSkills: {}, tools: {} }));
+  const baseToolId = slugId(candidate.toolId || candidate.title || "memory-skill");
+  let toolId = baseToolId;
+  let index = 2;
+  while (config.tools[toolId] && config.tools[toolId].sourceCandidateId !== candidate.id) {
+    toolId = `${baseToolId}-${index}`;
+    index += 1;
+  }
+  config.tools[toolId] = {
+    label: candidate.title,
+    enabled: true,
+    type: "memory_skill",
+    provider: "yomi-memory",
+    description: candidate.description,
+    instructions: candidate.instructions,
+    sourceCandidateId: candidate.id,
+    sourceSessionId: candidate.sourceSessionId,
+    sourceTurnId: candidate.sourceTurnId
+  };
+  for (const agentId of candidate.agentIds) {
+    const current = Array.isArray(config.agentSkills[agentId]) ? config.agentSkills[agentId].map(String) : [];
+    config.agentSkills[agentId] = [...new Set([...current, toolId])];
+    removeAgentSkillMarker(config.agentDisabledSkills, agentId, toolId);
+  }
+  pruneSkillsConfig(config);
+  await writeJsonFile(skillsConfigPath, config);
+  candidate.status = "approved";
+  candidate.toolId = toolId;
+  candidate.appliedAt = new Date().toISOString();
+  candidate.updatedAt = candidate.appliedAt;
+  await writeSkillCandidatesState(state);
+  return { ok: true, candidate, skills: await buildSkillsState() };
+}
+
+async function updateSkillCandidate(input = {}) {
+  const action = String(input.action || "");
+  if (action === "approve") return await applySkillCandidate(input.id);
+  const state = await readSkillCandidatesState();
+  const candidate = state.candidates.find((item) => item.id === String(input.id || ""));
+  if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
+  if (action === "dismiss") {
+    candidate.status = "dismissed";
+    candidate.updatedAt = new Date().toISOString();
+  } else {
+    throw new Error("Unknown skill candidate action");
+  }
+  await writeSkillCandidatesState(state);
+  return await buildSkillCandidatesState();
+}
+
+async function recordConversationTurn({ message, result, sessionId = "" }) {
+  const state = await readChatSessionsState();
+  const session = getOrCreateChatSession(state, String(sessionId || ""), message);
+  const assessment = assessConversationMemory(message, result);
+  const turn = {
+    id: `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: new Date().toISOString(),
+    user: String(message || ""),
+    assistant: String(result.reply || ""),
+    intent: String(result.intent || ""),
+    modeLabel: String(result.modeLabel || ""),
+    capture: { ok: false, skipped: true, reason: assessment.reason },
+    skillCandidateIds: [],
+    sources: Array.isArray(result.sources) ? result.sources.slice(0, 6).map((source) => ({
+      title: source.title || "",
+      relPath: source.relPath || "",
+      displayPath: source.displayPath || ""
+    })) : []
+  };
+  if (assessment.shouldSave) turn.capture = await saveConversationMemoryToVault({ session, turn, assessment });
+  if (assessment.shouldSkill) {
+    const candidate = await createSkillCandidateFromTurn({ session, turn, assessment });
+    turn.skillCandidateIds = [candidate.id];
+  }
+  session.turns.push(turn);
+  session.updatedAt = turn.createdAt;
+  if (!session.title || session.title === "새 대화") session.title = compactLine(message, 44) || session.title;
+  await writeChatSessionsState(state);
+  return {
+    session: publicChatSessionSummary(session),
+    capture: turn.capture,
+    skillCandidateIds: turn.skillCandidateIds,
+    saved: turn.capture?.ok ? turn.capture : null
+  };
+}
+
 function resolveAgent(id) {
   return specialistRoles.find((agent) => agent.id === id);
 }
@@ -2724,7 +3084,7 @@ async function generateCodexVaultAnswer(message, sources) {
   return await runCodexText(prompt, "저장소 답변 생성");
 }
 
-async function runChatMessage({ message }) {
+async function runChatMessageCore({ message }) {
   const explicitRoute = parseChatRoute(message);
   const route = explicitRoute.intent === "auto" ? await classifyChatRouteWithCodex(message) : explicitRoute;
   if (route.intent === "codex_error") {
@@ -2833,6 +3193,19 @@ async function runChatMessage({ message }) {
     context: generated.context,
     capture: { ok: false, skipped: true, reason: "B 단계에서는 채팅 저장 정책을 변경하지 않았습니다" }
   };
+}
+
+async function runChatMessage({ message, sessionId = "" }) {
+  const result = await runChatMessageCore({ message });
+  try {
+    result.memory = await recordConversationTurn({ message, result, sessionId });
+    if (!result.capture) result.capture = result.memory.capture;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    result.memory = { ok: false, capture: { ok: false, skipped: true, reason: `대화 자산화 실패: ${reason}` }, skillCandidateIds: [] };
+    recordWorkflowError("대화 자산화", reason);
+  }
+  return result;
 }
 
 function publicAutomationRules() {
@@ -3253,6 +3626,15 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (request.method === "GET" && url.pathname === "/api/skill-candidates") return sendJson(response, 200, await buildSkillCandidatesState());
+    if (request.method === "POST" && url.pathname === "/api/skill-candidates") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateSkillCandidate(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/connections") return sendJson(response, 200, await buildConnectionsState());
     if (request.method === "POST" && url.pathname === "/api/connections") {
       const body = await readJsonBody(request);
@@ -3287,11 +3669,12 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (request.method === "GET" && url.pathname === "/api/chat-sessions") return sendJson(response, 200, await buildChatSessionsState({ id: url.searchParams.get("id") || "" }));
     if (request.method === "POST" && url.pathname === "/api/chat") {
       const body = await readJsonBody(request);
       const message = String(body.message || "").trim();
       if (!message) return sendJson(response, 400, { ok: false, error: "메시지가 필요합니다" });
-      return sendJson(response, 200, { ok: true, ...(await runChatMessage({ message })) });
+      return sendJson(response, 200, { ok: true, ...(await runChatMessage({ message, sessionId: body.sessionId || "" })) });
     }
     if (request.method === "POST" && url.pathname === "/api/run-office-task") {
       const body = await readJsonBody(request);

@@ -9,3 +9,4 @@ preview.html
 releases/
 .env
 *.bak.*
+web/personal-office/runtime/

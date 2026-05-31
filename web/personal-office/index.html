@@ -32,19 +32,27 @@
           <button type="button" data-example-prompt="오늘 처리해야 할 업무를 직원별로 나눠서 실행 계획을 만들어줘">업무 분배</button>
         </div>
         <div class="chat-workspace">
-          <section class="chat-browser">
-            <div class="browser-main">
-              <div class="card-head"><strong>작업 결과</strong><span id="chatResultMode">대기</span></div>
-              <pre id="chatResultPreview">대화 결과가 여기에 표시됩니다.</pre>
-            </div>
-          </section>
-          <section class="chat-terminal">
-            <section class="chat-thread" id="chatThread"></section>
-            <form id="chatForm" class="chat-composer">
-              <textarea id="chatInput" rows="1" spellcheck="false" placeholder="메시지 입력"></textarea>
-              <button id="chatSendBtn" type="submit">보내기</button>
-            </form>
-          </section>
+          <aside class="chat-memory-panel">
+            <div class="card-head"><strong>대화 기록</strong><button id="newChatSessionBtn" class="mini-action" type="button">새 대화</button></div>
+            <div id="chatSessionList" class="chat-session-list"></div>
+            <div class="card-head"><strong>스킬 후보</strong><span id="skillCandidateStatus">대기</span></div>
+            <div id="skillCandidateList" class="skill-candidate-list"></div>
+          </aside>
+          <div class="chat-main-workspace">
+            <section class="chat-browser">
+              <div class="browser-main">
+                <div class="card-head"><strong>작업 결과</strong><span id="chatResultMode">대기</span></div>
+                <pre id="chatResultPreview">대화 결과가 여기에 표시됩니다.</pre>
+              </div>
+            </section>
+            <section class="chat-terminal">
+              <section class="chat-thread" id="chatThread"></section>
+              <form id="chatForm" class="chat-composer">
+                <textarea id="chatInput" rows="1" spellcheck="false" placeholder="메시지 입력"></textarea>
+                <button id="chatSendBtn" type="submit">보내기</button>
+              </form>
+            </section>
+          </div>
         </div>
       </section>
 
