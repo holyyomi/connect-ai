@@ -1,11 +1,11 @@
 # Connect AI Architecture
 
-This document describes the current architecture of the Connect AI repository and the YOMI AI personal office.
+This document describes the current architecture of the Connect AI repository and YOMI Office.
 
 The older Brain-GitHub sync-only architecture is no longer the full system picture. The current system combines:
 
 - VS Code/Cursor extension shell
-- local YOMI AI personal office web app
+- local YOMI Office web app
 - Codex CLI as the default engine
 - Claude Code CLI as the reasoning, writing, research synthesis, and review engine
 - Obsidian/Vault markdown assetization
@@ -58,7 +58,7 @@ Responsibilities include:
 
 Important note: generated output in `out/` should not be edited manually unless explicitly requested.
 
-## 3. YOMI Personal Office Layer
+## 3. YOMI Office Layer
 
 Main files:
 
@@ -146,7 +146,7 @@ Safety stance:
 
 ### Legacy Local Models
 
-The active YOMI personal office runtime uses Codex CLI and Claude Code CLI. Codex is the default for code/files/Git/terminal/default work; Claude Code is used for long reasoning, writing, research synthesis, and review.
+The active YOMI Office runtime uses Codex CLI and Claude Code CLI. Codex is the default for code/files/Git/terminal/default work; Claude Code is used for long reasoning, writing, research synthesis, and review.
 
 ## 5. Office Orchestration
 
@@ -243,7 +243,7 @@ C:\Users\a0104\Desktop\MY\obsidian
 Default YOMI output folder:
 
 ```text
-50_Outputs/YOMI AI/
+50_Outputs/YOMI Office/
 ```
 
 Reusable work should be saved as markdown with tags/frontmatter when the save target is clear.

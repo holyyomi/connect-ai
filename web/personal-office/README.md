@@ -1,6 +1,6 @@
-# YOMI AI Personal Office
+# YOMI Office / 요미오피스
 
-YOMI AI 개인 사무실은 Codex CLI를 기본 엔진으로 사용하는 로컬 웹 사무실입니다. 대화, 직원 인계, 진행 상태, Vault 저장, 스킬/도구 연결 상태를 한 화면에서 다룹니다.
+YOMI Office / 요미오피스는 Codex CLI를 기본 엔진으로 사용하는 로컬 웹 사무실입니다. 대화, 직원 인계, 진행 상태, Vault 저장, 스킬/도구 연결 상태를 한 화면에서 다룹니다.
 
 ## 실행
 
@@ -52,7 +52,7 @@ YOMI_AI_CLAUDE_PROMPT_TIMEOUT_MS
 YOMI_AI_CLAUDE_MAX_BUDGET_USD
 ```
 
-YOMI 개인 사무실 런타임은 Codex CLI와 Claude Code CLI만 사용합니다.
+YOMI Office 런타임은 Codex CLI와 Claude Code CLI만 사용합니다.
 
 ## 화면 구성
 
@@ -136,7 +136,7 @@ C:\Users\a0104\Desktop\MY\obsidian
 기본 저장 위치:
 
 ```text
-50_Outputs/YOMI AI/
+50_Outputs/YOMI Office/
 ```
 
 자동 저장 기준:

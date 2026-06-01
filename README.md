@@ -1,6 +1,6 @@
 # Connect AI
 
-Connect AI is a VS Code/Cursor extension project with a personal AI office called **YOMI AI**.
+Connect AI is a VS Code/Cursor extension project with a personal AI office called **YOMI Office / 요미오피스**.
 
 The active runtime is:
 
@@ -20,12 +20,12 @@ This project runs locally, but it is **not 100% offline** when Codex CLI, Claude
 | `out/extension.js` | Generated extension build output. Do not edit unless explicitly requested. |
 | `package.json` | Extension manifest, commands, settings, and scripts. |
 | `assets/` | Runtime assets, webview assets, templates, pixel characters, and seeds. |
-| `web/personal-office/` | YOMI AI personal office web app and local server. |
+| `web/personal-office/` | YOMI Office local web app and server. |
 | `docs/` | Project direction and handoff-oriented documents. |
 | `AGENTS.md` | Working rules for Codex and future agents. |
 | `ARCHITECTURE.md` | Current architecture reference. |
 
-## YOMI AI Personal Office
+## YOMI Office / 요미오피스
 
 The personal office is the current user-facing operating surface.
 
@@ -154,7 +154,7 @@ C:\Users\a0104\Desktop\MY\obsidian
 Default output area:
 
 ```text
-50_Outputs/YOMI AI/
+50_Outputs/YOMI Office/
 ```
 
 The app should automatically save clearly reusable reports and ask the user when filename, location, overwrite, external transfer, cost, or instruction ambiguity makes the next step unsafe.

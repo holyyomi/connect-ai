@@ -1,23 +1,23 @@
 const agents = [
-  { id: "ceo", name: "요미", role: "총괄 매니저", roleShort: "총괄", sprite: "/assets/pixel/characters/ceo.png", spriteSheet: "/assets/pixel/characters/ceo_sheet.png", x: 50, y: 45, work: "목표와 완료 기준을 정하고 직원 작업을 지휘합니다." },
-  { id: "secretary", name: "나래", role: "운영 비서", roleShort: "운영", sprite: "/assets/pixel/characters/secretary.png", spriteSheet: "/assets/pixel/characters/secretary_sheet.png", x: 39, y: 51, work: "업무 티켓, 체크리스트, 검토 기준을 챙깁니다." },
-  { id: "youtube", name: "유진", role: "영상 기획", roleShort: "영상", sprite: "/assets/pixel/characters/youtube.png", spriteSheet: "/assets/pixel/characters/youtube_sheet.png", x: 47, y: 22, work: "영상 훅, 제목, 구성을 설계합니다." },
-  { id: "instagram", name: "리아", role: "SNS 운영", roleShort: "SNS", sprite: "/assets/pixel/characters/instagram.png", spriteSheet: "/assets/pixel/characters/instagram_sheet.png", x: 57, y: 23, work: "SNS 캡션, 해시태그, 재활용 포맷을 만듭니다." },
-  { id: "designer", name: "이안", role: "디자인", roleShort: "디자인", sprite: "/assets/pixel/characters/designer.png", spriteSheet: "/assets/pixel/characters/designer_sheet.png", x: 74, y: 27, work: "화면 구조와 정보 위계를 점검합니다." },
-  { id: "developer", name: "태오", role: "개발", roleShort: "개발", sprite: "/assets/pixel/characters/developer.png", spriteSheet: "/assets/pixel/characters/developer_sheet.png", x: 46, y: 75, work: "파일, API, 자동화, 검증을 맡습니다." },
-  { id: "business", name: "도윤", role: "전략", roleShort: "전략", sprite: "/assets/pixel/characters/business.png", spriteSheet: "/assets/pixel/characters/business_sheet.png", x: 80, y: 47, work: "우선순위, KPI, 실행 효과를 판단합니다." },
-  { id: "editor", name: "하루", role: "편집", roleShort: "편집", sprite: "/assets/pixel/characters/editor.png", spriteSheet: "/assets/pixel/characters/editor_sheet.png", x: 60, y: 74, work: "리듬, 압축, 강조 지점을 잡습니다." },
-  { id: "writer", name: "문채", role: "문서", roleShort: "문서", sprite: "/assets/pixel/characters/writer.png", spriteSheet: "/assets/pixel/characters/writer_sheet.png", x: 22, y: 71, work: "보고서, 카피, 문장 구조를 완성합니다." },
-  { id: "researcher", name: "서아", role: "리서치", roleShort: "리서치", sprite: "/assets/pixel/characters/researcher.png", spriteSheet: "/assets/pixel/characters/researcher_sheet.png", x: 22, y: 31, work: "근거, 사례, 리스크를 모읍니다." },
-  { id: "archivist", name: "아카", role: "자산화", roleShort: "Vault", sprite: "", spriteSheet: "/assets/pixel/characters/archivist_sheet.png", x: 73, y: 79, work: "Vault 저장 위치, 태그, RAG 후보를 분류합니다." }
+  { id: "ceo", name: "총괄 요미", role: "총괄 매니저", roleShort: "총괄", sprite: "/assets/pixel/characters/ceo.png", spriteSheet: "/assets/pixel/characters/ceo_sheet.png", x: 50, y: 45, work: "목표와 완료 기준을 정하고 직원 작업을 지휘합니다." },
+  { id: "secretary", name: "운영 나래", role: "운영 비서", roleShort: "운영", sprite: "/assets/pixel/characters/secretary.png", spriteSheet: "/assets/pixel/characters/secretary_sheet.png", x: 39, y: 51, work: "업무 티켓, 체크리스트, 검토 기준을 챙깁니다." },
+  { id: "youtube", name: "영상 유진", role: "영상 기획", roleShort: "영상", sprite: "/assets/pixel/characters/youtube.png", spriteSheet: "/assets/pixel/characters/youtube_sheet.png", x: 47, y: 22, work: "영상 훅, 제목, 구성을 설계합니다." },
+  { id: "instagram", name: "SNS 리아", role: "SNS 운영", roleShort: "SNS", sprite: "/assets/pixel/characters/instagram.png", spriteSheet: "/assets/pixel/characters/instagram_sheet.png", x: 57, y: 23, work: "SNS 캡션, 해시태그, 재활용 포맷을 만듭니다." },
+  { id: "designer", name: "디자인 이안", role: "디자인", roleShort: "디자인", sprite: "/assets/pixel/characters/designer.png", spriteSheet: "/assets/pixel/characters/designer_sheet.png", x: 74, y: 27, work: "화면 구조와 정보 위계를 점검합니다." },
+  { id: "developer", name: "개발 태오", role: "개발", roleShort: "개발", sprite: "/assets/pixel/characters/developer.png", spriteSheet: "/assets/pixel/characters/developer_sheet.png", x: 46, y: 75, work: "파일, API, 자동화, 검증을 맡습니다." },
+  { id: "business", name: "전략 도윤", role: "전략", roleShort: "전략", sprite: "/assets/pixel/characters/business.png", spriteSheet: "/assets/pixel/characters/business_sheet.png", x: 80, y: 47, work: "우선순위, KPI, 실행 효과를 판단합니다." },
+  { id: "editor", name: "편집 하루", role: "편집", roleShort: "편집", sprite: "/assets/pixel/characters/editor.png", spriteSheet: "/assets/pixel/characters/editor_sheet.png", x: 60, y: 74, work: "리듬, 압축, 강조 지점을 잡습니다." },
+  { id: "writer", name: "문서 문채", role: "문서", roleShort: "문서", sprite: "/assets/pixel/characters/writer.png", spriteSheet: "/assets/pixel/characters/writer_sheet.png", x: 22, y: 71, work: "보고서, 카피, 문장 구조를 완성합니다." },
+  { id: "researcher", name: "리서치 서아", role: "리서치", roleShort: "리서치", sprite: "/assets/pixel/characters/researcher.png", spriteSheet: "/assets/pixel/characters/researcher_sheet.png", x: 22, y: 31, work: "근거, 사례, 리스크를 모읍니다." },
+  { id: "archivist", name: "자산화 아카", role: "자산화", roleShort: "Vault", sprite: "", spriteSheet: "/assets/pixel/characters/archivist_sheet.png", x: 73, y: 79, work: "Vault 저장 위치, 태그, RAG 후보를 분류합니다." }
 ];
 
 const phases = [
-  { title: "코어 점화", agents: ["ceo", "secretary"], text: "요미가 명령을 업무 캡슐로 바꾸고 나래가 실행 순서를 엽니다." },
-  { title: "근거 수집", agents: ["researcher", "business"], text: "서아와 도윤이 자료, 리스크, 판단 기준을 동시에 모읍니다." },
-  { title: "제작 가동", agents: ["writer", "designer", "developer"], text: "문채, 이안, 태오가 산출물을 만들고 구조를 맞춥니다." },
-  { title: "콘텐츠 튜닝", agents: ["youtube", "instagram", "editor"], text: "유진, 리아, 하루가 포맷과 리듬을 다듬습니다." },
-  { title: "Vault 저장", agents: ["archivist", "secretary"], text: "아카가 결과를 지식 보석으로 저장하고 나래가 다음 행동을 정리합니다." }
+  { title: "코어 점화", agents: ["ceo", "secretary"], text: "총괄 요미가 명령을 업무 캡슐로 바꾸고 운영 나래가 실행 순서를 엽니다." },
+  { title: "근거 수집", agents: ["researcher", "business"], text: "리서치 서아와 전략 도윤이 자료, 리스크, 판단 기준을 동시에 모읍니다." },
+  { title: "제작 가동", agents: ["writer", "designer", "developer"], text: "문서 문채, 디자인 이안, 개발 태오가 산출물을 만들고 구조를 맞춥니다." },
+  { title: "콘텐츠 튜닝", agents: ["youtube", "instagram", "editor"], text: "영상 유진, SNS 리아, 편집 하루가 포맷과 리듬을 다듬습니다." },
+  { title: "Vault 저장", agents: ["archivist", "secretary"], text: "자산화 아카가 결과를 지식 자산으로 저장하고 운영 나래가 다음 행동을 정리합니다." }
 ];
 
 const nodes = {
@@ -1120,7 +1120,7 @@ async function handleRagReindex() {
 }
 
 function renderVaultStats(counts = {}) {
-  const rows = [["YOMI 보고서", counts.webOfficeReports ?? 0], ["자동 수집", counts.autoCaptures ?? 0], ["초안", counts.knowledgeDrafts ?? 0], ["자동 요약", counts.autoDigests ?? 0], ["일일 리뷰", counts.dailyReviews ?? 0]];
+  const rows = [["요미오피스 보고서", counts.webOfficeReports ?? 0], ["자동 수집", counts.autoCaptures ?? 0], ["초안", counts.knowledgeDrafts ?? 0], ["자동 요약", counts.autoDigests ?? 0], ["일일 리뷰", counts.dailyReviews ?? 0]];
   nodes.vaultStats.innerHTML = rows.map(([label, value]) => `<div class="vault-stat"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`).join("");
 }
 
@@ -1199,7 +1199,7 @@ function updateDashboardFocus(data) {
   const today = data.today || {};
   if (nodes.dashboardTodayCount) nodes.dashboardTodayCount.textContent = `${today.processed ?? 0}건`;
   if (nodes.dashboardReviewRate) nodes.dashboardReviewRate.textContent = today.reviewPassRate == null ? "검토 대기" : `${today.reviewPassRate}% 통과`;
-  if (nodes.dashboardTodayMeta) nodes.dashboardTodayMeta.textContent = `${today.date || "오늘"} 저장된 YOMI 보고서 기준`;
+  if (nodes.dashboardTodayMeta) nodes.dashboardTodayMeta.textContent = `${today.date || "오늘"} 저장된 요미오피스 보고서 기준`;
   const performance = data.workflow?.performance || {};
   if (nodes.dashboardPerformanceScore) nodes.dashboardPerformanceScore.textContent = performance.lastScore ? `${performance.lastScore}점` : `${performance.avgScore || 0}점`;
   if (nodes.dashboardPerformanceGrade) nodes.dashboardPerformanceGrade.textContent = performance.lastGrade || "대기";
@@ -1295,7 +1295,7 @@ async function exportVaultReport(relPath, format) {
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `${data.formatLabel || vaultExportFormatLabel(format)} 저장 완료: ${data.relPath}`;
-    addChatMessage("assistant", `${data.formatLabel || vaultExportFormatLabel(format)}로 변환해 Vault에 저장했습니다.\n${data.relPath}`, "YOMI AI", "Vault 활용");
+    addChatMessage("assistant", `${data.formatLabel || vaultExportFormatLabel(format)}로 변환해 Vault에 저장했습니다.\n${data.relPath}`, "YOMI Office", "Vault 활용");
     await loadRecentReports();
   } catch (error) {
     if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `활용 실패: ${error.message}`;
@@ -1430,7 +1430,7 @@ async function runOfficeTask() {
 function addChatMessage(role, text, label = "", meta = "") {
   const el = document.createElement("div");
   el.className = `chat-message ${role}`;
-  const title = label || (role === "user" ? "나" : "YOMI AI");
+  const title = label || (role === "user" ? "나" : "YOMI Office");
   el.innerHTML = `<div class="chat-bubble-head"><strong>${escapeHtml(title)}</strong>${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</div><p>${escapeHtml(text)}</p>`;
   nodes.chatThread.append(el);
   nodes.chatThread.scrollTop = nodes.chatThread.scrollHeight;
@@ -1471,7 +1471,7 @@ function renderSessionTurns(session) {
   for (const turn of session.turns || []) {
     addChatMessage("user", turn.user || "", "나", "기록");
     const meta = turn.capture?.ok ? "Vault 저장" : turn.skillCandidateIds?.length ? "스킬 후보" : turn.modeLabel || "기록";
-    addChatMessage("assistant", turn.assistant || "", "YOMI AI", meta);
+    addChatMessage("assistant", turn.assistant || "", "YOMI Office", meta);
   }
   if (nodes.chatMemory) nodes.chatMemory.textContent = `${session.turnCount || session.turns?.length || 0}턴 기록`;
 }
@@ -1616,7 +1616,7 @@ async function handleSkillCandidateClick(event) {
     if (data.profile) renderProfileState(data.profile);
     await loadSkillCandidates();
     if (action === "approve") {
-      addChatMessage("assistant", "대화에서 만든 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI AI", "스킬 적용");
+      addChatMessage("assistant", "대화에서 만든 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI Office", "스킬 적용");
       if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = "스킬 적용 완료";
     }
   } catch (error) {
@@ -1923,7 +1923,7 @@ function renderOfficeJobResult(job, originalMessage = "", announceFinal = false)
     const text = job.status === "waiting_question"
       ? "이 작업은 확인이 필요해서 실행을 멈췄습니다. 상단 작업 결과 패널에서 확인할 조건을 봐주세요."
       : job.report || job.error || "병렬 직원 실행이 완료되었습니다.";
-    addChatMessage("assistant", compactReply(text, 900), "YOMI AI", officeJobStatusLabel(job.status));
+    addChatMessage("assistant", compactReply(text, 900), "YOMI Office", officeJobStatusLabel(job.status));
   }
 }
 
@@ -1982,7 +1982,7 @@ async function answerHumanLoop(jobId, choiceId) {
       await loadRecentReports();
       await loadPerformanceLog();
     }
-    addChatMessage("assistant", choiceId === "cancel" ? "확인 단계에서 작업을 취소했습니다." : "확인 완료. 직원 실행을 재개합니다.", "YOMI AI", "확인 응답");
+    addChatMessage("assistant", choiceId === "cancel" ? "확인 단계에서 작업을 취소했습니다." : "확인 완료. 직원 실행을 재개합니다.", "YOMI Office", "확인 응답");
   } catch (error) {
     if (nodes.saveNotice) nodes.saveNotice.textContent = `확인 처리 실패: ${error.message}`;
     buttons.forEach((button) => { button.disabled = false; });
@@ -2039,7 +2039,7 @@ function renderCodexJobResult(job, announceFinal = false) {
   }
   if (announceFinal && jobFinished(job.status) && !completedCodexJobIds.has(job.id)) {
     completedCodexJobIds.add(job.id);
-    addChatMessage("assistant", compactReply(output, 900), "YOMI AI", officeJobStatusLabel(job.status));
+    addChatMessage("assistant", compactReply(output, 900), "YOMI Office", officeJobStatusLabel(job.status));
   }
 }
 
@@ -2345,7 +2345,7 @@ async function submitChat(event) {
         : data.intent === "error"
           ? data.reply || "Codex CLI 호출에 실패했습니다."
         : compactReply(data.reply);
-    addChatMessage("assistant", bubbleReply, "YOMI AI", modeLabel);
+    addChatMessage("assistant", bubbleReply, "YOMI Office", modeLabel);
     nodes.chatStatus.textContent = modeLabel;
     renderChatSources(data.sources || []);
     updateChatResultPanel(data, message);
@@ -2358,7 +2358,7 @@ async function submitChat(event) {
     }
     await loadTaskQueue({ resume: false });
   } catch (error) {
-    addChatMessage("assistant", `처리 실패: ${error.message}`, "YOMI AI", "오류");
+    addChatMessage("assistant", `처리 실패: ${error.message}`, "YOMI Office", "오류");
     nodes.chatStatus.textContent = "오류";
     nodes.chatResultMode.textContent = "오류";
     if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = "CLI 호출 실패";

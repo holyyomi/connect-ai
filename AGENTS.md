@@ -2,7 +2,7 @@
 
 ## Project Context
 
-This repository is a VS Code/Cursor extension project for Connect AI with an active local web app called YOMI AI personal office.
+This repository is a VS Code/Cursor extension project for Connect AI with an active local web app called YOMI Office / 요미오피스.
 
 - Main extension entry: `src/extension.ts`
 - Build output: `out/extension.js`
@@ -21,7 +21,7 @@ The current personal office direction uses two CLI engines:
 
 - Codex CLI is the default chat/routing/task engine.
 - Claude Code CLI is available for long reasoning, writing, research synthesis, and review, and can also be called via `/cc` or `/claude`.
-- Do not add local-model engine paths to the YOMI personal office runtime.
+- Do not add local-model engine paths to the YOMI Office runtime.
 - Brave Search is excluded unless explicitly restored.
 - Exa/Firecrawl/Tavily are the current research API candidates.
 - Vault markdown output is the primary assetization path.

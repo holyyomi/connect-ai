@@ -8,13 +8,13 @@
 
 ## 2. Current Product Direction
 
-현재 중심은 **YOMI AI 개인 사무실**이다.
+현재 중심은 **YOMI Office / 요미오피스**이다.
 
 기본 방향:
 
 - Codex CLI를 기본 엔진으로 사용한다.
 - Claude Code CLI는 긴 추론, 글쓰기, 리서치 종합, 검토 업무에 자동 라우팅할 수 있고 `/cc`, `/claude` 직접 호출도 허용한다.
-- YOMI 개인 사무실 런타임은 Codex CLI와 Claude Code CLI만 사용한다.
+- YOMI Office 런타임은 Codex CLI와 Claude Code CLI만 사용한다.
 - 직원별 역할과 스킬에 맞는 업무만 배정한다.
 - 중요한 일은 깊게 처리하되, 사소한 일에 전 직원이 동원되지 않게 한다.
 - 결과와 재사용 가치가 있는 중간 산출물은 Vault에 markdown으로 자산화한다.
@@ -27,7 +27,7 @@
 ```text
 Connect AI repository
   VS Code/Cursor extension
-  YOMI AI personal office
+  YOMI Office local web app
   Codex CLI default engine
   Claude Code CLI reasoning/writing/review route
   Obsidian Vault markdown outputs
