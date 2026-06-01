@@ -136,6 +136,7 @@ const nodes = {
   chatThread: document.getElementById("chatThread"),
   chatForm: document.getElementById("chatForm"),
   chatInput: document.getElementById("chatInput"),
+  chatQueueBtn: document.getElementById("chatQueueBtn"),
   chatSendBtn: document.getElementById("chatSendBtn"),
   chatStatus: document.getElementById("chatStatus"),
   chatResultMode: document.getElementById("chatResultMode"),
@@ -2364,6 +2365,46 @@ function updateChatResultPanel(data, originalMessage) {
   ].filter(Boolean).join("\n");
 }
 
+async function enqueueChatInput() {
+  const message = nodes.chatInput.value.trim();
+  if (!message) return;
+  if (nodes.chatQueueBtn) nodes.chatQueueBtn.disabled = true;
+  if (nodes.chatSendBtn) nodes.chatSendBtn.disabled = true;
+  nodes.chatStatus.textContent = "큐 등록 중";
+  try {
+    const data = await updateTaskQueueAction({ action: "enqueue", message, type: /^\/(?:codex|code)\b/i.test(message) ? "codex" : "office" });
+    const job = data.job || {};
+    nodes.chatInput.value = "";
+    nodes.chatInput.style.height = "";
+    addChatMessage("user", message, "나", "큐 등록");
+    addChatMessage("assistant", `작업 큐에 등록했습니다.\n${job.title || job.id || message}`, "YOMI Office", job.statusLabel || "대기");
+    if (nodes.chatResultMode) nodes.chatResultMode.textContent = "작업 큐";
+    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${job.type === "codex" ? "Codex" : "직원 실행"} · ${job.id || ""}`;
+    if (nodes.chatResultPreview) {
+      nodes.chatResultPreview.textContent = [
+        "# 작업 큐 등록",
+        "",
+        `- 작업 ID: ${job.id || ""}`,
+        `- 유형: ${job.type === "codex" ? "Codex" : "직원 실행"}`,
+        `- 상태: ${job.statusLabel || job.status || "대기"}`,
+        `- 제목: ${job.title || message}`
+      ].join("\n");
+    }
+    if (job.type === "office") startOfficeJobPolling(job.id, job.title || message);
+    if (job.type === "codex") startCodexJobPolling(job.id);
+    await refreshState();
+    await loadTaskQueue({ resume: false });
+  } catch (error) {
+    addChatMessage("assistant", `큐 등록 실패: ${error.message}`, "YOMI Office", "오류");
+    nodes.chatStatus.textContent = "오류";
+    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `큐 등록 실패: ${error.message}`;
+  } finally {
+    if (nodes.chatQueueBtn) nodes.chatQueueBtn.disabled = false;
+    if (nodes.chatSendBtn) nodes.chatSendBtn.disabled = false;
+    nodes.chatInput.focus();
+  }
+}
+
 async function submitChat(event) {
   event.preventDefault();
   const message = nodes.chatInput.value.trim();
@@ -2371,6 +2412,7 @@ async function submitChat(event) {
   nodes.chatInput.value = "";
   nodes.chatInput.style.height = "";
   nodes.chatSendBtn.disabled = true;
+  if (nodes.chatQueueBtn) nodes.chatQueueBtn.disabled = true;
   nodes.chatStatus.textContent = "처리 중";
   addChatMessage("user", message, "나", "입력");
   if (/^\/업무(?:\s+|$)/i.test(message) || /^(업무|작업|실행|보고서|조사|분석|정리|기획|계획|작성|만들기)\s*[:：-]\s*/i.test(message)) {
@@ -2415,6 +2457,7 @@ async function submitChat(event) {
     nodes.chatResultPreview.textContent = `# 처리 실패\n\n${error.message}`;
   } finally {
     nodes.chatSendBtn.disabled = false;
+    if (nodes.chatQueueBtn) nodes.chatQueueBtn.disabled = false;
     nodes.chatInput.focus();
   }
 }
@@ -2477,6 +2520,7 @@ if (nodes.humanLoopPanel) nodes.humanLoopPanel.addEventListener("click", handleH
 if (nodes.chatSessionList) nodes.chatSessionList.addEventListener("click", handleChatSessionClick);
 if (nodes.newChatSessionBtn) nodes.newChatSessionBtn.addEventListener("click", startNewChatSession);
 if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click", handleSkillCandidateClick);
+if (nodes.chatQueueBtn) nodes.chatQueueBtn.addEventListener("click", enqueueChatInput);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
