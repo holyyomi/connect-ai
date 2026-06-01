@@ -32,16 +32,18 @@
       "safeMode": true,
       "allowedActions": [
         "manual_chat",
-        "plan"
+        "auto_route",
+        "plan",
+        "synthesis",
+        "review"
       ],
       "blockedActions": [
-        "auto_route",
         "file_write",
         "git_write",
         "external_send"
       ],
       "scope": null,
-      "notes": "/cc 또는 /claude로 명시 호출할 때만 사용합니다."
+      "notes": "긴 추론, 글쓰기, 리서치 종합, 검토 업무에 자동 라우팅될 수 있습니다. 실패 시 Codex CLI로 엔진 폴백합니다."
     },
     {
       "id": "obsidian_vault",

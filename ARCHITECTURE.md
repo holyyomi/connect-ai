@@ -7,7 +7,7 @@ The older Brain-GitHub sync-only architecture is no longer the full system pictu
 - VS Code/Cursor extension shell
 - local YOMI AI personal office web app
 - Codex CLI as the default engine
-- Claude Code CLI as a manual-only secondary engine
+- Claude Code CLI as the reasoning, writing, research synthesis, and review engine
 - Obsidian/Vault markdown assetization
 - role-based staff routing and skill/tool permissions
 - optional API/MCP-style integrations
@@ -92,7 +92,7 @@ Main UI tabs:
 
 ## 4. Engine Routing
 
-The active runtime is Codex-first.
+The active runtime is Codex-first with Claude Code available for selected work.
 
 ### Codex CLI
 
@@ -103,7 +103,7 @@ Default responsibilities:
 - code/task analysis
 - office workflow routing
 - staff task capsule generation
-- final report generation
+- code/file/Git/terminal work
 
 Configuration:
 
@@ -117,16 +117,16 @@ If no command is configured, the app attempts to resolve the installed `codex` c
 
 ### Claude Code CLI
 
-Claude is manual-only.
+Claude is automatically available for long reasoning, writing, research synthesis, and review.
 
-Trigger syntax:
+Direct trigger syntax:
 
 ```text
 /cc ...
 /claude ...
 ```
 
-It should not be used by automatic routing.
+Code/file/Git/terminal work remains Codex-first. If Claude execution fails, YOMI uses Codex as an engine fallback.
 
 Configuration:
 
@@ -142,11 +142,11 @@ Safety stance:
 - no automatic file writes
 - no automatic Git writes
 - no automatic external sends
-- plan/manual-chat mode only unless user direction changes
+- no file/Git/external-send actions from Claude output without user confirmation
 
 ### Legacy Local Models
 
-Ollama and LM Studio belong to older paths. They may still exist in extension settings/code, but they are not the current default for the YOMI personal office.
+The active YOMI personal office runtime uses Codex CLI and Claude Code CLI. Codex is the default for code/files/Git/terminal/default work; Claude Code is used for long reasoning, writing, research synthesis, and review.
 
 ## 5. Office Orchestration
 
@@ -156,7 +156,7 @@ The office router classifies user input into broad routes:
 - office workflow
 - Vault search/use
 - code/project task
-- manual Claude call
+- Claude direct call
 
 For workflow tasks, the server builds a task capsule:
 
@@ -221,7 +221,7 @@ Important connection candidates:
 | Connection | Status | Notes |
 | --- | --- | --- |
 | Codex CLI | core | default engine |
-| Claude Code CLI | optional | manual-only |
+| Claude Code CLI | core/optional command | long reasoning, writing, research synthesis, review |
 | Obsidian Vault | core | markdown output storage |
 | Exa | optional API | semantic/research search |
 | Firecrawl | optional API | webpage extraction/scraping |
@@ -318,7 +318,7 @@ rg "Codex CLI|Claude|Exa|Firecrawl|Tavily|Vault" README.md ARCHITECTURE.md web\p
 Docs should reflect the current default:
 
 - Codex CLI first
-- Claude manual-only
+- Claude for reasoning/writing/research-review plus direct `/cc` or `/claude`
 - Vault markdown output
 - Exa/Firecrawl/Tavily for optional research APIs
 - Playwright for browser verification

@@ -21,8 +21,6 @@
   "keywords": [
     "ai",
     "local",
-    "ollama",
-    "lmstudio",
     "gemma",
     "llama",
     "deepseek",
@@ -117,7 +115,7 @@
       },
       {
         "command": "connectAiLab.diagnoseConnection",
-        "title": "🔍 LLM 연결 진단 (Ollama / LM Studio)",
+        "title": "🔍 CLI 연결 진단 (Codex / Claude)",
         "category": "Connect AI",
         "icon": "$(pulse)"
       },
@@ -278,20 +276,10 @@
     "configuration": {
       "title": "Connect AI",
       "properties": {
-        "connectAiLab.ollamaUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:11434",
-          "description": "🤖 AI 서버 주소 (보통 자동으로 잡히니 건드리지 않아도 됩니다)"
-        },
         "connectAiLab.pythonPath": {
           "type": "string",
           "default": "",
           "description": "🐍 Python 3 실행 명령/절대 경로 (비우면 자동 감지). 도구 실행 'exit 1' 또는 'Python was not found' 에러 시 여기에 직접 지정. 윈도우 예: 'py -3' 또는 'C:\\\\Python311\\\\python.exe'. 맥 예: '/opt/homebrew/bin/python3' 또는 'python3'. 변경 후 안티그래비티 재시작."
-        },
-        "connectAiLab.defaultModel": {
-          "type": "string",
-          "default": "",
-          "description": "🧠 사용할 AI 모델 이름 (비워두면 설치된 모델 중 가장 작은 것이 자동 선택됨. 직접 지정 예: llama3.2:1b, gemma2:2b, qwen2.5:1.5b)"
         },
         "connectAiLab.requestTimeout": {
           "type": "number",
@@ -371,7 +359,11 @@
     "vscode:prepublish": "npm run compile",
     "compile": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile"
+    "pretest": "npm run compile",
+    "yomi:start": "powershell -ExecutionPolicy Bypass -File scripts/start-yomi.ps1",
+    "yomi:restart": "powershell -ExecutionPolicy Bypass -File scripts/start-yomi.ps1 -Restart",
+    "yomi:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-yomi.ps1",
+    "yomi:check": "powershell -ExecutionPolicy Bypass -File scripts/check-yomi.ps1"
   },
   "devDependencies": {
     "@types/node": "18.x",

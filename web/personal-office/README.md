@@ -5,7 +5,7 @@ YOMI AI 개인 사무실은 Codex CLI를 기본 엔진으로 사용하는 로컬
 ## 실행
 
 ```powershell
-node web\personal-office\server.mjs
+npm run yomi:start
 ```
 
 기본 주소:
@@ -17,8 +17,7 @@ http://127.0.0.1:17331
 포트가 이미 사용 중이면:
 
 ```powershell
-$env:PORT=17332
-node web\personal-office\server.mjs
+npm run yomi:restart
 ```
 
 ## 기본 엔진
@@ -37,7 +36,7 @@ YOMI_AI_CODEX_TIMEOUT_MS
 YOMI_AI_CODEX_PROMPT_TIMEOUT_MS
 ```
 
-Claude Code CLI는 수동 호출 전용입니다.
+Claude Code CLI는 긴 추론, 글쓰기, 리서치 종합, 검토 업무에 자동 라우팅될 수 있고 직접 호출도 가능합니다.
 
 ```text
 /cc 요청 내용
@@ -53,7 +52,7 @@ YOMI_AI_CLAUDE_PROMPT_TIMEOUT_MS
 YOMI_AI_CLAUDE_MAX_BUDGET_USD
 ```
 
-Ollama와 LM Studio는 현재 개인 사무실의 기본 경로에서 필요하지 않습니다.
+YOMI 개인 사무실 런타임은 Codex CLI와 Claude Code CLI만 사용합니다.
 
 ## 화면 구성
 

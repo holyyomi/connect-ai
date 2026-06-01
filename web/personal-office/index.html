@@ -139,6 +139,7 @@
           <div class="dashboard-focus-grid office-summary-grid">
             <article class="focus-card primary"><span>지금 진행 중인 작업</span><strong id="dashboardFocusWork">대기 중</strong><small id="dashboardFocusMeta">실행 중인 직원 체인이 없습니다.</small></article>
             <article class="focus-card"><span>오늘 처리 / 검토</span><div class="focus-stat-row"><strong id="dashboardTodayCount">0건</strong><b id="dashboardReviewRate">검토 대기</b></div><small id="dashboardTodayMeta">오늘 저장된 YOMI 보고서 기준</small></article>
+            <article class="focus-card"><span>AX/RAG 성과</span><div class="focus-stat-row"><strong id="dashboardPerformanceScore">0점</strong><b id="dashboardPerformanceGrade">대기</b></div><small id="dashboardPerformanceMeta">성과기록 대기</small></article>
             <article class="focus-card attention"><span>주의가 필요한 것</span><strong id="dashboardAttention">확인 중</strong><small id="dashboardAttentionMeta">도구 키와 최근 오류를 확인합니다.</small></article>
           </div>
           <section class="work-card office-stage-summary">
@@ -166,6 +167,10 @@
           <div id="recentReports" class="recent-reports"></div>
           <div id="vaultExportStatus" class="vault-export-status">활용 대기</div>
         </section>
+        <section class="work-card portfolio-card">
+          <div class="card-head"><strong>AX/RAG 포트폴리오</strong><span id="portfolioStatus">성과기록 확인 중</span></div>
+          <div id="portfolioList" class="portfolio-list"></div>
+        </section>
         <div class="vault-page-grid vault-meta-grid">
           <section class="work-card">
             <div class="card-head"><strong>Vault 통계</strong><span id="vaultPath">경로 확인 중</span></div>
@@ -181,14 +186,27 @@
         <div class="settings-grid">
           <article class="setting-card"><span>메인 엔진</span><strong id="aiStatus">확인 중</strong><small>Codex CLI 중심</small></article>
           <article class="setting-card"><span>Codex 실행</span><strong id="codexStatus">확인 중</strong><small>대화/라우팅/업무 실행</small></article>
-          <article class="setting-card"><span>Claude 수동호출</span><strong id="claudeStatus">확인 중</strong><small>/cc, /claude 전용</small></article>
+          <article class="setting-card"><span>Claude Code</span><strong id="claudeStatus">확인 중</strong><small>긴 추론/글쓰기/검토 보조</small></article>
           <article class="setting-card"><span>개인화</span><strong id="styleProfileStatus">확인 중</strong><small id="styleProfileMeta">Vault RAG와 톤 프로필</small></article>
+          <article class="setting-card"><span>RAG 인덱스</span><strong id="ragStatus">확인 중</strong><small id="ragMeta">문서/청크 확인 중</small></article>
           <article class="setting-card"><span>자동화</span><strong id="automationTriggerSummary">확인 중</strong><small>예약/폴더 감시</small></article>
           <article class="setting-card wide"><span>Vault</span><strong id="settingsVaultPath">경로 확인 중</strong><small>마크다운 저장 위치</small></article>
         </div>
         <section id="braveKeyGuide" class="brave-key-guide" hidden aria-hidden="true">
           <div><strong></strong><span id="braveKeyStatus"></span></div>
           <code></code>
+        </section>
+        <section class="work-card profile-card">
+          <div class="card-head"><strong>톤/장기 메모리</strong><span id="profileEditStatus">불러오는 중</span></div>
+          <form id="profileForm" class="profile-form">
+            <label class="wide">프로필 이름<input id="profileLabel" type="text" aria-label="프로필 이름" autocomplete="off" /></label>
+            <label class="profile-check"><input id="profileEnabled" type="checkbox" aria-label="프로필 적용" /> 모든 직원 산출물에 적용</label>
+            <label>말투 규칙<textarea id="profileVoice" rows="4" aria-label="말투 규칙"></textarea></label>
+            <label>출력 형식<textarea id="profileFormat" rows="4" aria-label="출력 형식 규칙"></textarea></label>
+            <label>피할 것<textarea id="profileAvoid" rows="4" aria-label="피할 표현과 방식"></textarea></label>
+            <label>장기 메모리<textarea id="profileMemory" rows="4" aria-label="장기 메모리"></textarea></label>
+            <div class="profile-actions"><button type="submit">저장</button><button id="profileReloadBtn" type="button">다시 불러오기</button></div>
+          </form>
         </section>
         <section class="work-card connection-hub-card">
           <div class="card-head"><strong>연결 관리 허브</strong><span id="connectionStatus">비밀값 저장 안 함</span></div>
@@ -213,6 +231,11 @@
             <div class="card-head"><strong id="harnessScopeTitle">직원 하네스 권한 스코프</strong><span>안전모드</span></div>
             <div class="harness-scope-list" id="harnessScopeList"></div>
           </section>
+        </section>
+        <section class="work-card rag-index-card">
+          <div class="card-head"><strong>RAG 인덱스</strong><span id="ragIndexSummary">대기</span></div>
+          <div id="ragIndexStats" class="rag-index-stats"></div>
+          <button id="ragReindexBtn" class="mini-action" type="button">인덱스 갱신</button>
         </section>
         <section class="work-card automation-trigger-card">
           <div class="card-head"><strong>예약/폴더 자동화</strong><span id="automationTriggerStatus">확인 중</span></div>

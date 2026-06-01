@@ -49,6 +49,8 @@ const nodes = {
   vaultGraph: document.getElementById("vaultGraph"),
   vaultGraphMeta: document.getElementById("vaultGraphMeta"),
   recentReports: document.getElementById("recentReports"),
+  portfolioStatus: document.getElementById("portfolioStatus"),
+  portfolioList: document.getElementById("portfolioList"),
   vaultExportStatus: document.getElementById("vaultExportStatus"),
   refreshReportsBtn: document.getElementById("refreshReportsBtn"),
   serverStatus: document.getElementById("serverStatus"),
@@ -57,6 +59,20 @@ const nodes = {
   claudeStatus: document.getElementById("claudeStatus"),
   styleProfileStatus: document.getElementById("styleProfileStatus"),
   styleProfileMeta: document.getElementById("styleProfileMeta"),
+  profileEditStatus: document.getElementById("profileEditStatus"),
+  profileForm: document.getElementById("profileForm"),
+  profileLabel: document.getElementById("profileLabel"),
+  profileEnabled: document.getElementById("profileEnabled"),
+  profileVoice: document.getElementById("profileVoice"),
+  profileFormat: document.getElementById("profileFormat"),
+  profileAvoid: document.getElementById("profileAvoid"),
+  profileMemory: document.getElementById("profileMemory"),
+  profileReloadBtn: document.getElementById("profileReloadBtn"),
+  ragStatus: document.getElementById("ragStatus"),
+  ragMeta: document.getElementById("ragMeta"),
+  ragIndexSummary: document.getElementById("ragIndexSummary"),
+  ragIndexStats: document.getElementById("ragIndexStats"),
+  ragReindexBtn: document.getElementById("ragReindexBtn"),
   vaultStatus: document.getElementById("vaultStatus"),
   vaultPath: document.getElementById("vaultPath"),
   reportCount: document.getElementById("reportCount"),
@@ -65,6 +81,9 @@ const nodes = {
   dashboardTodayCount: document.getElementById("dashboardTodayCount"),
   dashboardReviewRate: document.getElementById("dashboardReviewRate"),
   dashboardTodayMeta: document.getElementById("dashboardTodayMeta"),
+  dashboardPerformanceScore: document.getElementById("dashboardPerformanceScore"),
+  dashboardPerformanceGrade: document.getElementById("dashboardPerformanceGrade"),
+  dashboardPerformanceMeta: document.getElementById("dashboardPerformanceMeta"),
   dashboardAttention: document.getElementById("dashboardAttention"),
   dashboardAttentionMeta: document.getElementById("dashboardAttentionMeta"),
   dashboardReportCount: document.getElementById("dashboardReportCount"),
@@ -143,6 +162,7 @@ let activeCodexJobId = "";
 let activeChatSessionId = "";
 let chatSessionsState = { sessions: [] };
 let skillCandidatesState = { candidates: [] };
+let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
 const completedCodexJobIds = new Set();
@@ -495,6 +515,14 @@ function renderToolOptions(agentId, assignedIds) {
   return ['<option value="">도구 선택</option>', ...options.map((tool) => `<option value="${escapeHtml(tool.id)}">${escapeHtml(tool.label || tool.id)}</option>`)].join("");
 }
 
+function renderEngineOptions(selected = "codex") {
+  const engines = skillsState.engineOptions?.length ? skillsState.engineOptions : [
+    { id: "codex", label: "Codex CLI" },
+    { id: "claude", label: "Claude Code CLI" }
+  ];
+  return engines.map((engine) => `<option value="${escapeHtml(engine.id)}" ${engine.id === selected ? "selected" : ""}>${escapeHtml(engine.label || engine.id)}</option>`).join("");
+}
+
 function renderAgentSkillItem(agentId, skill) {
   const checked = skill.enabled !== false && skill.status !== "disabled" ? "checked" : "";
   return `
@@ -526,6 +554,7 @@ function renderAgentsList() {
     const hasOptions = (skillsState.tools || []).some((tool) => !assignedIds.has(tool.id));
     const portrait = `/assets/pixel/characters/${agent.id}_portrait.png`;
     const summary = agentSkillSummary(skills);
+    const engine = skillsState.agents?.find((item) => item.id === agent.id)?.engine || { id: "codex", label: "Codex CLI" };
     return `
       <article class="agent-card" data-agent-id="${escapeHtml(agent.id)}">
         <div class="agent-card-head">
@@ -537,6 +566,10 @@ function renderAgentsList() {
           </div>
         </div>
         <p>${escapeHtml(agent.work)}</p>
+        <label class="agent-engine-row">
+          <span>담당 엔진</span>
+          <select data-agent-engine-select="${escapeHtml(agent.id)}">${renderEngineOptions(engine.id || "codex")}</select>
+        </label>
         <div class="agent-skill-summary ${escapeHtml(summary.tone)}">${escapeHtml(summary.text)}</div>
         <div class="agent-skill-list">${skills.length ? skills.map((skill) => renderAgentSkillItem(agent.id, skill)).join("") : renderSkillBadges([])}</div>
         <div class="agent-skill-controls">
@@ -594,6 +627,66 @@ function renderSkillsState(state = skillsState) {
   if (nodes.skillStatusSummary) nodes.skillStatusSummary.textContent = `정상 ${counts.normal || 0} · 키 필요 ${counts.key_required || 0} · 미연결 ${counts.disconnected || 0}`;
 }
 
+function profileListToText(value = []) {
+  return (Array.isArray(value) ? value : []).join("\n");
+}
+
+function renderProfileState(state = profileState) {
+  profileState = state || { profile: null };
+  const profile = profileState.profile || {};
+  if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = profile.enabled !== false ? "RAG+톤 적용" : "프로필 꺼짐";
+  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = profile.label || "Vault RAG와 톤 프로필";
+  if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = profile.enabled !== false ? "적용 중" : "꺼짐";
+  if (nodes.profileLabel) nodes.profileLabel.value = profile.label || "";
+  if (nodes.profileEnabled) nodes.profileEnabled.checked = profile.enabled !== false;
+  if (nodes.profileVoice) nodes.profileVoice.value = profileListToText(profile.voice);
+  if (nodes.profileFormat) nodes.profileFormat.value = profileListToText(profile.format);
+  if (nodes.profileAvoid) nodes.profileAvoid.value = profileListToText(profile.avoid);
+  if (nodes.profileMemory) nodes.profileMemory.value = profileListToText(profile.memory);
+}
+
+async function loadProfileState() {
+  if (!nodes.profileForm) return null;
+  try {
+    if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "불러오는 중";
+    const response = await fetch("/api/profile", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderProfileState(data);
+    return data;
+  } catch (error) {
+    if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = `로드 실패: ${error.message}`;
+    return null;
+  }
+}
+
+async function saveProfileState(event) {
+  event.preventDefault();
+  if (!nodes.profileForm) return;
+  try {
+    if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "저장 중";
+    const response = await fetch("/api/profile", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: nodes.profileLabel?.value || "",
+        enabled: nodes.profileEnabled?.checked !== false,
+        voice: nodes.profileVoice?.value || "",
+        format: nodes.profileFormat?.value || "",
+        avoid: nodes.profileAvoid?.value || "",
+        memory: nodes.profileMemory?.value || ""
+      })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || "프로필 저장 실패");
+    renderProfileState(data);
+    if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "저장 완료";
+    await refreshState();
+  } catch (error) {
+    if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = `저장 실패: ${error.message}`;
+  }
+}
+
 function setAgentSkillControlsDisabled(disabled) {
   if (!nodes.agentList) return;
   nodes.agentList.querySelectorAll("button, select, input").forEach((control) => {
@@ -641,6 +734,10 @@ function handleAgentSkillClick(event) {
 }
 
 function handleAgentSkillChange(event) {
+  const engineSelect = event.target.closest("select[data-agent-engine-select]");
+  if (engineSelect && nodes.agentList?.contains(engineSelect)) {
+    return updateSkillConfig({ action: "set-agent-engine", agentId: engineSelect.dataset.agentEngineSelect || "", engine: engineSelect.value }, "담당 엔진 변경 중");
+  }
   const input = event.target.closest('input[data-skill-action="toggle"]');
   if (!input || !nodes.agentList?.contains(input)) return;
   return updateSkillConfig({ action: "set-agent-skill-enabled", agentId: input.dataset.agentId || "", toolId: input.dataset.toolId || "", enabled: input.checked }, "스킬 상태 변경 중");
@@ -972,6 +1069,56 @@ function renderDashboardAgentCounts(agentCounts = []) {
   nodes.dashboardAgentCounts.innerHTML = active.map((agent) => `<div class="agent-metric"><span>${escapeHtml(agent.name)}</span><strong>${agent.count}</strong></div>`).join("");
 }
 
+function ragModeLabel(mode = "") {
+  if (mode === "semantic_hybrid") return "시맨틱+BM25";
+  if (mode === "bm25_keyword") return "BM25+키워드";
+  if (mode === "not_indexed") return "인덱스 대기";
+  if (mode === "disconnected") return "Vault 대기";
+  return mode || "확인 중";
+}
+
+function renderRagState(rag = {}) {
+  const connected = rag.connected !== false;
+  const mode = ragModeLabel(rag.embeddingMode || rag.mode);
+  const docs = Number(rag.documentCount || 0);
+  const chunks = Number(rag.chunkCount || 0);
+  const last = rag.lastIndexedAt ? formatShortTime(rag.lastIndexedAt) : "미실행";
+  if (nodes.ragStatus) nodes.ragStatus.textContent = connected ? mode : "Vault 대기";
+  if (nodes.ragMeta) nodes.ragMeta.textContent = `${docs}문서 · ${chunks}청크 · ${last}`;
+  if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = rag.dirty ? "갱신 필요" : mode;
+  if (nodes.ragIndexStats) {
+    nodes.ragIndexStats.innerHTML = [
+      ["문서", docs],
+      ["청크", chunks],
+      ["최근 변경", Number(rag.changedDocumentCount || 0)],
+      ["임베딩", mode],
+      ["마지막", last]
+    ].map(([label, value]) => `<div class="vault-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }
+}
+
+async function handleRagReindex() {
+  if (!nodes.ragReindexBtn) return;
+  nodes.ragReindexBtn.disabled = true;
+  if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = "인덱싱 중";
+  try {
+    const embeddings = window.confirm("임베딩 API 키가 있으면 시맨틱 인덱싱 중 API 비용/쿼터가 사용될 수 있습니다. 시맨틱 인덱싱으로 갱신할까요?\n\n취소를 누르면 비용 없는 BM25+키워드 인덱스만 갱신합니다.");
+    const response = await fetch("/api/rag/index", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ force: true, embeddings })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderRagState(data.status || {});
+    await refreshState();
+  } catch (error) {
+    if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = `실패: ${error.message}`;
+  } finally {
+    nodes.ragReindexBtn.disabled = false;
+  }
+}
+
 function renderVaultStats(counts = {}) {
   const rows = [["YOMI 보고서", counts.webOfficeReports ?? 0], ["자동 수집", counts.autoCaptures ?? 0], ["초안", counts.knowledgeDrafts ?? 0], ["자동 요약", counts.autoDigests ?? 0], ["일일 리뷰", counts.dailyReviews ?? 0]];
   nodes.vaultStats.innerHTML = rows.map(([label, value]) => `<div class="vault-stat"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`).join("");
@@ -1053,6 +1200,14 @@ function updateDashboardFocus(data) {
   if (nodes.dashboardTodayCount) nodes.dashboardTodayCount.textContent = `${today.processed ?? 0}건`;
   if (nodes.dashboardReviewRate) nodes.dashboardReviewRate.textContent = today.reviewPassRate == null ? "검토 대기" : `${today.reviewPassRate}% 통과`;
   if (nodes.dashboardTodayMeta) nodes.dashboardTodayMeta.textContent = `${today.date || "오늘"} 저장된 YOMI 보고서 기준`;
+  const performance = data.workflow?.performance || {};
+  if (nodes.dashboardPerformanceScore) nodes.dashboardPerformanceScore.textContent = performance.lastScore ? `${performance.lastScore}점` : `${performance.avgScore || 0}점`;
+  if (nodes.dashboardPerformanceGrade) nodes.dashboardPerformanceGrade.textContent = performance.lastGrade || "대기";
+  if (nodes.dashboardPerformanceMeta) {
+    nodes.dashboardPerformanceMeta.textContent = performance.total
+      ? `평균 ${performance.avgScore || 0}점 · 포트폴리오 ${performance.portfolioCount || 0}건`
+      : "성과기록 대기";
+  }
 
   const tools = data.skills?.tools || [];
   const keyRequired = tools.filter((tool) => tool.status === "key_required");
@@ -1082,9 +1237,10 @@ function updateDashboard(data) {
   if (nodes.vaultStatus) nodes.vaultStatus.textContent = data.vault?.connected ? "Vault 연결됨" : "Vault 대기";
   if (nodes.aiStatus) nodes.aiStatus.textContent = providerLabel(data.llm?.provider);
   if (nodes.codexStatus) nodes.codexStatus.textContent = data.codex?.available ? "정상" : "대기";
-  if (nodes.claudeStatus) nodes.claudeStatus.textContent = data.claude?.available ? "수동 호출 가능" : "대기";
+  if (nodes.claudeStatus) nodes.claudeStatus.textContent = data.claude?.available ? "자동/직접 가능" : "대기";
   if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = data.context?.styleProfile?.enabled ? "RAG+톤 적용" : "프로필 꺼짐";
   if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = data.context?.styleProfile?.label || "Vault RAG와 톤 프로필";
+  renderRagState(data.rag || data.context?.rag || {});
   if (nodes.dashboardLastReport) nodes.dashboardLastReport.textContent = data.lastReport?.displayPath || cleanDisplayPath(data.lastReport?.relPath) || "저장된 보고서 없음";
   const current = data.workflow?.current || {};
   if (nodes.dashboardWorkflowStatus) nodes.dashboardWorkflowStatus.textContent = workflowStatusLabel(current.status);
@@ -1194,6 +1350,56 @@ async function loadRecentReports() {
   }
 }
 
+function renderPortfolioList(state = {}) {
+  const records = Array.isArray(state.records) ? state.records : [];
+  const summary = state.summary || {};
+  if (nodes.portfolioStatus) {
+    nodes.portfolioStatus.textContent = summary.total
+      ? `평균 ${summary.avgScore || 0}점 · 포트폴리오 ${summary.portfolioCount || 0}건`
+      : "성과기록 대기";
+  }
+  if (!nodes.portfolioList) return;
+  if (!records.length) {
+    nodes.portfolioList.innerHTML = '<div class="empty">아직 성과기록이 없습니다.</div>';
+    return;
+  }
+  nodes.portfolioList.innerHTML = records.slice(0, 10).map((record) => {
+    const rubric = Array.isArray(record.rubric) ? record.rubric.slice(0, 6) : [];
+    const sources = Array.isArray(record.sources) ? record.sources.slice(0, 4) : [];
+    return `
+      <details class="portfolio-item">
+        <summary>
+          <strong>${escapeHtml(record.title || "성과 기록")}</strong>
+          <b>${escapeHtml(`${record.score || 0}점 · ${record.grade || "평가"}`)}</b>
+        </summary>
+        <div class="portfolio-detail">
+          <span>${escapeHtml(record.workType || "general_work")} · ${escapeHtml(record.status || "completed")}</span>
+          <small>작업 ID: ${escapeHtml(record.jobId || "")}</small>
+          <small>${escapeHtml(record.portfolioRelPath || record.savedRelPath || "Vault 포트폴리오 저장 대기")}</small>
+          ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
+          ${rubric.length ? `<div class="portfolio-rubric">${rubric.map((item) => `<span>${escapeHtml(item.label || item.id || "평가")} ${Number(item.score || 0)}점</span>`).join("")}</div>` : ""}
+          ${sources.length ? `<div class="portfolio-sources">${sources.map((item) => `<small>${escapeHtml(item.displayPath || item.relPath || item.title || "")}</small>`).join("")}</div>` : ""}
+        </div>
+      </details>
+    `;
+  }).join("");
+}
+
+async function loadPerformanceLog() {
+  if (!nodes.portfolioList && !nodes.portfolioStatus) return null;
+  try {
+    const response = await fetch("/api/performance-log?limit=12", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderPortfolioList(data);
+    return data;
+  } catch (error) {
+    if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "성과기록 로드 실패";
+    if (nodes.portfolioList) nodes.portfolioList.innerHTML = `<div class="empty">성과기록 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
 async function runOfficeTask() {
   if (!nodes.input || !nodes.runBtn) return;
   const task = nodes.input.value.trim();
@@ -1212,6 +1418,7 @@ async function runOfficeTask() {
     nodes.saveNotice.textContent = data.saved?.ok ? `Vault 저장 완료: ${data.saved.relPath}` : data.saved?.reason || "Vault 미연결: 화면 결과만 생성됨";
     await refreshState();
     await loadRecentReports();
+    await loadPerformanceLog();
   } catch (error) {
     nodes.reportText.textContent = `업무 실행 실패\n\n${error.message}`;
   } finally {
@@ -1247,11 +1454,14 @@ function renderChatSessions(state = chatSessionsState) {
     return;
   }
   nodes.chatSessionList.innerHTML = sessions.slice(0, 18).map((session) => `
-    <button class="chat-session-item ${session.id === activeChatSessionId ? "active" : ""}" type="button" data-session-id="${escapeHtml(session.id)}">
-      <strong>${escapeHtml(session.title || "새 대화")}</strong>
-      <span>${escapeHtml(session.lastMode || `${session.turnCount || 0}턴`)}</span>
-      <small>${escapeHtml(session.lastUser || "")}</small>
-    </button>
+    <article class="chat-session-item ${session.id === activeChatSessionId ? "active" : ""}">
+      <button class="chat-session-main" type="button" data-session-id="${escapeHtml(session.id)}">
+        <strong>${escapeHtml(session.title || "새 대화")}</strong>
+        <span>${escapeHtml(session.lastMode || `${session.turnCount || 0}턴`)}</span>
+        <small>${escapeHtml(session.lastUser || "")}</small>
+      </button>
+      <button class="chat-session-delete" type="button" title="대화 삭제" aria-label="대화 삭제" data-session-action="delete" data-session-id="${escapeHtml(session.id)}">×</button>
+    </article>
   `).join("");
 }
 
@@ -1288,17 +1498,63 @@ async function loadChatSessions(selectId = "") {
   }
 }
 
-function startNewChatSession() {
-  activeChatSessionId = "";
-  if (nodes.chatThread) nodes.chatThread.innerHTML = "";
-  if (nodes.chatMemory) nodes.chatMemory.textContent = "새 대화";
-  renderChatSessions(chatSessionsState);
+async function updateChatSessionAction(payload = {}) {
+  const response = await fetch("/api/chat-sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
 }
 
-function handleChatSessionClick(event) {
+async function startNewChatSession() {
+  try {
+    const data = await updateChatSessionAction({ action: "create", title: "새 대화" });
+    activeChatSessionId = data.selected?.id || data.sessions?.[0]?.id || "";
+    if (nodes.chatThread) nodes.chatThread.innerHTML = "";
+    if (nodes.chatMemory) nodes.chatMemory.textContent = "새 대화";
+    renderChatSessions(data);
+  } catch (error) {
+    activeChatSessionId = "";
+    if (nodes.chatThread) nodes.chatThread.innerHTML = "";
+    if (nodes.chatMemory) nodes.chatMemory.textContent = `새 대화 준비 실패: ${error.message}`;
+    renderChatSessions(chatSessionsState);
+  }
+}
+
+async function handleChatSessionClick(event) {
+  const actionButton = event.target.closest("button[data-session-action]");
+  if (actionButton && nodes.chatSessionList?.contains(actionButton)) {
+    const action = actionButton.dataset.sessionAction || "";
+    const id = actionButton.dataset.sessionId || "";
+    actionButton.disabled = true;
+    try {
+      const data = await updateChatSessionAction({ action, id });
+      if (id === activeChatSessionId) {
+        activeChatSessionId = "";
+        if (nodes.chatThread) nodes.chatThread.innerHTML = "";
+        if (nodes.chatMemory) nodes.chatMemory.textContent = "대화 기록 삭제됨";
+      }
+      renderChatSessions(data);
+    } catch (error) {
+      if (nodes.chatMemory) nodes.chatMemory.textContent = `세션 처리 실패: ${error.message}`;
+    } finally {
+      actionButton.disabled = false;
+    }
+    return;
+  }
   const button = event.target.closest("button[data-session-id]");
   if (!button || !nodes.chatSessionList?.contains(button)) return;
   loadChatSessions(button.dataset.sessionId || "");
+}
+
+function skillCandidateKindLabel(kind = "") {
+  if (kind === "memory") return "메모리";
+  if (kind === "workflow") return "워크플로우";
+  if (kind === "template") return "템플릿";
+  return "스킬";
 }
 
 function renderSkillCandidates(state = skillCandidatesState) {
@@ -1314,11 +1570,12 @@ function renderSkillCandidates(state = skillCandidatesState) {
   nodes.skillCandidateList.innerHTML = candidates.map((candidate) => `
     <article class="skill-candidate-item ${escapeHtml(candidate.status || "")}">
       <strong>${escapeHtml(candidate.title || candidate.id)}</strong>
-      <span>${escapeHtml((candidate.agentIds || []).map((id) => agents.find((agent) => agent.id === id)?.name || id).join(", "))}</span>
+      <span><b class="skill-candidate-kind">${escapeHtml(skillCandidateKindLabel(candidate.kind))}</b> ${escapeHtml((candidate.agentIds || []).map((id) => agents.find((agent) => agent.id === id)?.name || id).join(", "))}</span>
       <small>${escapeHtml(candidate.description || "")}</small>
+      ${candidate.confidence ? `<small>신뢰도 ${Number(candidate.confidence || 0)}점${candidate.autoAppliedAt ? " · 자동 반영" : ""}</small>` : ""}
       <div class="connection-row-actions">
         ${candidate.status === "approved" ? `<b>적용됨</b>` : `
-          <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">스킬 적용</button>
+          <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
           <button type="button" data-skill-candidate-action="dismiss" data-candidate-id="${escapeHtml(candidate.id)}">숨김</button>
         `}
       </div>
@@ -1356,6 +1613,7 @@ async function handleSkillCandidateClick(event) {
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.skills) renderSkillsState(data.skills);
+    if (data.profile) renderProfileState(data.profile);
     await loadSkillCandidates();
     if (action === "approve") {
       addChatMessage("assistant", "대화에서 만든 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI AI", "스킬 적용");
@@ -1521,7 +1779,7 @@ function renderOfficePlanResult(officePlan, originalMessage = "") {
     subtasks.slice().reverse().forEach((step) => {
       const row = document.createElement("div");
       row.className = `log-row ${plan.questionRequired ? "warn" : "save"}`;
-      row.innerHTML = `<strong>${escapeHtml(step.agentName || step.agentId)}</strong><span>${escapeHtml(step.status || "planned")}</span><p>${escapeHtml(`${step.label || "서브태스크"} → ${step.expectedOutput || ""}`)}</p>`;
+      row.innerHTML = `<strong>${escapeHtml(step.agentName || step.agentId)}</strong><span>${escapeHtml(step.engine?.label || "Codex CLI")}</span><p>${escapeHtml(`${step.label || "서브태스크"} → ${step.expectedOutput || ""}`)}</p>`;
       nodes.activityLog.prepend(row);
     });
   }
@@ -1544,7 +1802,7 @@ function renderOfficePlanResult(officePlan, originalMessage = "") {
       "",
       "## 직원 분배 계획",
       subtasks.length
-        ? subtasks.map((step, index) => `${index + 1}. ${step.agentName}(${step.role || ""}) - ${step.label}\n   - 목표: ${step.objective}\n   - 산출물: ${step.expectedOutput}\n   - 병렬 그룹: ${step.parallelGroup}`).join("\n")
+        ? subtasks.map((step, index) => `${index + 1}. ${step.agentName}(${step.role || ""}) - ${step.label}\n   - 담당 엔진: ${step.engine?.label || "Codex CLI"}\n   - 목표: ${step.objective}\n   - 산출물: ${step.expectedOutput}\n   - 병렬 그룹: ${step.parallelGroup}`).join("\n")
         : "분배 계획 없음",
       "",
       "## 실행 정책",
@@ -1683,6 +1941,8 @@ async function pollOfficeJob(jobId, originalMessage = "") {
       officeJobPollTimer = null;
       activeOfficeJobId = "";
       await refreshState();
+      await loadRecentReports();
+      await loadPerformanceLog();
     }
   } catch (error) {
     if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `직원 실행 상태 확인 실패: ${error.message}`;
@@ -1716,7 +1976,12 @@ async function answerHumanLoop(jobId, choiceId) {
     renderOfficeJobResult(job, job.capsule?.originalInput || "", false);
     await loadTaskQueue({ resume: false });
     if (!officeJobDone(job.status)) startOfficeJobPolling(job.id, job.capsule?.originalInput || "");
-    else renderOfficeJobResult(job, job.capsule?.originalInput || "", true);
+    else {
+      renderOfficeJobResult(job, job.capsule?.originalInput || "", true);
+      await refreshState();
+      await loadRecentReports();
+      await loadPerformanceLog();
+    }
     addChatMessage("assistant", choiceId === "cancel" ? "확인 단계에서 작업을 취소했습니다." : "확인 완료. 직원 실행을 재개합니다.", "YOMI AI", "확인 응답");
   } catch (error) {
     if (nodes.saveNotice) nodes.saveNotice.textContent = `확인 처리 실패: ${error.message}`;
@@ -1822,13 +2087,21 @@ function renderTaskQueue(state = {}) {
   nodes.taskQueueList.innerHTML = jobs.slice(0, 8).map((job) => {
     const active = job.id === activeOfficeJobId || job.id === activeCodexJobId ? " active" : "";
     const tone = taskQueueTone(job.status);
+    const running = ["queued", "running", "retrying", "finalizing", "waiting_question"].includes(job.status);
+    const retryable = ["failed", "completed_with_errors", "cancelled"].includes(job.status);
     return `
-      <button class="task-queue-item ${tone}${active}" type="button" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">
-        <strong>${escapeHtml(job.title || job.id)}</strong>
-        <span>${escapeHtml(job.type === "codex" ? "Codex" : "직원")}</span>
-        <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
-        <p>${escapeHtml(job.progress || job.detail || "")}</p>
-      </button>
+      <article class="task-queue-item ${tone}${active}">
+        <button class="task-queue-main" type="button" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">
+          <strong>${escapeHtml(job.title || job.id)}</strong>
+          <span>${escapeHtml(job.restored ? "기록" : job.type === "codex" ? "Codex" : "직원")}</span>
+          <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
+          <p>${escapeHtml(job.progress || job.detail || "")}</p>
+        </button>
+        <div class="task-queue-actions">
+          ${running ? `<button type="button" data-task-queue-action="cancel" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">취소</button>` : ""}
+          ${retryable ? `<button type="button" data-task-queue-action="retry" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">재시도</button>` : ""}
+        </div>
+      </article>
     `;
   }).join("");
 }
@@ -1855,11 +2128,65 @@ async function loadTaskQueue(options = {}) {
   }
 }
 
-function handleTaskQueueClick(event) {
+async function updateTaskQueueAction(payload = {}) {
+  const response = await fetch("/api/task-queue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  renderTaskQueue(data.queue || data);
+  return data;
+}
+
+async function handleTaskQueueClick(event) {
+  const actionButton = event.target.closest("button[data-task-queue-action]");
+  if (actionButton && nodes.taskQueueList?.contains(actionButton)) {
+    const action = actionButton.dataset.taskQueueAction || "";
+    const id = actionButton.dataset.jobId || "";
+    const type = actionButton.dataset.jobType || "";
+    actionButton.disabled = true;
+    try {
+      const data = await updateTaskQueueAction({ action, id, type });
+      const job = data.job;
+      if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${action === "retry" ? "재시도 등록" : "작업 취소"} · ${job?.id || id}`;
+      if (job?.type === "office" || type === "office") startOfficeJobPolling(job.id || id, job.title || "");
+      if (job?.type === "codex" || type === "codex") startCodexJobPolling(job.id || id);
+      await refreshState();
+      await loadPerformanceLog();
+    } catch (error) {
+      if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `작업 큐 처리 실패: ${error.message}`;
+      await loadTaskQueue({ resume: false });
+    } finally {
+      actionButton.disabled = false;
+    }
+    return;
+  }
   const button = event.target.closest("button[data-job-id]");
   if (!button || !nodes.taskQueueList?.contains(button)) return;
   const id = button.dataset.jobId || "";
   const type = button.dataset.jobType || "";
+  const detail = await updateTaskQueueAction({ action: "detail", id, type }).catch(() => null);
+  if (detail?.job?.restored) {
+    const job = detail.job;
+    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `복원된 작업 기록 · ${job.id}`;
+    if (nodes.chatResultPreview) {
+      nodes.chatResultPreview.textContent = [
+        "# 작업 큐 기록",
+        "",
+        `작업 ID: ${job.id}`,
+        `유형: ${job.type === "codex" ? "Codex" : "직원 실행"}`,
+        `상태: ${job.statusLabel || officeJobStatusLabel(job.status)}`,
+        `제목: ${job.title || ""}`,
+        job.progress ? `진행 메모: ${job.progress}` : "",
+        job.saved?.ok ? `저장: ${job.saved.relPath}` : job.saved?.reason ? `저장: ${job.saved.reason}` : "",
+        "",
+        "이 기록은 서버 재시작 후 복원된 큐 스냅샷입니다. 실제 실행 프로세스는 이어 붙지 않으며, 필요한 경우 재시도 버튼으로 새 작업을 등록하세요."
+      ].filter(Boolean).join("\n");
+    }
+    return;
+  }
   if (type === "office") return startOfficeJobPolling(id, "");
   if (type === "codex") return startCodexJobPolling(id);
 }
@@ -1905,7 +2232,7 @@ function updateChatResultPanel(data, originalMessage) {
         `목표: ${capsule.goal || ""}`,
         "",
         "## 분배 계획",
-        plan.subtasks?.length ? plan.subtasks.map((step, index) => `${index + 1}. ${step.agentName} · ${step.label} · ${step.expectedOutput}`).join("\n") : "분배 계획 없음",
+        plan.subtasks?.length ? plan.subtasks.map((step, index) => `${index + 1}. ${step.agentName} · ${step.label} · ${step.expectedOutput} · ${step.engine?.label || "Codex CLI"}`).join("\n") : "분배 계획 없음",
         plan.questionReasons?.length ? `\n## 확인 필요\n${plan.questionReasons.map((item) => `- ${item.reason}`).join("\n")}` : "",
         "",
         "## 작업캡슐 JSON",
@@ -1956,7 +2283,7 @@ function updateChatResultPanel(data, originalMessage) {
   }
 
   if (data.intent === "claude") {
-    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = data.llm?.used ? "Claude Code CLI · 수동 호출" : "Claude Code CLI 대기";
+    if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = data.llm?.used ? "Claude Code CLI · 직접 호출" : "Claude Code CLI 대기";
     nodes.chatResultPreview.textContent = [
       "# Claude Code 실행",
       "",
@@ -2022,11 +2349,12 @@ async function submitChat(event) {
     nodes.chatStatus.textContent = modeLabel;
     renderChatSources(data.sources || []);
     updateChatResultPanel(data, message);
-    await loadChatSessions();
+    await loadChatSessions(activeChatSessionId);
     await loadSkillCandidates();
     if ((data.intent === "office" && !data.officePlan) || data.intent === "codex") {
       await refreshState();
       await loadRecentReports();
+      await loadPerformanceLog();
     }
     await loadTaskQueue({ resume: false });
   } catch (error) {
@@ -2082,6 +2410,9 @@ if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkill
 if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handleConnectionSubmit);
 if (nodes.connectionResetBtn) nodes.connectionResetBtn.addEventListener("click", resetConnectionForm);
 if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleConnectionClick);
+if (nodes.profileForm) nodes.profileForm.addEventListener("submit", saveProfileState);
+if (nodes.profileReloadBtn) nodes.profileReloadBtn.addEventListener("click", loadProfileState);
+if (nodes.ragReindexBtn) nodes.ragReindexBtn.addEventListener("click", handleRagReindex);
 if (nodes.automationTriggerForm) nodes.automationTriggerForm.addEventListener("submit", handleAutomationTriggerSubmit);
 if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventListener("click", resetAutomationTriggerForm);
 if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);
@@ -2093,7 +2424,10 @@ if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click",
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
-nodes.refreshReportsBtn.addEventListener("click", loadRecentReports);
+nodes.refreshReportsBtn.addEventListener("click", async () => {
+  await loadRecentReports();
+  await loadPerformanceLog();
+});
 if (nodes.recentReports) nodes.recentReports.addEventListener("click", handleVaultExportClick);
 
 initializeStaticCopy();
@@ -2102,7 +2436,9 @@ renderPipeline();
 renderOfficeAgentStatus([]);
 renderAgentsList();
 refreshState();
+loadProfileState();
 loadRecentReports();
+loadPerformanceLog();
 loadConnectionsState();
 loadAutomationTriggersState();
 loadChatSessions();

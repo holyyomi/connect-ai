@@ -17,11 +17,11 @@ This repository is a VS Code/Cursor extension project for Connect AI with an act
 
 `src/extension.ts` is large and carries most extension behavior. Treat edits to it as high-risk and keep changes narrowly scoped.
 
-The current personal office direction is Codex-first:
+The current personal office direction uses two CLI engines:
 
 - Codex CLI is the default chat/routing/task engine.
-- Claude Code CLI is manual-only via `/cc` or `/claude`.
-- Ollama/LM Studio are legacy fallback concepts, not the active default path.
+- Claude Code CLI is available for long reasoning, writing, research synthesis, and review, and can also be called via `/cc` or `/claude`.
+- Do not add local-model engine paths to the YOMI personal office runtime.
 - Brave Search is excluded unless explicitly restored.
 - Exa/Firecrawl/Tavily are the current research API candidates.
 - Vault markdown output is the primary assetization path.

@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, existsSync, readFileSync, watch } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -17,6 +18,9 @@ const styleProfilePath = path.join(webRoot, "style-profile.json");
 const runtimeRoot = path.join(webRoot, "runtime");
 const chatSessionsPath = path.join(runtimeRoot, "chat-sessions.json");
 const skillCandidatesPath = path.join(runtimeRoot, "skill-candidates.json");
+const ragIndexPath = path.join(runtimeRoot, "rag-index.json");
+const taskQueueHistoryPath = path.join(runtimeRoot, "task-queue.json");
+const performanceLogPath = path.join(runtimeRoot, "performance-log.json");
 
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) return;
@@ -97,6 +101,14 @@ const automationTriggerRuntime = {
   pendingWatchTimers: new Map(),
   running: new Set()
 };
+const ragRuntime = {
+  indexingPromise: null,
+  watcher: null,
+  watcherRoot: "",
+  dirty: false,
+  lastAutoRefresh: 0,
+  watchTimer: null
+};
 
 const defaultStyleProfile = {
   label: "YOMI 기본 개인 톤",
@@ -115,11 +127,75 @@ const defaultStyleProfile = {
     "고정 안내문, 사용법 반복, 불필요한 모드 설명",
     "근거 없는 확정 표현",
     "실행하지 않은 일을 완료한 것처럼 쓰기"
+  ],
+  memory: [
+    "사소한 요청에는 필요한 담당자만 투입하고, 중요한 업무만 깊게 진행한다."
   ]
 };
 const codexJobs = new Map();
 const orchestrationJobs = new Map();
 const finalJobStatuses = new Set(["completed", "completed_with_errors", "failed", "waiting_question", "cancelled"]);
+
+const cliEngines = {
+  codex: {
+    id: "codex",
+    provider: "codex-cli",
+    label: "Codex CLI",
+    bestFor: "code/files/git/terminal/default"
+  },
+  claude: {
+    id: "claude",
+    provider: "claude-code",
+    label: "Claude Code CLI",
+    bestFor: "long-reasoning/writing/research-review"
+  }
+};
+
+const defaultAgentEngines = {
+  ceo: "codex",
+  secretary: "codex",
+  developer: "codex",
+  archivist: "codex",
+  researcher: "claude",
+  business: "claude",
+  writer: "claude",
+  editor: "claude",
+  designer: "claude",
+  youtube: "claude",
+  instagram: "claude"
+};
+
+const claudePreferredWorkTypes = new Set(["research", "strategy", "writing", "video", "social", "design"]);
+
+function normalizeEngineId(value, fallback = "codex") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "claude" || normalized === "claude-code" || normalized === "claude_code") return "claude";
+  if (normalized === "codex" || normalized === "codex-cli" || normalized === "codex_cli") return "codex";
+  return fallback;
+}
+
+function engineMeta(engineId) {
+  return cliEngines[normalizeEngineId(engineId)] || cliEngines.codex;
+}
+
+function requestedEngineFromText(text) {
+  const value = String(text || "");
+  if (/^\s*\/(?:cc|claude)(?:\s+|$)/i.test(value) || /(?:engine|엔진)\s*[:=]\s*(?:claude|claude code)/i.test(value)) return "claude";
+  if (/^\s*\/codex(?:\s+|$)/i.test(value) || /(?:engine|엔진)\s*[:=]\s*codex/i.test(value)) return "codex";
+  return "";
+}
+
+function defaultEngineForWorkType(workType, staffing = {}) {
+  if (workType === "code") return "codex";
+  if (claudePreferredWorkTypes.has(workType) && staffing.level !== "quick") return "claude";
+  return "codex";
+}
+
+function defaultEngineForAgent(agentId, capsule = {}) {
+  if (capsule.engine?.selection === "user-requested") return normalizeEngineId(capsule.engine.id);
+  if (capsule.workType === "code" || agentId === "developer") return "codex";
+  return normalizeEngineId(defaultAgentEngines[agentId], "codex");
+}
 
 function appendJobLog(job, message, actor = "system", level = "info") {
   if (!job) return;
@@ -195,7 +271,7 @@ function defaultConnectionsConfig() {
   return {
     connections: [
       { id: "codex_cli", name: "Codex CLI", kind: "model", provider: "codex", enabled: true, envKeys: ["YOMI_AI_CODEX_COMMAND"], notes: "기존 codex-cli 인증 상태를 사용합니다." },
-      { id: "claude_cli", name: "Claude Code CLI", kind: "model", provider: "claude-code", enabled: true, envKeys: ["YOMI_AI_CLAUDE_COMMAND", "YOMI_AI_CLAUDE_MODEL"], safeMode: true, allowedActions: ["manual_chat", "plan"], blockedActions: ["auto_route", "file_write", "git_write", "external_send"], notes: "/cc 또는 /claude로 명시 호출할 때만 사용합니다." },
+      { id: "claude_cli", name: "Claude Code CLI", kind: "model", provider: "claude-code", enabled: true, envKeys: ["YOMI_AI_CLAUDE_COMMAND", "YOMI_AI_CLAUDE_MODEL"], safeMode: true, allowedActions: ["manual_chat", "auto_route", "plan", "synthesis", "review"], blockedActions: ["file_write", "git_write", "external_send"], notes: "긴 추론, 글쓰기, 리서치 종합, 검토 업무에 자동 라우팅될 수 있습니다. 실패 시 Codex CLI로 엔진 폴백합니다." },
       { id: "obsidian_vault", name: "Obsidian Vault", kind: "storage", provider: "filesystem", enabled: true, envKeys: ["YOMI_AI_PERSONAL_VAULT"], notes: "마크다운 저장소 경로입니다." },
       { id: "context7_mcp", name: "Context7 MCP", kind: "mcp", provider: "context7", enabled: true, envKeys: [], mcpServer: "context7", install: "npx -y @upstash/context7-mcp@latest", safeMode: true, allowedActions: ["resolve-library-id", "get-library-docs"], blockedActions: ["write", "external_send"], notes: "태오용 최신 라이브러리 문서 조회입니다. API 키 없이 제한적으로 사용합니다." },
       { id: "playwright_mcp", name: "Playwright MCP", kind: "mcp", provider: "playwright", enabled: true, envKeys: [], mcpServer: "playwright", install: "npx -y @playwright/mcp@latest --isolated", safeMode: true, allowedActions: ["browser_snapshot", "browser_click", "browser_type", "browser_screenshot"], blockedActions: ["external_send", "file_write"], notes: "브라우저 자동화 후보입니다. 화면 제어 권한이 있어 실제 실행은 사용자 확인 후 진행합니다." },
@@ -384,7 +460,7 @@ async function buildConnectionsState() {
     } else if (connection.id === "claude_cli") {
       const command = claudeCommand();
       status = command ? "normal" : "disconnected";
-      detail = command ? `명령: ${command} · /cc, /claude 수동호출 전용` : "claude 명령을 찾지 못했습니다.";
+      detail = command ? `명령: ${command} · 자동 라우팅/직접 호출 가능` : "claude 명령을 찾지 못했습니다.";
     } else if (connection.kind === "mcp" && connection.install) {
       const command = installCommandName(connection.install);
       status = commandExists(command) ? "normal" : "disconnected";
@@ -665,24 +741,560 @@ async function searchVaultMarkdown(query, limit = 6) {
   return { connected: true, query: cleanQuery, results: results.slice(0, Math.max(1, Math.min(12, limit))) };
 }
 
+const ragIndexVersion = 1;
+const ragChunkTargetTokens = 650;
+const ragChunkOverlapTokens = 80;
+const ragAutoRefreshIntervalMs = 45 * 1000;
+const ragMaxEmbeddingBatch = 64;
+
+const ragStopWords = new Set([
+  "the", "and", "for", "with", "from", "this", "that", "are", "was", "were", "you", "your",
+  "그리고", "또는", "있는", "없는", "합니다", "하는", "으로", "에서", "에게", "부터", "까지",
+  "요미", "yomi", "ai", "vault", "문서", "작업", "보고서", "정리", "내용", "결과"
+]);
+
+function defaultRagIndex(vaultRoot = "") {
+  return {
+    version: ragIndexVersion,
+    vaultRoot,
+    generatedAt: "",
+    lastIndexedAt: "",
+    embedding: { mode: "bm25_keyword", provider: "", model: "", dimension: 0, fallbackReason: "" },
+    stats: { documentCount: 0, chunkCount: 0, changedDocumentCount: 0, removedDocumentCount: 0 },
+    documents: [],
+    chunks: []
+  };
+}
+
+async function readRagIndex() {
+  if (!(await exists(ragIndexPath))) return defaultRagIndex();
+  const index = await readJson(ragIndexPath, defaultRagIndex());
+  if (!index || typeof index !== "object" || index.version !== ragIndexVersion) return defaultRagIndex();
+  return {
+    ...defaultRagIndex(index.vaultRoot || ""),
+    ...index,
+    embedding: { ...defaultRagIndex().embedding, ...(index.embedding || {}) },
+    stats: { ...defaultRagIndex().stats, ...(index.stats || {}) },
+    documents: Array.isArray(index.documents) ? index.documents : [],
+    chunks: Array.isArray(index.chunks) ? index.chunks : []
+  };
+}
+
+async function writeRagIndex(index) {
+  await writeJsonFile(ragIndexPath, index);
+}
+
+function estimateTokenCount(text) {
+  const value = String(text || "");
+  const words = value.split(/\s+/).filter(Boolean).length;
+  return Math.max(words, Math.ceil(value.length / 3.2));
+}
+
+function hashText(text) {
+  return createHash("sha256").update(String(text || ""), "utf8").digest("hex");
+}
+
+function cleanRagText(content) {
+  return stripMarkdownFrontmatter(content)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/[#>*_`|]+/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function chunkMarkdownForRag(content) {
+  const text = cleanRagText(content);
+  if (!text) return [];
+  const paragraphs = text.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const chunks = [];
+  let current = [];
+  let currentTokens = 0;
+  const flush = () => {
+    if (!current.length) return;
+    const chunk = current.join("\n\n").trim();
+    if (chunk) chunks.push(chunk);
+    const overlapChars = Math.max(240, Math.floor(ragChunkOverlapTokens * 3.2));
+    const tail = chunk.slice(-overlapChars).trim();
+    current = tail ? [tail] : [];
+    currentTokens = tail ? estimateTokenCount(tail) : 0;
+  };
+  for (const paragraph of paragraphs) {
+    const tokens = estimateTokenCount(paragraph);
+    if (tokens > ragChunkTargetTokens) {
+      flush();
+      const stepChars = Math.max(1200, Math.floor((ragChunkTargetTokens - ragChunkOverlapTokens) * 3.2));
+      const windowChars = Math.max(stepChars + 240, Math.floor(ragChunkTargetTokens * 3.2));
+      for (let start = 0; start < paragraph.length; start += stepChars) {
+        const piece = paragraph.slice(start, start + windowChars).trim();
+        if (piece) chunks.push(piece);
+      }
+      current = [];
+      currentTokens = 0;
+      continue;
+    }
+    if (currentTokens + tokens > ragChunkTargetTokens && current.length) flush();
+    current.push(paragraph);
+    currentTokens += tokens;
+  }
+  flush();
+  return chunks.filter((chunk) => chunk.length >= 80).slice(0, 200);
+}
+
+function tokenizeRagText(text, maxTerms = 2400) {
+  const tokens = normalizeForSearch(text)
+    .split(/[^\p{L}\p{N}_#/-]+/gu)
+    .map((item) => item.replace(/^#/, "").trim())
+    .filter((item) => item.length >= 2 && !/^\d+$/.test(item) && !ragStopWords.has(item));
+  return tokens.slice(0, maxTerms);
+}
+
+function termFrequency(tokens) {
+  const freq = {};
+  for (const token of tokens) freq[token] = (freq[token] || 0) + 1;
+  return freq;
+}
+
+function embeddingConfigFromEnv() {
+  if (process.env.OPENAI_EMBEDDING_API_KEY) {
+    return { provider: "openai", model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small", key: process.env.OPENAI_EMBEDDING_API_KEY };
+  }
+  if (process.env.VOYAGE_API_KEY) {
+    return { provider: "voyage", model: process.env.VOYAGE_EMBEDDING_MODEL || "voyage-3-lite", key: process.env.VOYAGE_API_KEY };
+  }
+  if (process.env.COHERE_API_KEY) {
+    return { provider: "cohere", model: process.env.COHERE_EMBEDDING_MODEL || "embed-multilingual-v3.0", key: process.env.COHERE_API_KEY };
+  }
+  return null;
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 60000) {
+  if (typeof fetch !== "function") throw new Error("현재 Node 런타임에서 fetch를 사용할 수 없습니다.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    let body = {};
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text.slice(0, 500) };
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error?.message || body.message || body.raw || "embedding request failed"}`);
+    return body;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function embedTextsWithProvider(texts, config, inputType = "document") {
+  const rows = texts.map((text) => String(text || "").slice(0, 8000));
+  if (!rows.length) return [];
+  if (config.provider === "openai") {
+    const body = await fetchJson("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${config.key}` },
+      body: JSON.stringify({ model: config.model, input: rows })
+    });
+    return (body.data || []).sort((a, b) => a.index - b.index).map((item) => item.embedding);
+  }
+  if (config.provider === "voyage") {
+    const body = await fetchJson("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${config.key}` },
+      body: JSON.stringify({ model: config.model, input: rows, input_type: inputType === "query" ? "query" : "document" })
+    });
+    return (body.data || []).map((item) => item.embedding);
+  }
+  if (config.provider === "cohere") {
+    const body = await fetchJson("https://api.cohere.com/v1/embed", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${config.key}` },
+      body: JSON.stringify({ model: config.model, texts: rows, input_type: inputType === "query" ? "search_query" : "search_document" })
+    });
+    return body.embeddings || [];
+  }
+  throw new Error(`지원하지 않는 임베딩 제공자: ${config.provider}`);
+}
+
+async function embedChunkBatch(chunks, config, options = {}) {
+  const maxChunks = Math.max(1, Number(options.maxChunks || process.env.YOMI_AI_RAG_MAX_EMBED_CHUNKS || 600));
+  const targets = chunks.slice(0, maxChunks);
+  for (let offset = 0; offset < targets.length; offset += ragMaxEmbeddingBatch) {
+    const batch = targets.slice(offset, offset + ragMaxEmbeddingBatch);
+    const embeddings = await embedTextsWithProvider(batch.map((chunk) => chunk.text), config, "document");
+    embeddings.forEach((embedding, index) => {
+      if (!Array.isArray(embedding)) return;
+      batch[index].embedding = embedding;
+      batch[index].embeddingProvider = config.provider;
+      batch[index].embeddingModel = config.model;
+    });
+  }
+  return { embedded: targets.filter((chunk) => Array.isArray(chunk.embedding)).length, skippedByLimit: Math.max(0, chunks.length - targets.length) };
+}
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return 0;
+  let dot = 0;
+  let aMag = 0;
+  let bMag = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    const av = Number(a[index]) || 0;
+    const bv = Number(b[index]) || 0;
+    dot += av * bv;
+    aMag += av * av;
+    bMag += bv * bv;
+  }
+  return aMag && bMag ? dot / (Math.sqrt(aMag) * Math.sqrt(bMag)) : 0;
+}
+
+function buildDocumentFrequency(chunks) {
+  const df = {};
+  for (const chunk of chunks) {
+    for (const term of Object.keys(chunk.termFreq || {})) df[term] = (df[term] || 0) + 1;
+  }
+  return df;
+}
+
+function bm25ScoreChunk(chunk, queryTerms, docFreq, totalChunks, avgLength) {
+  const freq = chunk.termFreq || {};
+  const length = Number(chunk.length || 1);
+  const k1 = 1.4;
+  const b = 0.72;
+  let score = 0;
+  for (const term of queryTerms) {
+    const tf = Number(freq[term] || 0);
+    if (!tf) continue;
+    const df = Number(docFreq[term] || 0);
+    const idf = Math.log(1 + (totalChunks - df + 0.5) / (df + 0.5));
+    score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (length / Math.max(1, avgLength)))));
+  }
+  const rel = normalizeForSearch(`${chunk.relPath || ""} ${chunk.title || ""}`);
+  for (const term of queryTerms) if (rel.includes(term)) score += 0.8;
+  return score;
+}
+
+function publicRagResult(row, mode) {
+  return {
+    title: row.title,
+    relPath: row.relPath,
+    displayPath: displayReportPath(row.relPath),
+    chunkIndex: row.chunkIndex,
+    excerpt: row.excerpt,
+    score: Number(row.score.toFixed(4)),
+    keywordScore: Number((row.keywordScore || 0).toFixed(4)),
+    semanticScore: Number((row.semanticScore || 0).toFixed(4)),
+    mode
+  };
+}
+
+async function buildRagIndex(options = {}) {
+  if (ragRuntime.indexingPromise) return await ragRuntime.indexingPromise;
+  ragRuntime.indexingPromise = (async () => {
+    const startedAt = new Date().toISOString();
+    const vaultRoot = await findVaultRoot();
+    if (!vaultRoot) {
+      const empty = defaultRagIndex();
+      await writeRagIndex(empty);
+      return { ok: false, connected: false, reason: "Vault 경로를 찾지 못했습니다.", index: empty };
+    }
+    const force = options.force === true;
+    const allowEmbeddings = options.embeddings !== false && options.allowEmbeddings !== false;
+    const provider = allowEmbeddings ? embeddingConfigFromEnv() : null;
+    const previous = await readRagIndex();
+    const previousDocs = previous.vaultRoot === vaultRoot ? new Map(previous.documents.map((doc) => [doc.relPath, doc])) : new Map();
+    const previousChunks = previous.vaultRoot === vaultRoot ? new Map(previous.chunks.map((chunk) => [chunk.id, chunk])) : new Map();
+    const files = (await collectMarkdownFiles(vaultRoot, vaultRoot)).filter((file) => !isSensitiveVaultPath(file.relPath));
+    const currentRelPaths = new Set(files.map((file) => file.relPath));
+    const documents = [];
+    const chunks = [];
+    let changedDocumentCount = 0;
+
+    for (const file of files) {
+      const info = await stat(file.fullPath);
+      const previousDoc = previousDocs.get(file.relPath);
+      const previousDocChunks = previousDoc ? (previousDoc.chunkIds || []).map((id) => previousChunks.get(id)).filter(Boolean) : [];
+      if (!force && previousDoc && previousDoc.mtimeMs === info.mtimeMs && previousDoc.size === info.size && previousDocChunks.length) {
+        documents.push(previousDoc);
+        chunks.push(...previousDocChunks);
+        continue;
+      }
+      changedDocumentCount += 1;
+      let content = "";
+      try {
+        content = await readFile(file.fullPath, "utf8");
+      } catch {
+        continue;
+      }
+      const title = markdownTitle(content, reportTitleFromPath(file.relPath));
+      const tags = extractMarkdownTags(content);
+      const textChunks = chunkMarkdownForRag(content);
+      const chunkIds = [];
+      textChunks.forEach((text, index) => {
+        const id = `${hashText(file.relPath).slice(0, 12)}-${index}`;
+        const terms = tokenizeRagText(`${title} ${file.relPath} ${text}`);
+        const chunk = {
+          id,
+          relPath: file.relPath,
+          title,
+          chunkIndex: index,
+          text,
+          hash: hashText(text),
+          length: terms.length || estimateTokenCount(text),
+          termFreq: termFrequency(terms)
+        };
+        chunkIds.push(id);
+        chunks.push(chunk);
+      });
+      documents.push({
+        relPath: file.relPath,
+        title,
+        mtimeMs: info.mtimeMs,
+        size: info.size,
+        hash: hashText(content),
+        tags,
+        chunkCount: chunkIds.length,
+        chunkIds
+      });
+    }
+
+    const removedDocumentCount = previous.vaultRoot === vaultRoot ? previous.documents.filter((doc) => !currentRelPaths.has(doc.relPath)).length : 0;
+    const embedding = {
+      mode: "bm25_keyword",
+      provider: "",
+      model: "",
+      dimension: 0,
+      fallbackReason: provider ? "" : (allowEmbeddings ? "임베딩 API 키가 없어 BM25+키워드 하이브리드로 인덱싱했습니다." : "요청에 따라 임베딩 호출 없이 BM25+키워드 하이브리드로 인덱싱했습니다.")
+    };
+    if (provider) {
+      const needsEmbedding = chunks.filter((chunk) => chunk.embeddingProvider !== provider.provider || chunk.embeddingModel !== provider.model || !Array.isArray(chunk.embedding));
+      try {
+        const embedded = await embedChunkBatch(needsEmbedding, provider, options);
+        const first = chunks.find((chunk) => Array.isArray(chunk.embedding));
+        embedding.mode = "semantic_hybrid";
+        embedding.provider = provider.provider;
+        embedding.model = provider.model;
+        embedding.dimension = first?.embedding?.length || 0;
+        embedding.fallbackReason = embedded.skippedByLimit ? `임베딩 상한으로 ${embedded.skippedByLimit}개 청크는 BM25 검색만 사용합니다.` : "";
+      } catch (error) {
+        embedding.fallbackReason = `임베딩 실패로 BM25+키워드 검색으로 폴백했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+
+    const index = {
+      version: ragIndexVersion,
+      vaultRoot,
+      generatedAt: startedAt,
+      lastIndexedAt: new Date().toISOString(),
+      embedding,
+      stats: { documentCount: documents.length, chunkCount: chunks.length, changedDocumentCount, removedDocumentCount },
+      documents: documents.sort((a, b) => a.relPath.localeCompare(b.relPath, "ko")),
+      chunks
+    };
+    await writeRagIndex(index);
+    ragRuntime.dirty = false;
+    ragRuntime.lastAutoRefresh = Date.now();
+    return { ok: true, connected: true, index, stats: index.stats, embedding: index.embedding };
+  })();
+  try {
+    return await ragRuntime.indexingPromise;
+  } finally {
+    ragRuntime.indexingPromise = null;
+  }
+}
+
+async function ensureRagWatcher(vaultRoot = "") {
+  const root = vaultRoot || await findVaultRoot();
+  if (!root || ragRuntime.watcherRoot === root) return;
+  if (ragRuntime.watcher) {
+    try { ragRuntime.watcher.close(); } catch { /* ignore */ }
+  }
+  ragRuntime.watcher = null;
+  ragRuntime.watcherRoot = root;
+  try {
+    ragRuntime.watcher = watch(root, { recursive: true }, (_eventType, filename) => {
+      if (filename && !String(filename).toLowerCase().endsWith(".md")) return;
+      ragRuntime.dirty = true;
+      if (ragRuntime.watchTimer) clearTimeout(ragRuntime.watchTimer);
+      ragRuntime.watchTimer = setTimeout(() => {
+        buildRagIndex({ force: false, embeddings: false, reason: "watch" }).catch((error) => recordWorkflowError("RAG 증분 인덱싱", error instanceof Error ? error.message : String(error)));
+      }, 1800);
+    });
+  } catch (error) {
+    recordWorkflowError("RAG 파일 감시", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function ensureRagIndexFresh(options = {}) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return defaultRagIndex();
+  await ensureRagWatcher(vaultRoot);
+  const current = await readRagIndex();
+  const stale = current.vaultRoot !== vaultRoot || !current.lastIndexedAt || ragRuntime.dirty || Date.now() - ragRuntime.lastAutoRefresh > ragAutoRefreshIntervalMs;
+  if (stale) {
+    const result = await buildRagIndex({ force: false, embeddings: options.embeddings === true });
+    return result.index || await readRagIndex();
+  }
+  return current;
+}
+
+async function searchRagIndex(query, limit = 6, options = {}) {
+  const cleanQuery = String(query || "").trim();
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return { ok: true, connected: false, query: cleanQuery, mode: "disconnected", results: [], index: defaultRagIndex() };
+  const index = options.index || await ensureRagIndexFresh({ embeddings: false });
+  const chunks = Array.isArray(index.chunks) ? index.chunks : [];
+  const queryTerms = tokenizeRagText(cleanQuery, 40);
+  if (!cleanQuery || !chunks.length || !queryTerms.length) return { ok: true, connected: true, query: cleanQuery, mode: index.embedding?.mode || "bm25_keyword", results: [], index };
+  const docFreq = buildDocumentFrequency(chunks);
+  const avgLength = chunks.reduce((sum, chunk) => sum + Number(chunk.length || 0), 0) / Math.max(1, chunks.length);
+  let queryEmbedding = null;
+  const provider = index.embedding?.mode === "semantic_hybrid" ? embeddingConfigFromEnv() : null;
+  if (provider && provider.provider === index.embedding.provider && provider.model === index.embedding.model) {
+    try {
+      const embeddings = await embedTextsWithProvider([cleanQuery], provider, "query");
+      queryEmbedding = embeddings[0] || null;
+    } catch (error) {
+      recordWorkflowError("RAG 쿼리 임베딩", error instanceof Error ? error.message : String(error));
+    }
+  }
+  const mode = queryEmbedding ? "semantic_hybrid" : "bm25_keyword";
+  const scored = chunks.map((chunk) => {
+    const keywordScore = bm25ScoreChunk(chunk, queryTerms, docFreq, chunks.length, avgLength);
+    const semanticScore = queryEmbedding && Array.isArray(chunk.embedding) ? Math.max(0, cosineSimilarity(queryEmbedding, chunk.embedding)) : 0;
+    const score = keywordScore + (semanticScore ? semanticScore * 8 : 0);
+    return {
+      title: chunk.title || reportTitleFromPath(chunk.relPath),
+      relPath: chunk.relPath,
+      chunkIndex: chunk.chunkIndex,
+      excerpt: makeVaultExcerpt(chunk.text, queryTerms, 420),
+      score,
+      keywordScore,
+      semanticScore
+    };
+  }).filter((row) => row.score > 0);
+  scored.sort((a, b) => b.score - a.score);
+  const deduped = [];
+  const seen = new Set();
+  for (const row of scored) {
+    const key = `${row.relPath}:${row.chunkIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(publicRagResult(row, mode));
+    if (deduped.length >= Math.max(1, Math.min(20, Number(limit || 6)))) break;
+  }
+  return { ok: true, connected: true, query: cleanQuery, mode, embedding: index.embedding, stats: index.stats, results: deduped, index };
+}
+
+async function buildRagStatus() {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return { connected: false, documentCount: 0, chunkCount: 0, lastIndexedAt: "", embeddingMode: "disconnected", provider: "", model: "", dirty: false };
+  await ensureRagWatcher(vaultRoot);
+  const index = await readRagIndex();
+  const valid = index.vaultRoot === vaultRoot;
+  return {
+    connected: true,
+    path: vaultRoot,
+    documentCount: valid ? index.stats?.documentCount || 0 : 0,
+    chunkCount: valid ? index.stats?.chunkCount || 0 : 0,
+    changedDocumentCount: valid ? index.stats?.changedDocumentCount || 0 : 0,
+    removedDocumentCount: valid ? index.stats?.removedDocumentCount || 0 : 0,
+    lastIndexedAt: valid ? index.lastIndexedAt || "" : "",
+    embeddingMode: valid ? index.embedding?.mode || "bm25_keyword" : "not_indexed",
+    provider: valid ? index.embedding?.provider || "" : "",
+    model: valid ? index.embedding?.model || "" : "",
+    fallbackReason: valid ? index.embedding?.fallbackReason || "" : "아직 인덱싱되지 않았습니다.",
+    dirty: ragRuntime.dirty || !valid
+  };
+}
+
 function normalizeStyleProfile(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const list = (key) => {
     const value = Array.isArray(source[key]) ? source[key] : defaultStyleProfile[key];
     return value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 12);
   };
+  const memoryValue = Array.isArray(source.memory)
+    ? source.memory
+    : Array.isArray(source.longMemory)
+      ? source.longMemory
+      : defaultStyleProfile.memory;
   return {
     label: String(source.label || defaultStyleProfile.label),
     enabled: source.enabled !== false,
     voice: list("voice"),
     format: list("format"),
-    avoid: list("avoid")
+    avoid: list("avoid"),
+    memory: memoryValue.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 20),
+    updatedAt: String(source.updatedAt || "")
   };
 }
 
 async function readStyleProfile() {
   if (!(await exists(styleProfilePath))) return normalizeStyleProfile(defaultStyleProfile);
   return normalizeStyleProfile(await readJson(styleProfilePath, defaultStyleProfile));
+}
+
+async function writeStyleProfile(profile) {
+  const normalized = normalizeStyleProfile({ ...profile, updatedAt: new Date().toISOString() });
+  await writeJsonFile(styleProfilePath, normalized);
+  return normalized;
+}
+
+function normalizeMemoryKey(value = "") {
+  return String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+async function appendProfileMemory(items = []) {
+  const incoming = normalizeStringList(items, 12).map((item) => compactLine(item, 180)).filter(Boolean);
+  if (!incoming.length) return { ok: true, added: [], profile: await readStyleProfile() };
+  const profile = await readStyleProfile();
+  const seen = new Set((profile.memory || []).map(normalizeMemoryKey));
+  const added = [];
+  for (const item of incoming) {
+    const key = normalizeMemoryKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    added.push(item);
+  }
+  if (!added.length) return { ok: true, added: [], profile };
+  const profileNext = await writeStyleProfile({
+    ...profile,
+    memory: [...added, ...(profile.memory || [])].slice(0, 20)
+  });
+  return { ok: true, added, profile: profileNext };
+}
+
+function parseProfileList(value, fallback = []) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  return fallback;
+}
+
+async function buildProfileState() {
+  return { ok: true, generatedAt: new Date().toISOString(), profile: await readStyleProfile() };
+}
+
+async function updateProfileState(input = {}) {
+  const action = String(input.action || "save").trim().toLowerCase();
+  const current = await readStyleProfile();
+  const next = action === "reset"
+    ? normalizeStyleProfile(defaultStyleProfile)
+    : normalizeStyleProfile({
+      ...current,
+      label: input.label ?? current.label,
+      enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
+      voice: parseProfileList(input.voice, current.voice),
+      format: parseProfileList(input.format, current.format),
+      avoid: parseProfileList(input.avoid, current.avoid),
+      memory: parseProfileList(input.memory ?? input.longMemory, current.memory)
+    });
+  if (input.dryRun === true) return { ok: true, dryRun: true, profile: next };
+  return { ok: true, profile: await writeStyleProfile(next) };
 }
 
 function formatStyleProfilePrompt(profile) {
@@ -698,7 +1310,10 @@ function formatStyleProfilePrompt(profile) {
     ...profile.format.map((item) => `- ${item}`),
     "",
     "### 피할 것",
-    ...profile.avoid.map((item) => `- ${item}`)
+    ...profile.avoid.map((item) => `- ${item}`),
+    "",
+    "### 장기 메모리",
+    ...(profile.memory || []).map((item) => `- ${item}`)
   ].join("\n");
 }
 
@@ -728,6 +1343,7 @@ function publicContextSummary(context = {}) {
   return {
     profile: context.profile ? { label: context.profile.label, enabled: context.profile.enabled } : null,
     vaultConnected: Boolean(context.vaultConnected),
+    rag: context.rag || null,
     sourceCount: sources.length,
     sources: sources.map((item) => ({ title: item.title, relPath: item.relPath, displayPath: item.displayPath, score: item.score }))
   };
@@ -735,13 +1351,20 @@ function publicContextSummary(context = {}) {
 
 async function buildPersonalContext(query, options = {}) {
   const profile = await readStyleProfile();
-  const search = await searchVaultMarkdown(query, options.limit || 4);
-  const sources = (search.results || [])
+  const rag = await searchRagIndex(query, options.limit || 4);
+  const fallbackSearch = rag.results?.length ? null : await searchVaultMarkdown(query, options.limit || 4);
+  const search = rag.results?.length ? rag : fallbackSearch;
+  const sources = (search?.results || [])
     .filter((item) => !isLowValueVaultOverviewDoc(item))
     .slice(0, Math.max(0, Math.min(8, Number(options.limit || 4))));
   return {
     profile,
-    vaultConnected: Boolean(search.connected),
+    vaultConnected: Boolean(search?.connected),
+    rag: {
+      mode: rag.mode,
+      embedding: rag.embedding || null,
+      stats: rag.stats || null
+    },
     sources,
     promptBlock: [
       formatStyleProfilePrompt(profile),
@@ -881,6 +1504,7 @@ async function buildSkillsState() {
   const vaultRoot = await findVaultRoot();
   const agentSkills = skillsConfig.agentSkills && typeof skillsConfig.agentSkills === "object" ? skillsConfig.agentSkills : {};
   const agentDisabledSkills = skillsConfig.agentDisabledSkills && typeof skillsConfig.agentDisabledSkills === "object" ? skillsConfig.agentDisabledSkills : {};
+  const agentEngines = skillsConfig.agentEngines && typeof skillsConfig.agentEngines === "object" ? skillsConfig.agentEngines : {};
   const toolsConfig = skillsConfig.tools && typeof skillsConfig.tools === "object" ? skillsConfig.tools : {};
   const tools = {};
 
@@ -928,6 +1552,7 @@ async function buildSkillsState() {
       id: agent.id,
       name: agent.name,
       role: agent.role,
+      engine: engineMeta(agentEngines[agent.id] || defaultEngineForAgent(agent.id)),
       skills: skillIds.map((toolId) => {
         const skill = tools[toolId] || { id: toolId, label: toolId, enabled: true, status: "unknown", statusLabel: "확인 필요", tone: "warn" };
         if (!disabledIds.has(toolId)) return skill;
@@ -940,20 +1565,23 @@ async function buildSkillsState() {
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
+    engineOptions: Object.values(cliEngines),
     agents,
     tools: Object.values(tools),
-    raw: { agentSkills, agentDisabledSkills, tools: toolsConfig }
+    raw: { agentSkills, agentDisabledSkills, agentEngines, tools: toolsConfig }
   };
 }
 
 function normalizeSkillsConfig(config = {}) {
   const agentSkills = config.agentSkills && typeof config.agentSkills === "object" ? config.agentSkills : {};
   const agentDisabledSkills = config.agentDisabledSkills && typeof config.agentDisabledSkills === "object" ? config.agentDisabledSkills : {};
+  const agentEngines = config.agentEngines && typeof config.agentEngines === "object" ? config.agentEngines : {};
   const tools = config.tools && typeof config.tools === "object" ? config.tools : {};
   return {
     ...config,
     agentSkills: Object.fromEntries(Object.entries(agentSkills).map(([agentId, skills]) => [agentId, Array.isArray(skills) ? [...skills] : []])),
     agentDisabledSkills: Object.fromEntries(Object.entries(agentDisabledSkills).map(([agentId, skills]) => [agentId, Array.isArray(skills) ? [...skills] : []])),
+    agentEngines: Object.fromEntries(Object.entries(agentEngines).map(([agentId, engine]) => [agentId, normalizeEngineId(engine)])),
     tools: Object.fromEntries(Object.entries(tools).map(([toolId, toolConfig]) => [toolId, toolConfig && typeof toolConfig === "object" ? { ...toolConfig } : {}]))
   };
 }
@@ -973,6 +1601,10 @@ function pruneSkillsConfig(config) {
     if (!Array.isArray(skills) || !skills.length) delete config.agentDisabledSkills[agentId];
   }
   if (!Object.keys(config.agentDisabledSkills || {}).length) delete config.agentDisabledSkills;
+  for (const [agentId, engine] of Object.entries(config.agentEngines || {})) {
+    if (!specialistRoles.some((agent) => agent.id === agentId) || !cliEngines[normalizeEngineId(engine)]) delete config.agentEngines[agentId];
+  }
+  if (!Object.keys(config.agentEngines || {}).length) delete config.agentEngines;
 }
 
 function validateSkillEdit(config, agentId, toolId, needsAgent = true) {
@@ -1008,6 +1640,9 @@ async function updateSkillsConfig(input = {}) {
   } else if (action === "set-tool-enabled") {
     validateSkillEdit(config, agentId, toolId, false);
     config.tools[toolId].enabled = input.enabled !== false;
+  } else if (action === "set-agent-engine") {
+    if (!specialistRoles.some((agent) => agent.id === agentId)) throw new Error("Unknown agent");
+    config.agentEngines[agentId] = normalizeEngineId(input.engine, defaultEngineForAgent(agentId));
   } else {
     throw new Error("Unknown skill action");
   }
@@ -1022,18 +1657,21 @@ async function detectLocalLlm() {
 }
 
 function publicWorkflowRuntime() {
+  const performance = readPerformanceLogSync();
   return {
     runCount: workflowRuntime.runCount,
     agentCounts: specialistRoles.map((agent) => ({ id: agent.id, name: agent.name, role: agent.role, count: workflowRuntime.agentTaskCounts[agent.id] || 0 })),
     statusCounts: { ...workflowRuntime.statusCounts },
     recentErrors: workflowRuntime.recentErrors.slice(0, 6),
-    current: workflowRuntime.current
+    current: workflowRuntime.current,
+    performance: performanceSummary(performance.records)
   };
 }
 
 async function buildOfficeState() {
   const vaultRoot = await findVaultRoot();
   const styleProfile = await readStyleProfile();
+  const rag = await buildRagStatus();
   const reportDirs = vaultRoot ? reportFolderNames.map((folderName) => path.join(vaultRoot, "50_Outputs", folderName)) : [];
   const latest = (vaultRoot ? await Promise.all(reportDirs.map((dir) => latestMarkdownFile(dir))) : []).filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null;
   const counts = { autoCaptures: 0, knowledgeDrafts: 0, autoDigests: 0, dailyReviews: 0, webOfficeReports: 0 };
@@ -1055,18 +1693,25 @@ async function buildOfficeState() {
   }
   return {
     generatedAt: new Date().toISOString(),
-    mode: "local-first",
+    mode: "cli-dual",
     llm: await detectLocalLlm(),
     codex: { available: true, command: codexCommand() },
-    claude: { available: true, command: claudeCommand(), manualOnly: true },
+    claude: { available: true, command: claudeCommand(), directCall: true, autoRoute: true },
+    engines: {
+      default: "codex",
+      policy: "Codex CLI is the default. Claude Code CLI is used for long reasoning, writing, research synthesis, and review. Claude failures fall back to Codex as an engine fallback.",
+      options: Object.values(cliEngines)
+    },
     workflow: publicWorkflowRuntime(),
     skills: await buildSkillsState(),
     context: {
       autoRag: true,
       styleProfile: { label: styleProfile.label, enabled: styleProfile.enabled },
-      vaultContextLimit: 4
+      vaultContextLimit: 4,
+      rag
     },
     vault: { connected: Boolean(vaultRoot), path: vaultRoot },
+    rag,
     counts,
     today,
     lastReport: latest && vaultRoot ? (() => {
@@ -1486,6 +2131,7 @@ function normalizeChatSessionsState(input = {}) {
         modeLabel: String(turn.modeLabel || ""),
         capture: turn.capture && typeof turn.capture === "object" ? turn.capture : null,
         skillCandidateIds: normalizeStringList(turn.skillCandidateIds || []),
+        learning: turn.learning && typeof turn.learning === "object" ? turn.learning : null,
         sources: Array.isArray(turn.sources) ? turn.sources.slice(0, 6) : []
       })) : []
     })).filter((session) => session.id)
@@ -1541,6 +2187,43 @@ async function buildChatSessionsState(input = {}) {
   };
 }
 
+async function updateChatSessionsState(input = {}) {
+  const action = String(input.action || "list").trim().toLowerCase();
+  if (!action || action === "list") return await buildChatSessionsState({ id: input.id || "" });
+  const state = await readChatSessionsState();
+  let selectedId = String(input.id || "");
+  const now = new Date().toISOString();
+  if (action === "create") {
+    const title = compactLine(input.title || input.message || "새 대화", 44) || "새 대화";
+    const session = {
+      id: `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      title,
+      createdAt: now,
+      updatedAt: now,
+      turns: []
+    };
+    state.sessions.unshift(session);
+    selectedId = session.id;
+  } else if (action === "rename") {
+    const session = state.sessions.find((item) => item.id === selectedId);
+    if (!session) throw new Error("대화 세션을 찾을 수 없습니다");
+    session.title = compactLine(input.title || session.title, 60) || session.title;
+    session.updatedAt = now;
+  } else if (action === "delete") {
+    const before = state.sessions.length;
+    state.sessions = state.sessions.filter((item) => item.id !== selectedId);
+    if (state.sessions.length === before) throw new Error("대화 세션을 찾을 수 없습니다");
+    selectedId = "";
+  } else if (action === "clear") {
+    state.sessions = [];
+    selectedId = "";
+  } else {
+    throw new Error("Unknown chat session action");
+  }
+  await writeChatSessionsState(state);
+  return await buildChatSessionsState({ id: selectedId });
+}
+
 function getOrCreateChatSession(state, sessionId, firstMessage) {
   const existing = state.sessions.find((session) => session.id === sessionId);
   if (existing) return existing;
@@ -1575,9 +2258,16 @@ function assessConversationMemory(message, result = {}) {
   const explicitMemory = /(기억|저장|메모|앞으로|항상|절대|하지\s*마|하지말|내\s*(규칙|원칙|기준|방식|말투|스타일|선호)|이렇게\s*해|기본값|원칙)/i.test(userText);
   const durableWork = /(규칙|원칙|기준|정책|체크리스트|템플릿|프로세스|워크플로우|자동화|반복|매뉴얼|가이드|절차|포맷|프롬프트|운영\s*방식)/i.test(joined);
   const skillIntent = /(스킬|skill|스킬로|템플릿|프로세스|워크플로우|반복|항상|앞으로|기본\s*방식|내\s*방식)/i.test(userText);
+  const explicitLearning = /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외|물어봐|규칙|원칙|기준)/i.test(userText);
+  if (isTrivialAutoSaveInput(userText) && !explicitLearning) {
+    return { shouldSave: false, shouldSkill: false, reason: "가벼운 질문/잡담이라 자동 저장하지 않습니다." };
+  }
   const workIntent = ["office", "codex"].includes(result.intent);
   const substantial = userText.length >= 70 && replyText.length >= 500;
-  const shouldSave = explicitMemory || durableWork || workIntent || substantial;
+  const meaningfulWorkIntent = workIntent
+    && !isTrivialAutoSaveInput(userText)
+    && (replyText.length >= 450 || Boolean(result.officeJob || result.codexJob) || (Array.isArray(result.sources) && result.sources.length > 0));
+  const shouldSave = explicitMemory || durableWork || meaningfulWorkIntent || substantial;
   const shouldSkill = (skillIntent || (durableWork && explicitMemory)) && userText.length >= 20;
   return {
     shouldSave,
@@ -1587,7 +2277,7 @@ function assessConversationMemory(message, result = {}) {
         ? "사용자 규칙/선호/기억 요청으로 저장했습니다."
         : durableWork
           ? "반복 가능한 절차나 기준이 포함되어 저장했습니다."
-          : workIntent
+          : meaningfulWorkIntent
             ? "업무 실행 맥락이라 세션 자산으로 기록했습니다."
             : "충분히 긴 대화 산출물이라 저장했습니다."
       : "재사용 가치가 낮아 Vault 저장은 건너뛰었습니다."
@@ -1640,19 +2330,26 @@ function normalizeSkillCandidate(input = {}) {
   const title = compactLine(input.title || input.label || "대화 기반 스킬", 42);
   const id = String(input.id || `skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
   const agentIds = normalizeStringList(input.agentIds || ["ceo", "writer", "archivist"]).filter((idValue) => specialistRoles.some((agent) => agent.id === idValue));
+  const kind = ["skill", "memory", "workflow", "template"].includes(String(input.kind || "")) ? String(input.kind) : "skill";
   return {
     id,
+    kind,
     title,
     description: String(input.description || "").trim() || `${title}에 맞춰 반복 업무를 처리합니다.`,
     instructions: String(input.instructions || "").trim(),
+    evidence: String(input.evidence || "").trim(),
+    confidence: clampScore(input.confidence || (kind === "memory" ? 90 : 72)),
     agentIds: agentIds.length ? agentIds : ["ceo", "writer", "archivist"],
     toolId: slugId(input.toolId || `memory-${title}`),
     status: String(input.status || "pending"),
     sourceSessionId: String(input.sourceSessionId || ""),
     sourceTurnId: String(input.sourceTurnId || ""),
+    sourceJobId: String(input.sourceJobId || ""),
+    sourceRelPath: String(input.sourceRelPath || ""),
     createdAt: String(input.createdAt || new Date().toISOString()),
     updatedAt: String(input.updatedAt || input.createdAt || new Date().toISOString()),
-    appliedAt: String(input.appliedAt || "")
+    appliedAt: String(input.appliedAt || ""),
+    autoAppliedAt: String(input.autoAppliedAt || "")
   };
 }
 
@@ -1689,15 +2386,84 @@ function candidateAgentsFromText(text = "") {
   return [...ids].filter((id) => specialistRoles.some((agent) => agent.id === id)).slice(0, 5);
 }
 
+function learningSentences(text = "") {
+  return String(text || "")
+    .split(/\r?\n|(?<=[.!?。！？])\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function extractPreferenceMemoryItems(text = "") {
+  const value = String(text || "").normalize("NFKC").trim();
+  if (!value) return [];
+  const marker = /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외|물어봐|규칙|원칙|기준|내\s*스타일|내\s*말투)/i;
+  const rows = learningSentences(value).filter((item) => marker.test(item) && item.length >= 12);
+  const selected = rows.length ? rows : (marker.test(value) && value.length <= 260 ? [value] : []);
+  const seen = new Set();
+  const result = [];
+  for (const row of selected) {
+    const cleaned = compactLine(row.replace(/^(기억해|메모해|저장해)\s*[:：-]?\s*/i, ""), 180);
+    const key = normalizeMemoryKey(cleaned);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(cleaned);
+    if (result.length >= 3) break;
+  }
+  return result;
+}
+
+function shouldAutoApplyMemoryItem(text = "") {
+  return /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외해|물어봐)/i.test(String(text || ""));
+}
+
+async function createMemoryCandidatesFromTurn({ session, turn }) {
+  const items = extractPreferenceMemoryItems(turn.user);
+  if (!items.length) return [];
+  const state = await readSkillCandidatesState();
+  const created = [];
+  for (const item of items) {
+    const memoryKey = normalizeMemoryKey(item);
+    const existing = state.candidates.find((candidate) => candidate.kind === "memory" && normalizeMemoryKey(candidate.instructions || candidate.evidence || candidate.title) === memoryKey);
+    if (existing) {
+      created.push(existing);
+      continue;
+    }
+    const autoApply = shouldAutoApplyMemoryItem(item);
+    const applied = autoApply ? await appendProfileMemory([item]) : { added: [] };
+    const now = new Date().toISOString();
+    const candidate = normalizeSkillCandidate({
+      kind: "memory",
+      title: `메모리: ${compactLine(item, 32)}`,
+      description: autoApply ? "명시적 선호라 장기 메모리에 자동 반영했습니다." : "장기 메모리에 반영할 후보입니다.",
+      instructions: item,
+      evidence: turn.user,
+      confidence: autoApply ? 96 : 82,
+      agentIds: ["ceo", "secretary", "archivist"],
+      status: autoApply ? "approved" : "pending",
+      sourceSessionId: session.id,
+      sourceTurnId: turn.id,
+      appliedAt: autoApply ? now : "",
+      autoAppliedAt: autoApply && applied.added?.length ? now : ""
+    });
+    state.candidates.unshift(candidate);
+    created.push(candidate);
+  }
+  await writeSkillCandidatesState(state);
+  return created;
+}
+
 async function createSkillCandidateFromTurn({ session, turn, assessment }) {
   const state = await readSkillCandidatesState();
   const sourceKey = `${session.id}:${turn.id}`;
-  const existing = state.candidates.find((candidate) => `${candidate.sourceSessionId}:${candidate.sourceTurnId}` === sourceKey);
+  const existing = state.candidates.find((candidate) => candidate.kind !== "memory" && `${candidate.sourceSessionId}:${candidate.sourceTurnId}` === sourceKey);
   if (existing) return existing;
   const title = compactLine(turn.user.replace(/스킬로|만들어|기억|저장/gi, " ").trim(), 38) || "대화 기반 스킬";
   const candidate = normalizeSkillCandidate({
+    kind: "skill",
     title,
     description: assessment.reason,
+    evidence: turn.user,
+    confidence: 78,
     instructions: [
       "이 스킬은 사용자의 대화에서 추출한 반복 가능한 업무 방식이다.",
       "사용자 입력의 의도, 선호, 금지 조건을 먼저 확인하고 그 기준을 이후 산출물에 적용한다.",
@@ -1732,6 +2498,14 @@ async function applySkillCandidate(candidateId) {
   const candidate = state.candidates.find((item) => item.id === String(candidateId));
   if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
   const config = normalizeSkillsConfig(await readJson(skillsConfigPath, { agentSkills: {}, tools: {} }));
+  if (candidate.kind === "memory") {
+    const applied = await appendProfileMemory([candidate.instructions || candidate.evidence || candidate.title]);
+    candidate.status = "approved";
+    candidate.appliedAt = new Date().toISOString();
+    candidate.updatedAt = candidate.appliedAt;
+    await writeSkillCandidatesState(state);
+    return { ok: true, candidate, profile: { ok: true, profile: applied.profile } };
+  }
   const baseToolId = slugId(candidate.toolId || candidate.title || "memory-skill");
   let toolId = baseToolId;
   let index = 2;
@@ -1742,13 +2516,15 @@ async function applySkillCandidate(candidateId) {
   config.tools[toolId] = {
     label: candidate.title,
     enabled: true,
-    type: "memory_skill",
-    provider: "yomi-memory",
+    type: candidate.kind === "workflow" ? "workflow_skill" : candidate.kind === "template" ? "template_skill" : "memory_skill",
+    provider: "yomi-learning",
     description: candidate.description,
     instructions: candidate.instructions,
     sourceCandidateId: candidate.id,
     sourceSessionId: candidate.sourceSessionId,
-    sourceTurnId: candidate.sourceTurnId
+    sourceTurnId: candidate.sourceTurnId,
+    sourceJobId: candidate.sourceJobId,
+    sourceRelPath: candidate.sourceRelPath
   };
   for (const agentId of candidate.agentIds) {
     const current = Array.isArray(config.agentSkills[agentId]) ? config.agentSkills[agentId].map(String) : [];
@@ -1767,6 +2543,7 @@ async function applySkillCandidate(candidateId) {
 
 async function updateSkillCandidate(input = {}) {
   const action = String(input.action || "");
+  if (!action || action === "list") return await buildSkillCandidatesState();
   if (action === "approve") return await applySkillCandidate(input.id);
   const state = await readSkillCandidatesState();
   const candidate = state.candidates.find((item) => item.id === String(input.id || ""));
@@ -1801,10 +2578,16 @@ async function recordConversationTurn({ message, result, sessionId = "" }) {
     })) : []
   };
   if (assessment.shouldSave) turn.capture = await saveConversationMemoryToVault({ session, turn, assessment });
+  const memoryCandidates = await createMemoryCandidatesFromTurn({ session, turn });
   if (assessment.shouldSkill) {
     const candidate = await createSkillCandidateFromTurn({ session, turn, assessment });
     turn.skillCandidateIds = [candidate.id];
   }
+  turn.skillCandidateIds = [...new Set([...turn.skillCandidateIds, ...memoryCandidates.map((candidate) => candidate.id)])];
+  turn.learning = {
+    memoryCandidateIds: memoryCandidates.map((candidate) => candidate.id),
+    autoAppliedMemoryIds: memoryCandidates.filter((candidate) => candidate.autoAppliedAt).map((candidate) => candidate.id)
+  };
   session.turns.push(turn);
   session.updatedAt = turn.createdAt;
   if (!session.title || session.title === "새 대화") session.title = compactLine(message, 44) || session.title;
@@ -1813,6 +2596,7 @@ async function recordConversationTurn({ message, result, sessionId = "" }) {
     session: publicChatSessionSummary(session),
     capture: turn.capture,
     skillCandidateIds: turn.skillCandidateIds,
+    learning: turn.learning,
     saved: turn.capture?.ok ? turn.capture : null
   };
 }
@@ -1839,6 +2623,29 @@ async function runClaudeText(prompt, label) {
   if (!result.ok) throw new Error(claudeFailureMessage(result, label));
   if (!result.output) throw new Error(`${label} 실패: Claude Code CLI가 빈 응답을 반환했습니다.`);
   return { text: result.output, commandLabel: result.commandLabel };
+}
+
+async function runEngineText(engineId, prompt, label) {
+  const engine = normalizeEngineId(engineId);
+  if (engine === "claude") {
+    try {
+      const generated = await runClaudeText(prompt, label);
+      return { ...generated, engine: "claude", engineLabel: cliEngines.claude.label, provider: cliEngines.claude.provider };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const generated = await runCodexText(prompt, `${label} Codex engine fallback`);
+      return {
+        ...generated,
+        engine: "codex",
+        engineLabel: cliEngines.codex.label,
+        provider: cliEngines.codex.provider,
+        engineFallbackFrom: "claude",
+        engineFallbackReason: reason
+      };
+    }
+  }
+  const generated = await runCodexText(prompt, label);
+  return { ...generated, engine: "codex", engineLabel: cliEngines.codex.label, provider: cliEngines.codex.provider };
 }
 
 async function runCodexWorkflowStep({ task, workflowName, step, agent, previousSteps = [], reworkNotes = "" }) {
@@ -2053,6 +2860,7 @@ function runCodexJob(job, command) {
   job.updatedAt = new Date().toISOString();
   appendJobLog(job, "Codex CLI 실행을 시작했습니다.", "taeo");
   const child = spawn(command, ["exec", "--sandbox", "read-only", job.task], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  job.child = child;
   const timer = setTimeout(() => {
     job.error = "timeout";
     appendJobLog(job, "제한 시간을 넘겨 작업을 중단합니다.", "taeo", "warn");
@@ -2074,6 +2882,7 @@ function runCodexJob(job, command) {
   });
   child.on("error", async (error) => {
     clearTimeout(timer);
+    delete job.child;
     job.status = "failed";
     job.error = error.message;
     job.updatedAt = new Date().toISOString();
@@ -2082,10 +2891,20 @@ function runCodexJob(job, command) {
   });
   child.on("close", async (code) => {
     clearTimeout(timer);
+    delete job.child;
     job.exitCode = code;
-    job.status = code === 0 && !job.error ? "completed" : "failed";
+    job.status = job.cancelRequested ? "cancelled" : code === 0 && !job.error ? "completed" : "failed";
     job.updatedAt = new Date().toISOString();
-    appendJobLog(job, job.status === "completed" ? "코덱스 작업이 완료되었습니다." : `코덱스 작업이 실패했습니다. 종료 코드: ${code}`, "taeo", job.status === "completed" ? "info" : "error");
+    appendJobLog(
+      job,
+      job.status === "cancelled"
+        ? "코덱스 작업이 취소되었습니다."
+        : job.status === "completed"
+          ? "코덱스 작업이 완료되었습니다."
+          : `코덱스 작업이 실패했습니다. 종료 코드: ${code}`,
+      "taeo",
+      job.status === "completed" ? "info" : job.status === "cancelled" ? "warn" : "error"
+    );
     await saveCodexJobReport(job);
   });
 }
@@ -2143,7 +2962,7 @@ const routeTypeLabels = {
   office: "업무",
   vault: "저장소검색",
   codex: "코드작업",
-  claude: "Claude 수동호출"
+  claude: "Claude Code"
 };
 
 const humanLoopRules = [
@@ -2219,6 +3038,49 @@ function deliverablesForWorkType(workType) {
     general_work: ["업무 체크리스트", "직원별 결과", "최종 보고서"]
   };
   return byType[workType] || byType.general_work;
+}
+
+function goalQuestionsForWorkType(workType, text = "") {
+  const common = [
+    "이 작업이 끝났을 때 어떤 결과를 보면 성공이라고 판단할지",
+    "결과물을 어디에 바로 사용할지",
+    "반드시 피해야 할 표현, 형식, 리스크가 있는지"
+  ];
+  const byType = {
+    code: ["읽기 분석만 필요한지 실제 파일 수정까지 원하는지", "검증 기준과 허용되는 명령 범위가 무엇인지"],
+    vault: ["기존 자료 중 우선 참고해야 할 폴더나 키워드가 있는지", "검색 결과를 요약, 비교, 재구성 중 어떤 방식으로 쓸지"],
+    video: ["플랫폼, 길이, 첫 3초 훅의 방향이 무엇인지", "참고하고 싶은 채널이나 피하고 싶은 스타일이 있는지"],
+    social: ["플랫폼, 타깃, 게시 목적이 무엇인지", "브랜드 톤과 금지 표현이 무엇인지"],
+    design: ["사용자가 화면을 보고 어떤 감정을 느껴야 하는지", "예쁘게 보이는 것과 실제 사용성 중 무엇을 더 우선할지"],
+    research: ["조사의 대상 범위와 제외 범위가 무엇인지", "최신성, 근거 신뢰도, 사례 수 중 무엇을 우선할지"],
+    strategy: ["가장 중요한 KPI나 의사결정 기준이 무엇인지", "단기 실행과 장기 방향 중 어느 쪽을 우선할지"],
+    writing: ["독자, 톤, 분량, 배포 채널이 무엇인지", "초안/완성본/요약본 중 필요한 산출물이 무엇인지"],
+    general_work: ["우선순위, 마감, 산출물 형식이 무엇인지", "누가 이 결과를 보고 어떤 행동을 해야 하는지"]
+  };
+  const broadRequest = /(완성|알아서|제대로|좋게|최적|최선)/i.test(text)
+    ? ["'완성'의 기준을 품질, 속도, 실사용 가능성 중 무엇에 둘지"]
+    : [];
+  return [...new Set([...common, ...(byType[workType] || byType.general_work), ...broadRequest])].slice(0, 6);
+}
+
+function materialNeedsForWorkType(workType) {
+  const common = [
+    "기존 Vault/RAG에서 관련 문서 top-k를 먼저 찾는다.",
+    "사용자가 자료를 모르면 AI가 참고 키워드와 필요한 재료 목록을 먼저 제안한다.",
+    "출처가 있는 자료와 사용자의 고정 선호를 분리해 반영한다."
+  ];
+  const byType = {
+    code: ["대상 파일, 오류 로그, 재현 방법, 검증 명령", "변경 전후를 판단할 체크리스트"],
+    vault: ["검색 키워드, 참고 폴더, 관련 태그, 예전 결정 기록", "답변에 명시할 파일 경로"],
+    video: ["주제 근거, 타깃 반응, 레퍼런스 링크, 금지 스타일", "후킹/구성/제목 후보를 나눌 자료"],
+    social: ["브랜드 톤, 타깃, 플랫폼 규격, 해시태그 근거", "게시 후 성과 기록 항목"],
+    design: ["현재 화면 문제, 참고 스타일, 사용자 행동, 우선순위", "디자인 결정 기록으로 남길 기준"],
+    research: ["최신 자료, 비교 사례, 리스크 근거, 반대 사례", "검색 키워드 후보와 신뢰도 기준"],
+    strategy: ["목표 지표, 현재 제약, 경쟁/대안 사례, 실행 비용", "의사결정 표로 비교할 판단 기준"],
+    writing: ["기존 말투 샘플, 독자 정보, 핵심 메시지, 참고 문서", "재사용 가능한 문장/구조 후보"],
+    general_work: ["목표, 제약, 참고자료, 완료 기준"]
+  };
+  return [...common, ...(byType[workType] || byType.general_work)];
 }
 
 function detectHumanLoopReasons(text, workType) {
@@ -2423,6 +3285,8 @@ function createYomiTaskCapsule(message, route) {
   const questionReasons = detectHumanLoopReasons(route.task || message, workType);
   const staffing = inferTaskEffort(route.task || message, workType);
   const humanLoopQuestion = questionReasons.length ? buildHumanLoopQuestion(questionReasons) : null;
+  const requestedEngine = requestedEngineFromText(route.task || message);
+  const selectedEngine = normalizeEngineId(requestedEngine || defaultEngineForWorkType(workType, staffing));
   return {
     id: `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     createdAt: new Date().toISOString(),
@@ -2438,10 +3302,21 @@ function createYomiTaskCapsule(message, route) {
     originalInput: message,
     normalizedTask: route.task || message,
     workType,
+    engine: {
+      ...engineMeta(selectedEngine),
+      selection: requestedEngine ? "user-requested" : workType === "code" ? "code-route" : "worktype-route",
+      fallback: selectedEngine === "claude" ? "codex" : ""
+    },
     staffing,
     goal: `${title} 작업을 직원별 산출물로 나누고 최종 보고 가능한 형태로 정리한다.`,
+    goalDefinitionQuestions: goalQuestionsForWorkType(workType, route.task || message),
     completionCriteria: criteriaForWorkType(workType),
     deliverables: deliverablesForWorkType(workType),
+    materialBrief: {
+      strategy: "사용자가 자료를 정확히 모르더라도 Vault/RAG 검색과 질문으로 좋은 재료를 찾는다.",
+      needs: materialNeedsForWorkType(workType),
+      ragQuery: [title, workType, route.task || message].filter(Boolean).join(" ")
+    },
     constraints: [
       "사소한 일은 핵심 담당자만 처리하고, 중요한 일만 관련 직원을 확장 투입한다.",
       "직원은 자기 역할에 맞는 서브태스크만 맡는다.",
@@ -2471,6 +3346,7 @@ function createYomiAssignmentPlan(capsule) {
     const [agentId, label, objective, output] = item;
     const agent = resolveAgent(agentId) || { id: agentId, name: agentId, role: "" };
     const parallelGroup = templates.length <= 2 ? 0 : index <= 1 ? 0 : index === templates.length - 1 ? 2 : 1;
+    const engine = engineMeta(defaultEngineForAgent(agent.id, capsule));
     return {
       id: `subtask-${index + 1}`,
       agentId: agent.id,
@@ -2480,11 +3356,24 @@ function createYomiAssignmentPlan(capsule) {
       objective,
       expectedOutput: output,
       status: "planned",
+      engine,
       parallelGroup,
       retryPolicy: "2단계 실행 엔진에서 실패 시 1회 재시도",
       allowedSkills: agentSkillHints[agent.id] || []
     };
   });
+  for (const step of subtasks) {
+    const previousGroups = subtasks
+      .filter((item) => Number(item.parallelGroup || 0) < Number(step.parallelGroup || 0))
+      .map((item) => Number(item.parallelGroup || 0));
+    const previousGroup = previousGroups.length ? Math.max(...previousGroups) : null;
+    const dependencies = previousGroup == null ? [] : subtasks.filter((item) => Number(item.parallelGroup || 0) === previousGroup);
+    step.dependsOn = dependencies.map((item) => item.id);
+    step.handoffFrom = dependencies.map((item) => ({ id: item.id, agentId: item.agentId, agentName: item.agentName, label: item.label }));
+    step.handoffPolicy = dependencies.length
+      ? "이전 그룹 산출물을 검토한 뒤 자기 역할에 필요한 부분만 이어받는다."
+      : "초기 실행 그룹으로 사용자 지시와 Vault/RAG 컨텍스트를 직접 해석한다.";
+  }
   return {
     mode: "plan_only",
     staffing: capsule.staffing,
@@ -2515,7 +3404,7 @@ function workflowRunFromYomiPlan(plan) {
       agentName: step.agentName,
       status: step.status,
       evaluations: [],
-      toolsUsed: (step.allowedSkills || []).map((skill) => ({ id: skill, label: skill })),
+      toolsUsed: [{ id: step.engine?.id || "codex", label: step.engine?.label || "Codex CLI" }, ...(step.allowedSkills || []).map((skill) => ({ id: skill, label: skill }))],
       content: `${step.objective}\n\n예상 산출물: ${step.expectedOutput}`
     }))
   };
@@ -2531,13 +3420,20 @@ function formatYomiPlanReply(orchestration) {
     "",
     `- 분류: ${capsule.route.label}`,
     `- 작업 유형: ${capsule.workType}`,
+    `- 담당 엔진: ${capsule.engine?.label || "Codex CLI"}`,
     `- 배정 규모: ${capsule.staffing?.level || "standard"} · 최대 ${capsule.staffing?.maxAgents || plan.subtasks.length}명`,
     `- 배정 이유: ${capsule.staffing?.reason || "역할 기반 배정"}`,
     `- 목표: ${capsule.goal}`,
     `- 다음 상태: ${plan.nextAction}`,
     "",
+    "## 목표 정의 질문",
+    ...(capsule.goalDefinitionQuestions || []).map((question) => `- ${question}`),
+    "",
+    "## 필요한 재료",
+    ...(capsule.materialBrief?.needs || []).slice(0, 6).map((item) => `- ${item}`),
+    "",
     "## 직원 분배 계획",
-    ...plan.subtasks.map((step) => `- ${step.agentName}(${step.role}): ${step.label} → ${step.expectedOutput}`),
+    ...plan.subtasks.map((step) => `- ${step.agentName}(${step.role}): ${step.label} → ${step.expectedOutput} · ${step.engine?.label || "Codex CLI"}`),
     questionBlock,
     "",
     "## 작업캡슐 JSON",
@@ -2562,6 +3458,10 @@ function publicOrchestrationJob(job) {
     humanLoopQuestion: job.humanLoopQuestion || job.plan?.humanLoopQuestion || job.capsule?.humanLoopQuestion || null,
     humanLoopAnswer: job.humanLoopAnswer || null,
     subtasks: job.subtasks,
+    handoffs: buildHandoffLinks(job),
+    reflections: job.reflections || [],
+    performance: job.performance || null,
+    learning: job.learning || null,
     report: job.report || "",
     error: job.error || "",
     llm: job.llm,
@@ -2576,6 +3476,7 @@ function taskQueueCodexRow(job) {
   return {
     type: "codex",
     id: job.id,
+    restored: false,
     title: job.task || "코덱스 작업",
     status: job.status,
     statusLabel: serverJobStatusLabel(job.status),
@@ -2599,6 +3500,7 @@ function taskQueueOrchestrationRow(job) {
   return {
     type: "office",
     id: job.id,
+    restored: false,
     title: job.capsule?.normalizedTask || job.capsule?.goal || job.message || "요미 직원 실행",
     status: job.status,
     statusLabel: serverJobStatusLabel(job.status),
@@ -2613,13 +3515,76 @@ function taskQueueOrchestrationRow(job) {
   };
 }
 
+function defaultTaskQueueHistory() {
+  return { jobs: [] };
+}
+
+function taskQueueRowKey(row) {
+  return `${row?.type || "job"}:${row?.id || ""}`;
+}
+
+function normalizeTaskQueueHistoryRow(row = {}) {
+  const status = ["queued", "running", "retrying", "finalizing"].includes(row.status) ? "cancelled" : String(row.status || "completed");
+  return {
+    type: String(row.type || "office"),
+    id: String(row.id || ""),
+    restored: true,
+    title: String(row.title || row.task || "이전 작업"),
+    status,
+    statusLabel: serverJobStatusLabel(status),
+    createdAt: String(row.createdAt || ""),
+    updatedAt: String(row.updatedAt || row.completedAt || row.createdAt || ""),
+    completedAt: String(row.completedAt || row.updatedAt || ""),
+    detail: String(row.detail || ""),
+    progress: ["queued", "running", "retrying", "finalizing"].includes(row.status) ? "서버 재시작으로 실행이 중단되었습니다. 필요하면 재시도하세요." : String(row.progress || ""),
+    saved: row.saved || null,
+    activeAgentIds: [],
+    logs: Array.isArray(row.logs) ? row.logs.slice(-8) : []
+  };
+}
+
+function readTaskQueueHistorySync() {
+  try {
+    const parsed = JSON.parse(readFileSync(taskQueueHistoryPath, "utf8"));
+    return { jobs: (Array.isArray(parsed.jobs) ? parsed.jobs : []).map(normalizeTaskQueueHistoryRow).filter((row) => row.id) };
+  } catch {
+    return defaultTaskQueueHistory();
+  }
+}
+
+function writeTaskQueueHistorySync(rows = []) {
+  try {
+    mkdirSync(runtimeRoot, { recursive: true });
+    const normalized = rows
+      .filter((row) => row?.id)
+      .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+      .slice(0, 80)
+      .map((row) => ({ ...normalizeTaskQueueHistoryRow(row), restored: false }));
+    writeFileSync(taskQueueHistoryPath, `${JSON.stringify({ jobs: normalized }, null, 2)}\n`, "utf8");
+  } catch {
+    // Runtime history is best-effort. The live queue must keep working even if persistence fails.
+  }
+}
+
+function mergeTaskQueueRows(currentRows = [], historyRows = []) {
+  const rows = new Map();
+  for (const row of historyRows.map(normalizeTaskQueueHistoryRow)) {
+    if (row.id) rows.set(taskQueueRowKey(row), row);
+  }
+  for (const row of currentRows) {
+    if (row?.id) rows.set(taskQueueRowKey(row), { ...row, restored: false });
+  }
+  return [...rows.values()].sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt));
+}
+
 function buildTaskQueueState(limit = 20) {
-  const jobs = [
+  const currentRows = [
     ...[...orchestrationJobs.values()].map(taskQueueOrchestrationRow),
     ...[...codexJobs.values()].map(taskQueueCodexRow)
-  ]
-    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
-    .slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  ];
+  const mergedRows = mergeTaskQueueRows(currentRows, readTaskQueueHistorySync().jobs);
+  writeTaskQueueHistorySync(mergedRows);
+  const jobs = mergedRows.slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
   const running = jobs.filter((job) => ["queued", "running", "retrying", "finalizing"].includes(job.status));
   return {
     ok: true,
@@ -2631,6 +3596,109 @@ function buildTaskQueueState(limit = 20) {
     },
     jobs
   };
+}
+
+function resolveTaskQueueJob(type, id) {
+  const normalizedType = String(type || "").trim().toLowerCase();
+  const jobId = String(id || "").trim();
+  if (!jobId) return null;
+  if (normalizedType === "codex") {
+    const job = codexJobs.get(jobId);
+    return job ? { type: "codex", job } : null;
+  }
+  if (normalizedType === "office") {
+    const job = orchestrationJobs.get(jobId);
+    return job ? { type: "office", job } : null;
+  }
+  const officeJob = orchestrationJobs.get(jobId);
+  if (officeJob) return { type: "office", job: officeJob };
+  const codexJob = codexJobs.get(jobId);
+  if (codexJob) return { type: "codex", job: codexJob };
+  const historyRow = readTaskQueueHistorySync().jobs.find((row) => row.id === jobId && (!normalizedType || row.type === normalizedType));
+  if (historyRow) return { type: historyRow.type, row: historyRow, restored: true };
+  return null;
+}
+
+function publicTaskQueueJob(type, job) {
+  return type === "codex" ? taskQueueCodexRow(job) : taskQueueOrchestrationRow(job);
+}
+
+function publicResolvedTaskQueueJob(resolved) {
+  if (!resolved) return null;
+  if (resolved.restored) return resolved.row;
+  return publicTaskQueueJob(resolved.type, resolved.job);
+}
+
+function cancelTaskQueueJob(input = {}) {
+  const resolved = resolveTaskQueueJob(input.type, input.id);
+  if (!resolved) throw new Error("작업을 찾을 수 없습니다");
+  if (resolved.restored) throw new Error("복원된 작업 기록은 취소할 수 없습니다. 필요하면 재시도하세요.");
+  const { type, job } = resolved;
+  if (finalJobStatuses.has(job.status)) return { ok: true, action: "cancel", job: publicTaskQueueJob(type, job), queue: buildTaskQueueState() };
+  job.cancelRequested = true;
+  job.error = job.error || "사용자가 작업을 취소했습니다.";
+  job.updatedAt = new Date().toISOString();
+  if (type === "codex") {
+    appendJobLog(job, "사용자가 작업 취소를 요청했습니다.", "taeo", "warn");
+    if (job.child && !job.child.killed) job.child.kill();
+    else job.status = "cancelled";
+  } else {
+    appendJobLog(job, "사용자가 작업 취소를 요청했습니다. 실행 중인 그룹이 끝나면 멈춥니다.", "ceo", "warn");
+    if (["queued", "waiting_question"].includes(job.status)) {
+      job.status = "cancelled";
+      job.completedAt = job.updatedAt;
+      job.saved = { ok: false, skipped: true, reason: "사용자가 작업을 취소했습니다." };
+    }
+  }
+  return { ok: true, action: "cancel", job: publicTaskQueueJob(type, job), queue: buildTaskQueueState() };
+}
+
+function retryTaskQueueJob(input = {}) {
+  const resolved = resolveTaskQueueJob(input.type, input.id);
+  if (!resolved) throw new Error("작업을 찾을 수 없습니다");
+  const { type, job, row } = resolved;
+  const status = resolved.restored ? row.status : job.status;
+  if (!finalJobStatuses.has(status)) throw new Error("진행 중인 작업은 재시도할 수 없습니다");
+  if (type === "codex") {
+    const next = createCodexJob(resolved.restored ? row.title || "" : job.task || "");
+    appendJobLog(next, `이전 작업 ${resolved.restored ? row.id : job.id}에서 재시도했습니다.`, "taeo");
+    return { ok: true, action: "retry", job: publicTaskQueueJob("codex", next), queue: buildTaskQueueState() };
+  }
+  const message = resolved.restored ? row.title || "" : job.message || job.capsule?.originalInput || job.capsule?.normalizedTask || "";
+  const route = resolved.restored ? { intent: "office", task: message, reason: "복원된 작업 큐 재시도" } : job.route || { intent: "office", task: job.capsule?.normalizedTask || message, reason: "작업 큐 재시도" };
+  const next = createOrchestrationJob(message, route, createYomiOrchestration(message, route));
+  appendJobLog(next, `이전 작업 ${resolved.restored ? row.id : job.id}에서 재시도했습니다.`, "ceo");
+  return { ok: true, action: "retry", job: publicTaskQueueJob("office", next), queue: buildTaskQueueState() };
+}
+
+function enqueueTaskQueueJob(input = {}) {
+  const rawMessage = String(input.message || input.task || "").trim();
+  if (!rawMessage) throw new Error("작업 내용이 필요합니다");
+  const explicit = parseChatRoute(rawMessage);
+  const requestedType = String(input.type || input.intent || "").trim().toLowerCase();
+  if (requestedType === "codex" || explicit.intent === "codex") {
+    const task = explicit.intent === "codex" ? explicit.task : rawMessage;
+    const job = createCodexJob(task);
+    return { ok: true, action: "enqueue", job: publicTaskQueueJob("codex", job), queue: buildTaskQueueState() };
+  }
+  const task = explicit.intent === "office" ? explicit.task : rawMessage;
+  const route = { intent: "office", task, reason: input.reason || "작업 큐 직접 등록" };
+  const job = createOrchestrationJob(rawMessage, route, createYomiOrchestration(rawMessage, route));
+  return { ok: true, action: "enqueue", job: publicTaskQueueJob("office", job), queue: buildTaskQueueState() };
+}
+
+function updateTaskQueue(input = {}) {
+  const action = String(input.action || "list").trim().toLowerCase();
+  if (!action || action === "list") return buildTaskQueueState(input.limit);
+  if (action === "detail") {
+    const resolved = resolveTaskQueueJob(input.type, input.id);
+    if (!resolved) throw new Error("작업을 찾을 수 없습니다");
+    return { ok: true, action, job: publicResolvedTaskQueueJob(resolved), queue: buildTaskQueueState(input.limit) };
+  }
+  if (action === "enqueue" || action === "create") return enqueueTaskQueueJob(input);
+  if (action === "cancel") return cancelTaskQueueJob(input);
+  if (action === "retry") return retryTaskQueueJob(input);
+  throw new Error("Unknown task queue action");
 }
 
 function setOrchestrationRuntime(job, stepLabel, status = job.status) {
@@ -2648,16 +3716,99 @@ function orchestrationOutputSummary(subtasks = []) {
     `### ${index + 1}. ${step.agentName} · ${step.label}`,
     `- 상태: ${step.status}`,
     `- 시도: ${step.attempts || 0}`,
+    step.handoffFrom?.length ? `- 인계: ${step.handoffFrom.map((item) => `${item.agentName}/${item.label}`).join(", ")}` : "",
     step.error ? `- 오류: ${step.error}` : "",
+    step.selfCritique ? `- 자가교정: ${step.selfCritique}` : "",
     "",
     step.output || "아직 산출물이 없습니다."
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 
-async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [] }) {
+function buildHandoffLinks(job) {
+  const subtasks = job?.subtasks || [];
+  const byId = new Map(subtasks.map((step) => [step.id, step]));
+  return subtasks.flatMap((step) => (step.dependsOn || []).map((sourceId) => {
+    const source = byId.get(sourceId) || {};
+    return {
+      from: sourceId,
+      fromAgentId: source.agentId || "",
+      fromAgentName: source.agentName || "",
+      fromLabel: source.label || "",
+      to: step.id,
+      toAgentId: step.agentId || "",
+      toAgentName: step.agentName || "",
+      toLabel: step.label || "",
+      status: source.status === "completed" ? "ready" : source.status === "failed" ? "source_failed" : "pending"
+    };
+  }));
+}
+
+function formatHandoffLinks(job) {
+  const links = buildHandoffLinks(job);
+  if (!links.length) return "직원 간 선행 인계가 없는 단일/초기 실행입니다.";
+  return links.map((link) => `- ${link.fromAgentName}/${link.fromLabel} -> ${link.toAgentName}/${link.toLabel} (${link.status})`).join("\n");
+}
+
+function formatOrchestrationReflections(reflections = []) {
+  if (!reflections.length) return "아직 반성/재계획 기록이 없습니다.";
+  return reflections.map((item) => [
+    `### 그룹 ${Number(item.groupIndex || 0) + 1} · ${item.status}`,
+    `- 완료: ${item.completedCount}`,
+    `- 실패: ${item.failedCount}`,
+    `- 다음 판단: ${item.nextAction}`,
+    ...(item.notes || []).map((note) => `- 메모: ${note}`)
+  ].join("\n")).join("\n\n");
+}
+
+function buildSubtaskSelfCritique(subtask, error) {
+  const reason = error instanceof Error ? error.message : String(error || "unknown error");
+  return [
+    `첫 실행 실패 원인: ${compactLine(reason, 140)}`,
+    "재시도에서는 산출물 범위를 더 좁히고, 이전 그룹 인계와 완료 기준을 먼저 확인한다.",
+    "외부 실행/파일 쓰기/전송은 하지 않고 보고 가능한 Markdown 결과에 집중한다."
+  ].join(" ");
+}
+
+function reflectOrchestrationGroup(job, groupIndex, groupResults = [], completedOutputs = []) {
+  if (!Array.isArray(job.reflections)) job.reflections = [];
+  const failed = groupResults.filter((step) => step.status === "failed");
+  const completed = groupResults.filter((step) => step.status === "completed");
+  const nextQueued = (job.subtasks || []).filter((step) => Number(step.parallelGroup || 0) > Number(groupIndex || 0) && !["completed", "failed"].includes(step.status));
+  const reflection = {
+    groupIndex,
+    createdAt: new Date().toISOString(),
+    status: failed.length ? "needs_adjustment" : "passed",
+    completedCount: completed.length,
+    failedCount: failed.length,
+    nextAction: failed.length
+      ? "실패한 산출물은 최종 취합에서 리스크로 남기고, 후속 직원은 사용 가능한 인계만 반영한다."
+      : nextQueued.length
+        ? "다음 직원 그룹이 완료 산출물을 이어받아 자기 역할 결과로 확장한다."
+        : "최종 취합 단계로 이동한다.",
+    notes: [
+      completed.length ? `완료 산출물 ${completed.length}개를 인계 후보로 등록했습니다.` : "",
+      failed.length ? `실패 산출물 ${failed.length}개는 재시도 후에도 실패로 표시했습니다.` : "",
+      completedOutputs.length ? `누적 인계 산출물 ${completedOutputs.length}개를 유지합니다.` : ""
+    ].filter(Boolean)
+  };
+  job.reflections.push(reflection);
+  for (const step of nextQueued) {
+    step.replanNotes = [
+      ...(step.replanNotes || []),
+      reflection.nextAction
+    ].slice(-4);
+  }
+  appendJobLog(job, `요미 반성/재계획: 그룹 ${groupIndex + 1} · ${reflection.status}`, "ceo", failed.length ? "warn" : "info");
+  return reflection;
+}
+
+async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], critique = "" }) {
   const agent = resolveAgent(subtask.agentId) || { name: subtask.agentName, role: subtask.role, work: "" };
   const previous = previousOutputs.length ? orchestrationOutputSummary(previousOutputs) : "이전 그룹 산출물 없음";
   const contextBlock = job.context?.promptBlock || "";
+  const handoffText = subtask.handoffFrom?.length
+    ? subtask.handoffFrom.map((item) => `- ${item.agentName}/${item.label}`).join("\n")
+    : "- 선행 인계 없음";
   const prompt = [
     "너는 YOMI AI 개인 사무실의 직원 에이전트다.",
     "현재 단계는 병렬 직원 실행 단계이며, 실제 파일 쓰기, Git 쓰기, 외부 전송은 하지 않는다.",
@@ -2677,6 +3828,16 @@ async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [] }) {
     `목표: ${subtask.objective}`,
     `예상 산출물: ${subtask.expectedOutput}`,
     `허용 스킬: ${(subtask.allowedSkills || []).join(", ") || "없음"}`,
+    `인계 정책: ${subtask.handoffPolicy || "역할에 맞게 필요한 정보만 반영한다."}`,
+    "",
+    "## 선행 인계",
+    handoffText,
+    "",
+    "## 요미 재계획 메모",
+    (subtask.replanNotes || []).join("\n") || "추가 재계획 메모 없음",
+    "",
+    "## 자가교정 메모",
+    critique || "첫 실행",
     "",
     "## 이전 그룹 산출물",
     previous,
@@ -2688,7 +3849,7 @@ async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [] }) {
     "",
     "고정 안내문이 아니라 이 요청에 맞춘 실제 결과만 작성한다."
   ].join("\n");
-  return await runCodexText(prompt, `${agent.name} 서브태스크`);
+  return await runEngineText(subtask.engine?.id || subtask.engine || defaultEngineForAgent(subtask.agentId, job.capsule), prompt, `${agent.name} 서브태스크`);
 }
 
 async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
@@ -2702,6 +3863,12 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
     const generated = await runYomiSubtaskAttempt({ job, subtask, previousOutputs });
     subtask.output = generated.text;
     subtask.commandLabel = generated.commandLabel;
+    subtask.engineUsed = generated.engine;
+    subtask.engineLabel = generated.engineLabel;
+    if (generated.engineFallbackFrom) {
+      subtask.engineFallbackFrom = generated.engineFallbackFrom;
+      subtask.engineFallbackReason = generated.engineFallbackReason;
+    }
     subtask.status = "completed";
     subtask.completedAt = new Date().toISOString();
     subtask.updatedAt = subtask.completedAt;
@@ -2710,13 +3877,20 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
   } catch (firstError) {
     subtask.status = "retrying";
     subtask.error = firstError instanceof Error ? firstError.message : String(firstError);
+    subtask.selfCritique = buildSubtaskSelfCritique(subtask, firstError);
     subtask.updatedAt = new Date().toISOString();
     subtask.attempts = 2;
     appendJobLog(job, `${subtask.agentName || subtask.agentId} 재시도: ${subtask.error}`, subtask.agentId || "agent", "warn");
     try {
-      const generated = await runYomiSubtaskAttempt({ job, subtask, previousOutputs });
+      const generated = await runYomiSubtaskAttempt({ job, subtask, previousOutputs, critique: subtask.selfCritique });
       subtask.output = generated.text;
       subtask.commandLabel = generated.commandLabel;
+      subtask.engineUsed = generated.engine;
+      subtask.engineLabel = generated.engineLabel;
+      if (generated.engineFallbackFrom) {
+        subtask.engineFallbackFrom = generated.engineFallbackFrom;
+        subtask.engineFallbackReason = generated.engineFallbackReason;
+      }
       subtask.status = "completed";
       subtask.error = "";
       subtask.completedAt = new Date().toISOString();
@@ -2749,19 +3923,39 @@ async function buildYomiFinalReport(job) {
     "## 작업캡슐",
     JSON.stringify(job.capsule, null, 2),
     "",
+    "## 목표 정의 질문",
+    (job.capsule.goalDefinitionQuestions || []).map((item) => `- ${item}`).join("\n") || "목표 정의 질문 없음",
+    "",
+    "## 자료/재료 수집 기준",
+    (job.capsule.materialBrief?.needs || []).map((item) => `- ${item}`).join("\n") || "자료 기준 없음",
+    "",
     "## 직원 산출물",
     orchestrationOutputSummary(job.subtasks),
+    "",
+    "## 직원 간 인계 연결",
+    formatHandoffLinks(job),
+    "",
+    "## 실행 반성/재계획 로그",
+    formatOrchestrationReflections(job.reflections || []),
     "",
     "## 출력 형식",
     "# 요미 최종 보고서",
     "## 목표와 완료 기준",
     "## 직원별 핵심 산출물",
+    "## 직원 간 인계와 재계획",
+    "## 근거 출처",
     "## 통합 결과",
     "## 리스크와 확인 필요 사항",
     "## 다음 행동"
   ].join("\n");
   try {
-    const generated = await runCodexText(prompt, "요미 최종 취합");
+    const generated = await runEngineText("claude", prompt, "요미 최종 취합");
+    job.finalEngineUsed = generated.engine;
+    job.finalEngineLabel = generated.engineLabel;
+    if (generated.engineFallbackFrom) {
+      job.finalEngineFallbackFrom = generated.engineFallbackFrom;
+      job.finalEngineFallbackReason = generated.engineFallbackReason;
+    }
     return generated.text;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2773,6 +3967,11 @@ async function buildYomiFinalReport(job) {
       "",
       "## 직원별 핵심 산출물",
       orchestrationOutputSummary(job.subtasks),
+      "",
+      "## 직원 간 인계와 재계획",
+      formatHandoffLinks(job),
+      "",
+      formatOrchestrationReflections(job.reflections || []),
       "",
       "## 리스크와 확인 필요 사항",
       `- 최종 취합 Codex 호출 실패: ${message}`,
@@ -2789,6 +3988,361 @@ function isTrivialAutoSaveInput(input) {
   const casualPattern = /(오늘\s*뭐\s*하면|뭐\s*하면\s*좋|뭐\s*할까|뭘\s*할까|할\s*일\s*추천|추천해\s*줘|잡담|가볍게|심심|아무거나|간단히)/i;
   const durableAssetPattern = /(보고서|전략|기획안|분석|조사|자료|초안|문서|콘텐츠|매뉴얼|가이드|템플릿|로드맵|프로세스|정책|자산화|저장)/i;
   return casualPattern.test(text) && !durableAssetPattern.test(text);
+}
+
+function clampScore(value) {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
+function scoreGrade(score) {
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  return "F";
+}
+
+function defaultPerformanceLog() {
+  return { records: [] };
+}
+
+function normalizePerformanceRecord(record = {}) {
+  return {
+    id: String(record.id || ""),
+    jobId: String(record.jobId || ""),
+    createdAt: String(record.createdAt || ""),
+    title: String(record.title || "성과 기록"),
+    workType: String(record.workType || "general_work"),
+    status: String(record.status || ""),
+    score: clampScore(record.score || 0),
+    grade: String(record.grade || scoreGrade(record.score || 0)),
+    passed: Boolean(record.passed),
+    portfolioCandidate: Boolean(record.portfolioCandidate),
+    metrics: record.metrics && typeof record.metrics === "object" ? record.metrics : {},
+    rubric: Array.isArray(record.rubric) ? record.rubric : [],
+    retrospective: record.retrospective && typeof record.retrospective === "object" ? record.retrospective : {},
+    savedRelPath: String(record.savedRelPath || ""),
+    portfolioRelPath: String(record.portfolioRelPath || ""),
+    sources: Array.isArray(record.sources) ? record.sources.slice(0, 8) : []
+  };
+}
+
+function readPerformanceLogSync() {
+  try {
+    const parsed = JSON.parse(readFileSync(performanceLogPath, "utf8"));
+    return { records: (Array.isArray(parsed.records) ? parsed.records : []).map(normalizePerformanceRecord).filter((record) => record.id) };
+  } catch {
+    return defaultPerformanceLog();
+  }
+}
+
+function writePerformanceLogSync(records = []) {
+  try {
+    mkdirSync(runtimeRoot, { recursive: true });
+    const normalized = records
+      .map(normalizePerformanceRecord)
+      .filter((record) => record.id)
+      .sort((a, b) => jobTimeValue(b.createdAt) - jobTimeValue(a.createdAt))
+      .slice(0, 200);
+    writeFileSync(performanceLogPath, `${JSON.stringify({ records: normalized }, null, 2)}\n`, "utf8");
+  } catch {
+    // Performance logging is best-effort and must not block user-facing work.
+  }
+}
+
+function performanceSummary(records = []) {
+  const list = records.map(normalizePerformanceRecord);
+  const total = list.length;
+  const avgScore = total ? Math.round(list.reduce((sum, record) => sum + record.score, 0) / total) : 0;
+  const portfolioCount = list.filter((record) => record.portfolioCandidate || record.portfolioRelPath).length;
+  const passedCount = list.filter((record) => record.passed).length;
+  const recent = list.slice(0, 5);
+  return {
+    total,
+    avgScore,
+    portfolioCount,
+    passedCount,
+    lastScore: recent[0]?.score || 0,
+    lastGrade: recent[0]?.grade || "",
+    recent
+  };
+}
+
+function buildJobQualityEvaluation(job) {
+  const subtasks = job.subtasks || [];
+  const completed = subtasks.filter((step) => step.status === "completed");
+  const failed = subtasks.filter((step) => step.status === "failed");
+  const reportLength = String(job.report || "").trim().length;
+  const sourceCount = job.context?.sources?.length || 0;
+  const criteriaCount = job.capsule?.completionCriteria?.length || 0;
+  const reflectionCount = job.reflections?.length || 0;
+  const saved = job.saved?.ok === true;
+  const completionRatio = subtasks.length ? completed.length / subtasks.length : 0;
+  const rubric = [
+    {
+      id: "goal",
+      label: "목표/완료기준",
+      score: clampScore((job.capsule?.goal ? 42 : 0) + Math.min(40, criteriaCount * 10) + (job.capsule?.goalDefinitionQuestions?.length ? 18 : 0)),
+      note: `${criteriaCount}개 완료 기준과 ${job.capsule?.goalDefinitionQuestions?.length || 0}개 목표 질문`
+    },
+    {
+      id: "materials",
+      label: "자료/RAG 활용",
+      score: clampScore(Math.min(70, sourceCount * 18) + (job.capsule?.materialBrief?.needs?.length ? 20 : 0) + (job.context?.rag?.mode === "semantic_hybrid" ? 10 : 0)),
+      note: `Vault/RAG 참고 ${sourceCount}개 · ${job.context?.rag?.mode || "unknown"}`
+    },
+    {
+      id: "decomposition",
+      label: "업무분해",
+      score: clampScore(Math.min(70, subtasks.length * 18) + (subtasks.some((step) => step.handoffFrom?.length) ? 18 : 0) + (job.plan?.workerPool ? 12 : 0)),
+      note: `${subtasks.length}개 서브태스크 · 직원 인계 ${buildHandoffLinks(job).length}개`
+    },
+    {
+      id: "execution",
+      label: "실행/완료",
+      score: clampScore(completionRatio * 100 - failed.length * 20),
+      note: `${completed.length}/${subtasks.length || 0} 완료 · 실패 ${failed.length}`
+    },
+    {
+      id: "review",
+      label: "검수/수정/회고",
+      score: clampScore(Math.min(70, reflectionCount * 24) + (subtasks.some((step) => step.selfCritique) ? 20 : 0) + (job.finalEngineUsed ? 10 : 0)),
+      note: `반성/재계획 ${reflectionCount}회`
+    },
+    {
+      id: "assetization",
+      label: "성과기록/자산화",
+      score: clampScore((saved ? 65 : 25) + (reportLength >= 900 ? 20 : reportLength >= 450 ? 10 : 0) + (job.saved?.reason ? 15 : 0)),
+      note: saved ? `Vault 저장: ${job.saved.relPath}` : job.saved?.reason || "저장 대기"
+    }
+  ];
+  const score = clampScore(rubric.reduce((sum, item) => sum + item.score, 0) / rubric.length);
+  const issues = rubric.filter((item) => item.score < 70).map((item) => `${item.label}: ${item.note}`);
+  return {
+    score,
+    grade: scoreGrade(score),
+    passed: score >= 75 && failed.length === 0,
+    portfolioCandidate: score >= 75 && reportLength >= 520 && !isTrivialAutoSaveInput(`${job.capsule?.originalInput || ""} ${job.capsule?.normalizedTask || ""}`),
+    rubric,
+    issues,
+    metrics: {
+      reportLength,
+      sourceCount,
+      subtaskCount: subtasks.length,
+      completedCount: completed.length,
+      failedCount: failed.length,
+      reflectionCount,
+      saved
+    }
+  };
+}
+
+function buildJobRetrospective(job, evaluation) {
+  const best = [...evaluation.rubric].sort((a, b) => b.score - a.score)[0];
+  const weakest = [...evaluation.rubric].sort((a, b) => a.score - b.score)[0];
+  const sources = job.context?.sources || [];
+  return {
+    wins: [
+      best ? `${best.label}이 강점입니다. ${best.note}` : "",
+      sources.length ? `기존 Vault 자료 ${sources.length}개를 작업 컨텍스트로 연결했습니다.` : "",
+      job.reflections?.length ? `중간 반성/재계획 ${job.reflections.length}회를 기록했습니다.` : ""
+    ].filter(Boolean),
+    improvements: [
+      weakest ? `${weakest.label} 보강 필요: ${weakest.note}` : "",
+      evaluation.issues.length ? "다음 실행에서는 낮은 점수 항목을 먼저 질문으로 확정합니다." : "",
+      evaluation.metrics.sourceCount < 2 ? "사용자가 자료를 모르면 AI가 먼저 참고 키워드와 재료 후보를 제안해야 합니다." : ""
+    ].filter(Boolean),
+    nextActions: [
+      "성과기록을 다음 작업의 RAG 컨텍스트로 재사용한다.",
+      "반복 가능한 기준은 스킬 후보로 승격한다.",
+      evaluation.portfolioCandidate ? "개인 AX/RAG 포트폴리오 사례로 정리한다." : "포트폴리오 후보가 되려면 근거/성과/자산화 항목을 보강한다."
+    ],
+    portfolioAngle: `개인 AX/RAG 시스템이 ${job.capsule?.workType || "업무"} 요청을 목표정의, 자료검색, 업무분해, 검수, 자산화 흐름으로 처리한 사례`
+  };
+}
+
+function formatPerformanceRecordMarkdown(record, job) {
+  return [
+    "# YOMI AI 성과기록",
+    "",
+    `- 작업: ${record.title}`,
+    `- 점수: ${record.score} / 100 (${record.grade})`,
+    `- 통과: ${record.passed ? "yes" : "no"}`,
+    `- 작업 유형: ${record.workType}`,
+    `- 원본 작업 ID: ${record.jobId}`,
+    record.savedRelPath ? `- 산출물: ${record.savedRelPath}` : "",
+    "",
+    "## 평가 루브릭",
+    ...record.rubric.map((item) => `- ${item.label}: ${item.score}/100 · ${item.note}`),
+    "",
+    "## 성과 메트릭",
+    ...Object.entries(record.metrics || {}).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## 회고",
+    "### 잘된 점",
+    ...(record.retrospective?.wins || []).map((item) => `- ${item}`),
+    "",
+    "### 보완할 점",
+    ...(record.retrospective?.improvements || []).map((item) => `- ${item}`),
+    "",
+    "### 다음 액션",
+    ...(record.retrospective?.nextActions || []).map((item) => `- ${item}`),
+    "",
+    "## 포트폴리오 관점",
+    record.retrospective?.portfolioAngle || "",
+    "",
+    "## RAG 근거 출처",
+    ...(record.sources || []).map((item) => `- ${item.title || "문서"} · ${item.displayPath || item.relPath || ""}`),
+    "",
+    "## 작업캡슐",
+    "```json",
+    JSON.stringify(job.capsule || {}, null, 2),
+    "```"
+  ].join("\n");
+}
+
+async function savePerformanceRecordToVault(record, job) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot || !record.portfolioCandidate) return { ok: false, skipped: true, reason: "포트폴리오 후보가 아니거나 Vault가 연결되지 않았습니다." };
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const outDir = path.join(vaultRoot, "50_Outputs", primaryReportFolder, "AX RAG Portfolio", day);
+  await mkdir(outDir, { recursive: true });
+  const fullPath = path.join(outDir, `${stamp}-${slugify(record.title)}-performance.md`);
+  const relPath = path.relative(vaultRoot, fullPath).replace(/\\/g, "/");
+  const frontmatter = [
+    "---",
+    `type: ${yamlString("yomi_ai_ax_rag_portfolio")}`,
+    `created: ${now.toISOString()}`,
+    `score: ${record.score}`,
+    `grade: ${yamlString(record.grade)}`,
+    `work_type: ${yamlString(record.workType)}`,
+    "tags:",
+    "  - yomi-ai",
+    "  - ax-rag-portfolio",
+    "  - performance-record",
+    "  - personal-ai-office",
+    "---",
+    ""
+  ].join("\n");
+  await writeFile(fullPath, `${frontmatter}${formatPerformanceRecordMarkdown(record, job)}\n`, "utf8");
+  return { ok: true, relPath, fullPath };
+}
+
+async function recordJobPerformance(job) {
+  const evaluation = buildJobQualityEvaluation(job);
+  const record = normalizePerformanceRecord({
+    id: `perf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    jobId: job.id,
+    createdAt: new Date().toISOString(),
+    title: job.capsule?.title || job.capsule?.normalizedTask || "요미 직원 실행",
+    workType: job.capsule?.workType || "general_work",
+    status: job.status,
+    score: evaluation.score,
+    grade: evaluation.grade,
+    passed: evaluation.passed,
+    portfolioCandidate: evaluation.portfolioCandidate,
+    metrics: evaluation.metrics,
+    rubric: evaluation.rubric,
+    retrospective: buildJobRetrospective(job, evaluation),
+    savedRelPath: job.saved?.ok ? job.saved.relPath : "",
+    sources: (job.context?.sources || []).map((item) => ({ title: item.title || "", relPath: item.relPath || "", displayPath: item.displayPath || "" }))
+  });
+  try {
+    const portfolio = await savePerformanceRecordToVault(record, job);
+    if (portfolio.ok) record.portfolioRelPath = portfolio.relPath;
+  } catch (error) {
+    record.retrospective = {
+      ...record.retrospective,
+      improvements: [
+        ...(record.retrospective?.improvements || []),
+        `포트폴리오 저장 실패: ${error instanceof Error ? error.message : String(error)}`
+      ]
+    };
+  }
+  const state = readPerformanceLogSync();
+  const records = [record, ...state.records.filter((item) => item.jobId !== job.id)];
+  writePerformanceLogSync(records);
+  job.performance = record;
+  appendJobLog(job, `성과 평가 ${record.score}점(${record.grade}) · ${record.passed ? "통과" : "보완 필요"}`, "secretary", record.passed ? "info" : "warn");
+  return record;
+}
+
+function buildPerformanceLogState(limit = 20) {
+  const records = readPerformanceLogSync().records;
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: performanceSummary(records),
+    records: records.slice(0, Math.max(1, Math.min(80, Number(limit) || 20)))
+  };
+}
+
+function workflowCandidateAgentIds(job) {
+  return [...new Set([
+    "ceo",
+    ...((job.subtasks || []).map((step) => step.agentId).filter(Boolean)),
+    "archivist"
+  ])].filter((id) => specialistRoles.some((agent) => agent.id === id)).slice(0, 6);
+}
+
+async function createWorkflowCandidateFromJob(job) {
+  if (!job || job.plan?.questionRequired) return null;
+  const performance = job.performance || {};
+  const score = Number(performance.score || 0);
+  const reusable = job.saved?.ok || performance.portfolioCandidate || score >= 82;
+  if (!reusable || !job.report || String(job.report).trim().length < 500) return null;
+  const state = await readSkillCandidatesState();
+  const existing = state.candidates.find((candidate) => candidate.kind === "workflow" && candidate.sourceJobId === job.id);
+  if (existing) return existing;
+  const capsule = job.capsule || {};
+  const completed = (job.subtasks || []).filter((step) => step.status === "completed");
+  const title = compactLine(`${capsule.workType || "workflow"}: ${capsule.title || capsule.normalizedTask || "YOMI workflow"}`, 42);
+  const candidate = normalizeSkillCandidate({
+    kind: "workflow",
+    title,
+    description: `성과 ${score || "N/A"}점 작업에서 추출한 재사용 워크플로우 후보입니다.`,
+    confidence: score || 82,
+    evidence: job.saved?.relPath || performance.portfolioRelPath || "",
+    instructions: [
+      "이 워크플로우 후보는 완료된 직원 실행에서 자동 추출되었습니다.",
+      "같은 유형의 업무가 들어오면 목표 질문, 자료 기준, 직원 분배, 검수/회고 순서를 재사용합니다.",
+      "",
+      "## Goal",
+      capsule.goal || capsule.normalizedTask || "",
+      "",
+      "## Completion Criteria",
+      ...(capsule.completionCriteria || []).map((item) => `- ${item}`),
+      "",
+      "## Material Needs",
+      ...(capsule.materialBrief?.needs || []).map((item) => `- ${item}`),
+      "",
+      "## Staffing Pattern",
+      ...completed.map((step) => `- ${step.agentName || step.agentId}: ${step.label || step.expectedOutput || "subtask"}`),
+      "",
+      "## Review Rule",
+      "성과기록과 회고를 남기고, 재사용 가치가 있으면 Vault와 스킬 후보로 승격합니다."
+    ].join("\n"),
+    agentIds: workflowCandidateAgentIds(job),
+    status: "pending",
+    sourceJobId: job.id,
+    sourceRelPath: job.saved?.relPath || performance.portfolioRelPath || ""
+  });
+  state.candidates.unshift(candidate);
+  await writeSkillCandidatesState(state);
+  return candidate;
+}
+
+async function recordLearningFromOrchestration(job) {
+  const candidate = await createWorkflowCandidateFromJob(job);
+  const candidateIds = candidate ? [candidate.id] : [];
+  job.learning = {
+    candidateIds,
+    generatedAt: new Date().toISOString()
+  };
+  if (candidate) appendJobLog(job, `학습 후보 생성: ${candidate.title}`, "archivist", "info");
+  return job.learning;
 }
 
 function assessReusableOrchestration(job) {
@@ -2836,7 +4390,21 @@ function formatReusableOrchestrationMarkdown(job) {
     "",
     "## 재사용 중간 산출물",
     "",
-    orchestrationOutputSummary((job.subtasks || []).filter((step) => step.status === "completed")) || "저장할 중간 산출물이 없습니다."
+    orchestrationOutputSummary((job.subtasks || []).filter((step) => step.status === "completed")) || "저장할 중간 산출물이 없습니다.",
+    "",
+    "## 직원 간 인계",
+    "",
+    formatHandoffLinks(job),
+    "",
+    "## 반성/재계획 로그",
+    "",
+    formatOrchestrationReflections(job.reflections || []),
+    "",
+    "## 성과 평가",
+    "",
+    job.performance
+      ? `- 점수: ${job.performance.score}/100 (${job.performance.grade})\n- 포트폴리오 후보: ${job.performance.portfolioCandidate ? "yes" : "no"}\n- 포트폴리오 기록: ${job.performance.portfolioRelPath || "없음"}`
+      : "성과 평가 기록 없음"
   ].join("\n");
 }
 
@@ -2864,6 +4432,13 @@ async function saveReusableOrchestrationAssets(job) {
 }
 
 async function runOrchestrationJob(job) {
+  if (job.cancelRequested || job.status === "cancelled") {
+    job.status = "cancelled";
+    job.completedAt = job.completedAt || new Date().toISOString();
+    job.updatedAt = job.completedAt;
+    appendJobLog(job, "사용자 요청으로 직원 실행을 시작하지 않았습니다.", "ceo", "warn");
+    return;
+  }
   if (job.plan?.questionRequired) {
     job.status = "waiting_question";
     job.updatedAt = new Date().toISOString();
@@ -2887,12 +4462,29 @@ async function runOrchestrationJob(job) {
   try {
     const completedOutputs = [];
     for (const groupIndex of Array.from(groups.keys()).sort((a, b) => a - b)) {
+      if (job.cancelRequested || job.status === "cancelled") {
+        job.status = "cancelled";
+        job.completedAt = new Date().toISOString();
+        job.updatedAt = job.completedAt;
+        appendJobLog(job, "사용자 요청으로 남은 직원 실행을 취소했습니다.", "ceo", "warn");
+        setOrchestrationRuntime(job, "사용자 취소", "failed");
+        return;
+      }
       const group = groups.get(groupIndex);
       setOrchestrationRuntime(job, `병렬 그룹 ${groupIndex + 1}`, "running");
       appendJobLog(job, `병렬 그룹 ${groupIndex + 1} 실행 중 · ${group.length}명`, "ceo");
       job.updatedAt = new Date().toISOString();
       const groupResults = await Promise.all(group.map((subtask) => executeOrchestrationSubtask(job, subtask, completedOutputs.slice())));
       completedOutputs.push(...groupResults);
+      reflectOrchestrationGroup(job, groupIndex, groupResults, completedOutputs);
+      if (job.cancelRequested || job.status === "cancelled") {
+        job.status = "cancelled";
+        job.completedAt = new Date().toISOString();
+        job.updatedAt = job.completedAt;
+        appendJobLog(job, "현재 병렬 그룹 완료 후 작업을 취소했습니다.", "ceo", "warn");
+        setOrchestrationRuntime(job, "사용자 취소", "failed");
+        return;
+      }
       job.updatedAt = new Date().toISOString();
       appendJobLog(job, `병렬 그룹 ${groupIndex + 1} 완료`, "ceo");
     }
@@ -2903,6 +4495,8 @@ async function runOrchestrationJob(job) {
     job.report = await buildYomiFinalReport(job);
     job.status = failed.length ? "completed_with_errors" : "completed";
     await saveReusableOrchestrationAssets(job);
+    await recordJobPerformance(job);
+    await recordLearningFromOrchestration(job);
     job.completedAt = new Date().toISOString();
     job.updatedAt = job.completedAt;
     appendJobLog(job, job.status === "completed" ? "직원 실행이 완료되었습니다." : "직원 실행이 일부 실패로 완료되었습니다.", "ceo", failed.length ? "warn" : "info");
@@ -2938,10 +4532,12 @@ function createOrchestrationJob(message, route, orchestration) {
     humanLoopQuestion: orchestration.plan.humanLoopQuestion || orchestration.capsule.humanLoopQuestion || null,
     humanLoopAnswer: null,
     subtasks: (orchestration.plan.subtasks || []).map((step) => ({ ...step, output: "", error: "", attempts: 0 })),
+    handoffs: [],
+    reflections: [],
     report: "",
     error: "",
     saved: { ok: false, skipped: true, reason: "완료 후 재사용 가치가 있으면 Vault 50_Outputs에 자동 저장합니다." },
-    llm: { provider: "codex-cli", model: "parallel-worker-pool", used: false },
+    llm: { provider: "dual-cli", model: "codex-default-claude-reasoning", used: false },
     logs: []
   };
   appendJobLog(job, "요미 작업이 큐에 등록되었습니다.", "ceo");
@@ -3060,7 +4656,7 @@ async function generateClaudeConversation(message) {
     "",
     `사용자 요청: ${message}`
   ].join("\n");
-  return await runClaudeText(prompt, "Claude 수동호출");
+  return await runClaudeText(prompt, "Claude 직접 호출");
 }
 
 async function generateCodexVaultAnswer(message, sources) {
@@ -3122,7 +4718,7 @@ async function runChatMessageCore({ message }) {
     if (!route.task) {
       return {
         intent: "claude",
-        modeLabel: "Claude 수동호출",
+        modeLabel: "Claude 직접 호출",
         reply: "사용법: /cc 요청 내용 또는 /claude 요청 내용",
         sources: [],
         llm: { provider: "claude-code", model: "manual-plan", used: false }
@@ -3131,11 +4727,11 @@ async function runChatMessageCore({ message }) {
     const generated = await generateClaudeConversation(route.task);
     return {
       intent: "claude",
-      modeLabel: "Claude 수동호출",
+      modeLabel: "Claude 직접 호출",
       reply: generated.text,
       sources: [],
       llm: { provider: "claude-code", model: "manual-plan", used: true, commandLabel: generated.commandLabel },
-      capture: { ok: false, skipped: true, reason: "Claude 수동호출 결과는 자동 저장하지 않았습니다" }
+      capture: { ok: false, skipped: true, reason: "Claude 직접 호출 결과는 자동 저장하지 않았습니다" }
     };
   }
 
@@ -3163,12 +4759,12 @@ async function runChatMessageCore({ message }) {
         workflowRun
       },
       sources: [],
-      llm: { provider: "codex-cli", model: "parallel-worker-pool", used: !orchestration.plan.questionRequired }
+      llm: { provider: "dual-cli", model: "codex-default-claude-reasoning", used: !orchestration.plan.questionRequired }
     };
   }
 
   if (route.intent === "vault") {
-    const search = await searchVaultMarkdown(route.task || message, 5);
+    const search = await searchRagIndex(route.task || message, 5);
     const sources = search.results || [];
     const profile = await readStyleProfile();
     const generated = await generateCodexVaultAnswer(message, sources);
@@ -3457,6 +5053,9 @@ async function buildAutomationTriggersState() {
 async function updateAutomationTriggersConfig(input = {}) {
   const config = await readAutomationTriggersConfig();
   const action = String(input.action || "save");
+  if (action === "list") {
+    return await buildAutomationTriggersState();
+  }
   if (action === "save") {
     const next = normalizeAutomationTrigger(input.trigger || input, config.triggers.length);
     if (next.enabled && next.type === "schedule" && !next.nextRunAt) next.nextRunAt = computeAutomationNextRunAt(next);
@@ -3612,11 +5211,29 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/api/health") return sendJson(response, 200, { ok: true });
     if (request.method === "GET" && url.pathname === "/api/office-state") return sendJson(response, 200, await buildOfficeState());
     if (request.method === "GET" && url.pathname === "/api/task-queue") return sendJson(response, 200, buildTaskQueueState(Math.max(1, Math.min(50, Number(url.searchParams.get("limit") || 20)))));
+    if (request.method === "POST" && url.pathname === "/api/task-queue") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, updateTaskQueue(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/context-profile") {
       const limit = Math.max(1, Math.min(8, Number(url.searchParams.get("limit") || 4)));
       const context = await buildPersonalContext(String(url.searchParams.get("q") || ""), { limit });
       return sendJson(response, 200, { ok: true, context: publicContextSummary(context) });
     }
+    if (request.method === "GET" && url.pathname === "/api/profile") return sendJson(response, 200, await buildProfileState());
+    if (request.method === "PUT" && url.pathname === "/api/profile") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateProfileState(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/performance-log") return sendJson(response, 200, buildPerformanceLogState(Math.max(1, Math.min(80, Number(url.searchParams.get("limit") || 20)))));
     if (request.method === "GET" && url.pathname === "/api/skills-state") return sendJson(response, 200, await buildSkillsState());
     if (request.method === "POST" && url.pathname === "/api/skills-state") {
       const body = await readJsonBody(request);
@@ -3660,6 +5277,20 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/recent-reports") return sendJson(response, 200, await listRecentReports(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-overview") return sendJson(response, 200, await buildVaultOverview(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
+    if (request.method === "POST" && url.pathname === "/api/rag/index") {
+      const body = await readJsonBody(request);
+      try {
+        const embeddings = body.embeddings !== false && url.searchParams.get("embeddings") !== "0";
+        const result = await buildRagIndex({ force: body.force === true || url.searchParams.get("force") === "1", embeddings });
+        return sendJson(response, 200, { ok: result.ok !== false, connected: result.connected !== false, stats: result.stats || result.index?.stats || {}, embedding: result.embedding || result.index?.embedding || {}, status: await buildRagStatus() });
+      } catch (error) {
+        return sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/rag/search") {
+      const k = Math.max(1, Math.min(20, Number(url.searchParams.get("k") || 6)));
+      return sendJson(response, 200, await searchRagIndex(String(url.searchParams.get("q") || ""), k));
+    }
     if (request.method === "GET" && url.pathname === "/api/vault-search") return sendJson(response, 200, { ok: true, ...(await searchVaultMarkdown(String(url.searchParams.get("q") || ""), 6)) });
     if (request.method === "POST" && url.pathname === "/api/vault-export") {
       const body = await readJsonBody(request);
@@ -3670,6 +5301,14 @@ const server = createServer(async (request, response) => {
       }
     }
     if (request.method === "GET" && url.pathname === "/api/chat-sessions") return sendJson(response, 200, await buildChatSessionsState({ id: url.searchParams.get("id") || "" }));
+    if (request.method === "POST" && url.pathname === "/api/chat-sessions") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateChatSessionsState(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "POST" && url.pathname === "/api/chat") {
       const body = await readJsonBody(request);
       const message = String(body.message || "").trim();

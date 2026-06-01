@@ -13,8 +13,8 @@
 기본 방향:
 
 - Codex CLI를 기본 엔진으로 사용한다.
-- Claude Code CLI는 `/cc`, `/claude` 수동 호출 전용으로 둔다.
-- Ollama/LM Studio는 현재 기본 경로에서 제거하거나 legacy fallback으로만 취급한다.
+- Claude Code CLI는 긴 추론, 글쓰기, 리서치 종합, 검토 업무에 자동 라우팅할 수 있고 `/cc`, `/claude` 직접 호출도 허용한다.
+- YOMI 개인 사무실 런타임은 Codex CLI와 Claude Code CLI만 사용한다.
 - 직원별 역할과 스킬에 맞는 업무만 배정한다.
 - 중요한 일은 깊게 처리하되, 사소한 일에 전 직원이 동원되지 않게 한다.
 - 결과와 재사용 가치가 있는 중간 산출물은 Vault에 markdown으로 자산화한다.
@@ -29,7 +29,7 @@ Connect AI repository
   VS Code/Cursor extension
   YOMI AI personal office
   Codex CLI default engine
-  Claude Code CLI manual-only route
+  Claude Code CLI reasoning/writing/review route
   Obsidian Vault markdown outputs
   role-based staff routing
   skill/tool permission scopes
@@ -60,7 +60,7 @@ Connect AI repository
 - 무단 파일 삭제
 - 무단 외부 전송
 - 유료 API 확대 연결
-- Ollama/LM Studio를 기본 챗봇으로 되돌리기
+- Codex/Claude 이외의 실행 엔진을 기본 챗봇으로 되돌리기
 
 ## 5. Priority Order
 

@@ -1,16 +1,16 @@
 # Connect AI
 
-Connect AI is a VS Code/Cursor extension project with a local-first personal AI office called **YOMI AI**.
+Connect AI is a VS Code/Cursor extension project with a personal AI office called **YOMI AI**.
 
-The current working direction is no longer "Ollama/LM Studio as the primary chatbot." The practical runtime is:
+The active runtime is:
 
 - **Codex CLI** as the default chat, routing, analysis, and task engine.
-- **Claude Code CLI** as an optional manual assistant, called only with `/cc` or `/claude`.
+- **Claude Code CLI** as the long-reasoning, writing, research synthesis, and review engine. It can still be called directly with `/cc` or `/claude`.
 - **Obsidian/Vault markdown output** for reusable reports and work assets.
 - **Role-based YOMI staff orchestration** for research, writing, editing, development, design, SNS, video, strategy, operations, and assetization.
 - **API/MCP-style tool registry** for Exa, Firecrawl, Tavily, Context7, Playwright, Git, Fetch, and filesystem capabilities.
 
-This project is still local-first, but it is **not 100% offline** when Codex CLI, Claude Code CLI, Exa, Firecrawl, Tavily, or other external tools are enabled.
+This project runs locally, but it is **not 100% offline** when Codex CLI, Claude Code CLI, Exa, Firecrawl, Tavily, or other external tools are enabled.
 
 ## Repository Map
 
@@ -40,7 +40,7 @@ It has five main tabs:
 Run it locally:
 
 ```powershell
-node web\personal-office\server.mjs
+npm run yomi:start
 ```
 
 Default URL:
@@ -52,9 +52,17 @@ http://127.0.0.1:17331
 If the port is already in use:
 
 ```powershell
-$env:PORT=17332
-node web\personal-office\server.mjs
+npm run yomi:restart
 ```
+
+Useful local controls:
+
+```powershell
+npm run yomi:check
+npm run yomi:stop
+```
+
+The start script writes runtime logs to `web/personal-office/runtime/server.log`. Runtime logs, `.env`, and local generated state are intentionally ignored by Git.
 
 ## Runtime Engines
 
@@ -70,11 +78,11 @@ YOMI_AI_CODEX_COMMAND
 
 If unset, the server tries to use the installed `codex` command.
 
-### Optional: Claude Code CLI
+### Claude Code CLI
 
-Claude Code CLI is manual-only. It is not used by the default router.
+Claude Code CLI is available to the router for long reasoning, writing, research synthesis, and review. Code/file/Git/terminal work remains Codex-first. If a Claude execution fails, YOMI falls back to Codex as an engine fallback.
 
-Use:
+Direct calls still work:
 
 ```text
 /cc your request
@@ -88,12 +96,6 @@ YOMI_AI_CLAUDE_COMMAND
 YOMI_AI_CLAUDE_MODEL
 YOMI_AI_CLAUDE_MAX_BUDGET_USD
 ```
-
-### Legacy Local Models
-
-Ollama and LM Studio were part of earlier experiments and may still appear in older extension code/settings. They are not required for the current YOMI personal office path when Codex CLI is available.
-
-Do not reintroduce Ollama/LM Studio as the default engine unless the product direction explicitly changes.
 
 ## Search And Research APIs
 
@@ -170,6 +172,7 @@ npx vsce package
 Useful read-only checks:
 
 ```powershell
+npm run yomi:check
 node --check web\personal-office\server.mjs
 node --check web\personal-office\app.js
 rg "Codex CLI|Claude Code CLI|Exa|Firecrawl|Tavily|Vault" README.md ARCHITECTURE.md web\personal-office docs
@@ -186,8 +189,7 @@ npx playwright install chromium
 Keep docs aligned with the current working system:
 
 - Codex CLI is the default engine.
-- Claude Code CLI is manual-only.
-- Ollama/LM Studio are legacy fallback concepts, not the active primary path.
+- Claude Code CLI is the reasoning/writing/research-review engine and direct `/cc` or `/claude` route.
 - Brave Search is excluded unless deliberately restored.
 - Exa/Firecrawl/Tavily are the active research API candidates.
 - Do not claim "100% offline" while cloud CLIs/APIs are enabled.
