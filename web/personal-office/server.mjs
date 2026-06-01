@@ -615,7 +615,8 @@ function extractMarkdownTags(content) {
 const graphStopWords = new Set([
   "yomi", "ai", "web", "office", "output", "outputs", "auto", "capture", "draft",
   "50", "개인", "사무실", "보고서", "작업", "최종", "진행", "정리", "요약",
-  "업무", "문서", "오늘", "내일", "최근", "결과", "저장", "생성", "관리"
+  "업무", "문서", "오늘", "내일", "최근", "결과", "저장", "생성", "관리",
+  "yomi-ai", "yomi-office", "personal-office", "auto-asset", "conversation-memory"
 ]);
 
 function normalizeGraphToken(value) {
@@ -670,6 +671,36 @@ function addVaultGraphEdge(edgeMap, degree, source, target, reason, weight = 1) 
   }
   degree.set(source, (degree.get(source) || 0) + weight);
   degree.set(target, (degree.get(target) || 0) + weight);
+}
+
+function vaultGraphReasonLabel(reason = "") {
+  const value = String(reason || "");
+  if (value === "link") return "문서 링크";
+  if (value.startsWith("tag:")) return `#${value.slice(4)}`;
+  if (value.startsWith("folder:")) return `폴더: ${value.slice(7)}`;
+  if (value.startsWith("kw:")) return `키워드: ${value.slice(3)}`;
+  return value || "연관";
+}
+
+function relatedVaultDocs(relPath, edgeMap, docsByRelPath, limit = 3) {
+  const rows = [];
+  for (const edge of edgeMap.values()) {
+    if (edge.source !== relPath && edge.target !== relPath) continue;
+    const otherRelPath = edge.source === relPath ? edge.target : edge.source;
+    const doc = docsByRelPath.get(otherRelPath);
+    if (!doc) continue;
+    rows.push({
+      title: doc.title,
+      relPath: doc.relPath,
+      displayPath: displayReportPath(doc.relPath),
+      folder: doc.folder,
+      weight: edge.weight || 1,
+      reasons: (edge.reasons || []).map(vaultGraphReasonLabel).slice(0, 3)
+    });
+  }
+  return rows
+    .sort((a, b) => b.weight - a.weight || (docsByRelPath.get(b.relPath)?.mtimeMs || 0) - (docsByRelPath.get(a.relPath)?.mtimeMs || 0))
+    .slice(0, Math.max(0, Math.min(8, Number(limit) || 3)));
 }
 
 function isLowValueVaultOverviewDoc(doc) {
@@ -1614,13 +1645,14 @@ async function buildVaultOverview(limit = 12) {
       displayPath: displayReportPath(doc.relPath),
       folder: doc.folder,
       tags: doc.tags.slice(0, 6),
+      relatedDocs: relatedVaultDocs(doc.relPath, edgeMap, docsByRelPath, 3),
       created: new Date(doc.mtimeMs).toLocaleString("ko-KR")
     })),
     categories: topEntries(categories, 12),
     tags: topEntries(tags, 16),
     graph: {
       nodes: graphDocs.map((doc) => ({ id: doc.relPath, title: doc.title, folder: doc.folder, size: degree.get(doc.relPath) || 1, tags: doc.tags.slice(0, 4) })),
-      edges: graphEdges
+      edges: graphEdges.map((edge) => ({ ...edge, reasonLabels: (edge.reasons || []).map(vaultGraphReasonLabel).slice(0, 3) }))
     }
   };
 }

@@ -405,6 +405,12 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .report-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .report-actions button { min-height: 28px; border: 1px solid rgba(65,242,122,.2); border-radius: 7px; background: rgba(65,242,122,.07); color: var(--accent); padding: 0 9px; font-size: 11px; font-weight: 900; }
 .report-actions button:disabled { opacity: .45; cursor: wait; }
+.vault-related { display: grid; gap: 5px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 8px; }
+.vault-related > strong { color: var(--accent); font-size: 11px; }
+.vault-related span { display: grid; gap: 2px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; padding: 6px; background: rgba(255,255,255,.025); }
+.vault-related b { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.vault-related small { color: var(--dim); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.vault-related.empty { color: var(--dim); font-size: 11px; }
 .vault-export-status { margin-top: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(0,0,0,.18); color: var(--dim); padding: 8px; font-size: 11px; overflow-wrap: anywhere; }
 .portfolio-card { margin-top: 10px; }
 .portfolio-list { display: grid; gap: 7px; max-height: 320px; overflow: auto; }

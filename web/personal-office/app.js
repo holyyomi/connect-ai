@@ -1208,7 +1208,8 @@ function renderVaultGraph(graph = {}) {
   const lines = graphEdges.filter((edge) => positions.has(edge.source) && positions.has(edge.target)).map((edge) => {
     const source = positions.get(edge.source);
     const target = positions.get(edge.target);
-    return `<line x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}" />`;
+    const reason = (edge.reasonLabels || edge.reasons || []).join(" · ");
+    return `<line x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(reason || "연관 문서")}</title></line>`;
   }).join("");
   const dots = [...positions.values()].map(({ x, y, node }) => {
     const size = Math.min(18, 7 + Number(node.size || 1) * 2);
@@ -1335,6 +1336,22 @@ function renderVaultExportActions(doc) {
   `;
 }
 
+function renderVaultRelatedDocs(doc = {}) {
+  const related = Array.isArray(doc.relatedDocs) ? doc.relatedDocs : [];
+  if (!related.length) return '<div class="vault-related empty">연결된 문서 없음</div>';
+  return `
+    <div class="vault-related">
+      <strong>연관 문서</strong>
+      ${related.map((item) => `
+        <span>
+          <b>${escapeHtml(item.title || "문서")}</b>
+          <small>${escapeHtml((item.reasons || []).join(" · ") || item.folder || "연관")}</small>
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
 async function exportVaultReport(relPath, format) {
   if (!relPath || !format) return;
   if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `${vaultExportFormatLabel(format)} 변환 중`;
@@ -1392,6 +1409,7 @@ async function loadRecentReports() {
           <span>${escapeHtml(doc.displayPath || cleanDisplayPath(doc.relPath))}</span>
           <small>${escapeHtml(doc.created || "")}</small>
           <small>${escapeHtml(doc.folder || "루트")}${doc.tags?.length ? ` · #${doc.tags.map(escapeHtml).join(" #")}` : ""}</small>
+          ${renderVaultRelatedDocs(doc)}
           ${renderVaultExportActions(doc)}
         </div>
       </details>
