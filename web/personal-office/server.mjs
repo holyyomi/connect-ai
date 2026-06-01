@@ -2340,18 +2340,44 @@ function isLowValueConversation(message = "") {
   return false;
 }
 
+function isEphemeralLearningInput(text = "") {
+  const value = String(text || "").normalize("NFKC").trim();
+  if (!value) return true;
+  const temporal = /(오늘|이번|지금|당장|잠깐|임시|테스트|아무거나|뭐\s*하면|뭐\s*할까|뭘\s*할까|뭐하지|심심|가볍게)/i.test(value);
+  const durable = /(기억해|메모해|저장해|앞으로|항상|기본으로|기본값|절대|원칙|규칙|기준|내\s*(방식|말투|스타일|선호)|자산화)/i.test(value);
+  return temporal && !durable;
+}
+
+function learningSignals(userText = "", replyText = "") {
+  const user = String(userText || "").normalize("NFKC");
+  const reply = String(replyText || "");
+  const joined = `${user}\n${reply}`;
+  const ephemeral = isEphemeralLearningInput(user);
+  const explicitSave = /(저장해|저장해줘|기록해|남겨|자산화|Vault|옵시디언|문서로\s*남|보고서로\s*남)/i.test(user);
+  const explicitMemory = /(기억해|메모해|앞으로|항상|기본으로|기본값|절대|하지\s*마|하지\s*말|내\s*(규칙|원칙|기준|방식|말투|스타일|선호)|이렇게\s*해)/i.test(user);
+  const stablePreference = !ephemeral && /(선호|싫어|좋아|원해|필요없|제외|물어봐|말투|스타일|방식|기준|원칙|규칙)/i.test(user);
+  const durableWork = /(규칙|원칙|기준|정책|체크리스트|템플릿|프로세스|워크플로우|자동화|반복|매뉴얼|가이드|절차|포맷|프롬프트|운영\s*방식)/i.test(joined);
+  const explicitSkill = /(스킬|skill|템플릿|프로세스|워크플로우|체크리스트|매뉴얼|가이드|프롬프트|자동화|반복\s*업무|작업\s*방식|평가\s*기준|검수\s*기준)/i.test(user);
+  const reusableProcedure = !ephemeral
+    && durableWork
+    && /(단계|절차|흐름|루틴|파이프라인|평가|검수|인계|분배|저장|자산화|자동화|반복|체크리스트|템플릿|기준|원칙)/i.test(user)
+    && user.trim().length >= 35;
+  const shortMemoryOnly = (explicitMemory || stablePreference)
+    && !explicitSave
+    && !explicitSkill
+    && !reusableProcedure
+    && user.trim().length < 140;
+  return { ephemeral, explicitSave, explicitMemory, stablePreference, durableWork, explicitSkill, reusableProcedure, shortMemoryOnly };
+}
+
 function assessConversationMemory(message, result = {}) {
   const userText = String(message || "");
   const replyText = String(result.reply || "");
-  const joined = `${userText}\n${replyText}`;
+  const signals = learningSignals(userText, replyText);
   if (!automationRules.chatAssetCapture) return { shouldSave: false, shouldSkill: false, reason: "대화 자동 자산화가 꺼져 있습니다." };
-  if (isLowValueConversation(userText)) return { shouldSave: false, shouldSkill: false, reason: "일회성 짧은 대화라 저장하지 않았습니다." };
+  if (isLowValueConversation(userText) && !signals.explicitMemory && !signals.explicitSave) return { shouldSave: false, shouldSkill: false, reason: "일회성 짧은 대화라 저장하지 않았습니다.", learningType: "skip" };
 
-  const explicitMemory = /(기억|저장|메모|앞으로|항상|절대|하지\s*마|하지말|내\s*(규칙|원칙|기준|방식|말투|스타일|선호)|이렇게\s*해|기본값|원칙)/i.test(userText);
-  const durableWork = /(규칙|원칙|기준|정책|체크리스트|템플릿|프로세스|워크플로우|자동화|반복|매뉴얼|가이드|절차|포맷|프롬프트|운영\s*방식)/i.test(joined);
-  const skillIntent = /(스킬|skill|스킬로|템플릿|프로세스|워크플로우|반복|항상|앞으로|기본\s*방식|내\s*방식)/i.test(userText);
-  const explicitLearning = /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외|물어봐|규칙|원칙|기준)/i.test(userText);
-  if (isTrivialAutoSaveInput(userText) && !explicitLearning) {
+  if ((isTrivialAutoSaveInput(userText) || signals.ephemeral) && !signals.explicitMemory && !signals.explicitSave) {
     return { shouldSave: false, shouldSkill: false, reason: "가벼운 질문/잡담이라 자동 저장하지 않습니다." };
   }
   const workIntent = ["office", "codex"].includes(result.intent);
@@ -2359,20 +2385,24 @@ function assessConversationMemory(message, result = {}) {
   const meaningfulWorkIntent = workIntent
     && !isTrivialAutoSaveInput(userText)
     && (replyText.length >= 450 || Boolean(result.officeJob || result.codexJob) || (Array.isArray(result.sources) && result.sources.length > 0));
-  const shouldSave = explicitMemory || durableWork || meaningfulWorkIntent || substantial;
-  const shouldSkill = (skillIntent || (durableWork && explicitMemory)) && userText.length >= 20;
+  const shouldSave = signals.explicitSave || (signals.durableWork && !signals.shortMemoryOnly) || meaningfulWorkIntent || substantial;
+  const shouldSkill = (signals.explicitSkill || signals.reusableProcedure) && !signals.ephemeral && userText.length >= 20;
+  const learningType = shouldSkill ? "skill" : (signals.explicitMemory || signals.stablePreference ? "memory" : shouldSave ? "asset" : "skip");
   return {
     shouldSave,
     shouldSkill,
+    learningType,
     reason: shouldSave
-      ? explicitMemory
-        ? "사용자 규칙/선호/기억 요청으로 저장했습니다."
-        : durableWork
+      ? signals.explicitSave
+        ? "사용자가 명시적으로 저장/자산화를 요청해 Vault에 저장했습니다."
+        : signals.durableWork
           ? "반복 가능한 절차나 기준이 포함되어 저장했습니다."
           : meaningfulWorkIntent
             ? "업무 실행 맥락이라 세션 자산으로 기록했습니다."
             : "충분히 긴 대화 산출물이라 저장했습니다."
-      : "재사용 가치가 낮아 Vault 저장은 건너뛰었습니다."
+      : signals.shortMemoryOnly
+        ? "짧은 선호/규칙은 Vault 문서 대신 장기 메모리만 갱신합니다."
+        : "재사용 가치가 낮아 Vault 저장은 건너뛰었습니다."
   };
 }
 
@@ -2485,12 +2515,27 @@ function learningSentences(text = "") {
     .filter(Boolean);
 }
 
+function memoryItemDecision(text = "") {
+  const value = String(text || "").normalize("NFKC").trim();
+  if (!value || value.length < 12 || isEphemeralLearningInput(value)) return { keep: false, autoApply: false, confidence: 0, reason: "일회성 표현" };
+  const explicitCommand = /(기억해|메모해|앞으로|항상|기본으로|기본값|절대|하지\s*마|하지\s*말|물어봐|제외해)/i.test(value);
+  const personalRule = /(내\s*(규칙|원칙|기준|방식|말투|스타일|선호)|나는\s*.+(선호|싫어|좋아)|내가\s*.+(선호|싫어|좋아))/i.test(value);
+  const stablePreference = /(선호|싫어|좋아|원해|필요없|제외|말투|스타일|방식|기준|원칙|규칙)/i.test(value);
+  const keep = explicitCommand || personalRule || stablePreference;
+  const autoApply = explicitCommand || personalRule;
+  return {
+    keep,
+    autoApply,
+    confidence: autoApply ? 96 : 84,
+    reason: autoApply ? "명시적 장기 규칙/선호" : "검토가 필요한 선호 후보"
+  };
+}
+
 function extractPreferenceMemoryItems(text = "") {
   const value = String(text || "").normalize("NFKC").trim();
   if (!value) return [];
-  const marker = /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외|물어봐|규칙|원칙|기준|내\s*스타일|내\s*말투)/i;
-  const rows = learningSentences(value).filter((item) => marker.test(item) && item.length >= 12);
-  const selected = rows.length ? rows : (marker.test(value) && value.length <= 260 ? [value] : []);
+  const rows = learningSentences(value).filter((item) => memoryItemDecision(item).keep);
+  const selected = rows.length ? rows : (memoryItemDecision(value).keep && value.length <= 260 ? [value] : []);
   const seen = new Set();
   const result = [];
   for (const row of selected) {
@@ -2505,7 +2550,7 @@ function extractPreferenceMemoryItems(text = "") {
 }
 
 function shouldAutoApplyMemoryItem(text = "") {
-  return /(기억해|앞으로|항상|기본으로|절대|하지\s*마|하지\s*말|선호|싫어|원해|필요없|제외해|물어봐)/i.test(String(text || ""));
+  return memoryItemDecision(text).autoApply;
 }
 
 async function createMemoryCandidatesFromTurn({ session, turn }) {
@@ -2520,16 +2565,17 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
       created.push(existing);
       continue;
     }
-    const autoApply = shouldAutoApplyMemoryItem(item);
+    const decision = memoryItemDecision(item);
+    const autoApply = decision.autoApply;
     const applied = autoApply ? await appendProfileMemory([item]) : { added: [] };
     const now = new Date().toISOString();
     const candidate = normalizeSkillCandidate({
       kind: "memory",
       title: `메모리: ${compactLine(item, 32)}`,
-      description: autoApply ? "명시적 선호라 장기 메모리에 자동 반영했습니다." : "장기 메모리에 반영할 후보입니다.",
+      description: autoApply ? "명시적 장기 규칙/선호라 메모리에 자동 반영했습니다." : `${decision.reason}입니다.`,
       instructions: item,
       evidence: turn.user,
-      confidence: autoApply ? 96 : 82,
+      confidence: decision.confidence || (autoApply ? 96 : 82),
       agentIds: ["ceo", "secretary", "archivist"],
       status: autoApply ? "approved" : "pending",
       sourceSessionId: session.id,
@@ -2713,6 +2759,12 @@ async function recordConversationTurn({ message, result, sessionId = "" }) {
   }
   turn.skillCandidateIds = [...new Set([...turn.skillCandidateIds, ...memoryCandidates.map((candidate) => candidate.id)])];
   turn.learning = {
+    assessment: {
+      type: assessment.learningType || "skip",
+      reason: assessment.reason,
+      shouldSave: Boolean(assessment.shouldSave),
+      shouldSkill: Boolean(assessment.shouldSkill)
+    },
     memoryCandidateIds: memoryCandidates.map((candidate) => candidate.id),
     autoAppliedMemoryIds: memoryCandidates.filter((candidate) => candidate.autoAppliedAt).map((candidate) => candidate.id)
   };

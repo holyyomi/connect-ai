@@ -1528,7 +1528,13 @@ function renderSessionTurns(session) {
   nodes.chatThread.innerHTML = "";
   for (const turn of session.turns || []) {
     addChatMessage("user", turn.user || "", "나", "기록");
-    const meta = turn.capture?.ok ? "Vault 저장" : turn.skillCandidateIds?.length ? "스킬 후보" : turn.modeLabel || "기록";
+    const meta = turn.capture?.ok
+      ? "Vault 저장"
+      : turn.learning?.autoAppliedMemoryIds?.length
+        ? "메모리 반영"
+        : turn.skillCandidateIds?.length
+          ? "스킬 후보"
+          : turn.modeLabel || "기록";
     addChatMessage("assistant", turn.assistant || "", "YOMI Office", meta);
   }
   if (nodes.chatMemory) {
@@ -2298,7 +2304,9 @@ function updateChatResultPanel(data, originalMessage) {
     const capture = data.memory?.capture || data.capture;
     nodes.chatMemory.textContent = capture?.ok
       ? `Vault 저장: ${capture.relPath}`
-      : data.memory?.skillCandidateIds?.length
+      : data.memory?.learning?.autoAppliedMemoryIds?.length
+        ? `메모리 반영 ${data.memory.learning.autoAppliedMemoryIds.length}개`
+        : data.memory?.skillCandidateIds?.length
         ? `스킬 후보 ${data.memory.skillCandidateIds.length}개`
         : capture?.reason || `대화 기록 ${nodes.chatThread.querySelectorAll(".chat-message").length}개`;
   }
