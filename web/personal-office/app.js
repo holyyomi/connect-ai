@@ -72,6 +72,9 @@ const nodes = {
   ragMeta: document.getElementById("ragMeta"),
   ragIndexSummary: document.getElementById("ragIndexSummary"),
   ragIndexStats: document.getElementById("ragIndexStats"),
+  ragSearchInput: document.getElementById("ragSearchInput"),
+  ragSearchBtn: document.getElementById("ragSearchBtn"),
+  ragSearchResults: document.getElementById("ragSearchResults"),
   ragReindexBtn: document.getElementById("ragReindexBtn"),
   vaultStatus: document.getElementById("vaultStatus"),
   vaultPath: document.getElementById("vaultPath"),
@@ -634,9 +637,10 @@ function profileListToText(value = []) {
 function renderProfileState(state = profileState) {
   profileState = state || { profile: null };
   const profile = profileState.profile || {};
+  const memoryCount = Array.isArray(profile.memory) ? profile.memory.length : 0;
   if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = profile.enabled !== false ? "RAG+톤 적용" : "프로필 꺼짐";
-  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = profile.label || "Vault RAG와 톤 프로필";
-  if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = profile.enabled !== false ? "적용 중" : "꺼짐";
+  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · 메모리 ${memoryCount}개`;
+  if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = profile.enabled !== false ? `적용 중 · 메모리 ${memoryCount}개` : `꺼짐 · 메모리 ${memoryCount}개`;
   if (nodes.profileLabel) nodes.profileLabel.value = profile.label || "";
   if (nodes.profileEnabled) nodes.profileEnabled.checked = profile.enabled !== false;
   if (nodes.profileVoice) nodes.profileVoice.value = profileListToText(profile.voice);
@@ -1119,6 +1123,48 @@ async function handleRagReindex() {
   }
 }
 
+function renderRagSearchResults(data = {}) {
+  if (!nodes.ragSearchResults) return;
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (!results.length) {
+    nodes.ragSearchResults.innerHTML = `<div class="empty">검색 결과가 없습니다. 다른 키워드나 더 구체적인 표현으로 다시 확인하세요.</div>`;
+    return;
+  }
+  const meta = `${ragModeLabel(data.mode)} · ${results.length}개`;
+  nodes.ragSearchResults.innerHTML = [
+    `<div class="rag-search-meta">${escapeHtml(meta)}</div>`,
+    ...results.map((item) => `
+      <article class="rag-search-result">
+        <strong>${escapeHtml(item.title || "문서")}</strong>
+        <span>${escapeHtml(item.displayPath || item.relPath || "")}</span>
+        <p>${escapeHtml(item.excerpt || "")}</p>
+        <small>score ${escapeHtml(item.score ?? "")} · keyword ${escapeHtml(item.keywordScore ?? "")} · semantic ${escapeHtml(item.semanticScore ?? "")}</small>
+      </article>
+    `)
+  ].join("");
+}
+
+async function handleRagSearch() {
+  const query = String(nodes.ragSearchInput?.value || "").trim();
+  if (!nodes.ragSearchResults) return;
+  if (!query) {
+    nodes.ragSearchResults.innerHTML = `<div class="empty">검색어를 입력하면 RAG 근거 문서를 확인합니다.</div>`;
+    return;
+  }
+  if (nodes.ragSearchBtn) nodes.ragSearchBtn.disabled = true;
+  nodes.ragSearchResults.innerHTML = `<div class="empty">RAG 검색 중...</div>`;
+  try {
+    const response = await fetch(`/api/rag/search?q=${encodeURIComponent(query)}&k=5`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderRagSearchResults(data);
+  } catch (error) {
+    nodes.ragSearchResults.innerHTML = `<div class="empty">검색 실패: ${escapeHtml(error.message)}</div>`;
+  } finally {
+    if (nodes.ragSearchBtn) nodes.ragSearchBtn.disabled = false;
+  }
+}
+
 function renderVaultStats(counts = {}) {
   const rows = [["요미오피스 보고서", counts.webOfficeReports ?? 0], ["자동 수집", counts.autoCaptures ?? 0], ["초안", counts.knowledgeDrafts ?? 0], ["자동 요약", counts.autoDigests ?? 0], ["일일 리뷰", counts.dailyReviews ?? 0]];
   nodes.vaultStats.innerHTML = rows.map(([label, value]) => `<div class="vault-stat"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`).join("");
@@ -1239,7 +1285,11 @@ function updateDashboard(data) {
   if (nodes.codexStatus) nodes.codexStatus.textContent = data.codex?.available ? "정상" : "대기";
   if (nodes.claudeStatus) nodes.claudeStatus.textContent = data.claude?.available ? "자동/직접 가능" : "대기";
   if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = data.context?.styleProfile?.enabled ? "RAG+톤 적용" : "프로필 꺼짐";
-  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = data.context?.styleProfile?.label || "Vault RAG와 톤 프로필";
+  if (nodes.styleProfileMeta) {
+    const profile = data.context?.styleProfile || {};
+    const count = Number(profile.memoryCount || 0);
+    nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · 메모리 ${count}개`;
+  }
   renderRagState(data.rag || data.context?.rag || {});
   if (nodes.dashboardLastReport) nodes.dashboardLastReport.textContent = data.lastReport?.displayPath || cleanDisplayPath(data.lastReport?.relPath) || "저장된 보고서 없음";
   const current = data.workflow?.current || {};
@@ -2413,6 +2463,12 @@ if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleC
 if (nodes.profileForm) nodes.profileForm.addEventListener("submit", saveProfileState);
 if (nodes.profileReloadBtn) nodes.profileReloadBtn.addEventListener("click", loadProfileState);
 if (nodes.ragReindexBtn) nodes.ragReindexBtn.addEventListener("click", handleRagReindex);
+if (nodes.ragSearchBtn) nodes.ragSearchBtn.addEventListener("click", handleRagSearch);
+if (nodes.ragSearchInput) nodes.ragSearchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing) return;
+  event.preventDefault();
+  handleRagSearch();
+});
 if (nodes.automationTriggerForm) nodes.automationTriggerForm.addEventListener("submit", handleAutomationTriggerSubmit);
 if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventListener("click", resetAutomationTriggerForm);
 if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);

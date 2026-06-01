@@ -335,6 +335,16 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .tool-settings-card { margin-top: 10px; }
 .rag-index-card { margin-top: 10px; }
 .rag-index-stats { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; margin-bottom: 10px; }
+.rag-search-test { display: grid; gap: 8px; margin-bottom: 10px; }
+.rag-search-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+.rag-search-row input { width: 100%; min-width: 0; border: 1px solid rgba(255,255,255,.11); border-radius: 8px; background: rgba(0,0,0,.28); color: var(--text); padding: 9px; }
+.rag-search-results { display: grid; gap: 7px; max-height: 260px; overflow: auto; }
+.rag-search-meta { color: var(--dim); font-size: 11px; font-weight: 900; }
+.rag-search-result { border: 1px solid rgba(65,242,122,.14); border-radius: 8px; background: rgba(65,242,122,.04); padding: 9px; }
+.rag-search-result strong, .rag-search-result span, .rag-search-result p, .rag-search-result small { display: block; overflow-wrap: anywhere; }
+.rag-search-result strong { color: var(--bright); font-size: 12px; }
+.rag-search-result span, .rag-search-result small { margin-top: 4px; color: var(--dim); font-size: 10px; line-height: 1.4; }
+.rag-search-result p { margin: 6px 0 0; color: var(--text); font-size: 11px; line-height: 1.5; }
 .brave-key-guide { display: none !important; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; border: 1px solid rgba(255,191,77,.26); border-radius: 8px; background: rgba(255,191,77,.07); padding: 12px; }
 .brave-key-guide[hidden] { display: none; }
 .brave-key-guide strong { display: block; color: var(--warn); font-size: 13px; }
@@ -416,7 +426,7 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .tabs { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .dashboard-grid, .agent-list, .settings-grid, .vault-stats, .rag-index-stats, .agent-metrics, .recent-reports { grid-template-columns: 1fr; }
+  .dashboard-grid, .agent-list, .settings-grid, .vault-stats, .rag-index-stats, .rag-search-row, .agent-metrics, .recent-reports { grid-template-columns: 1fr; }
   .vault-graph-card .vault-graph-shell { min-height: 320px; height: 380px; }
   .chat-composer { grid-template-columns: 1fr; }
   .main-panel { padding: 12px; }

@@ -1190,6 +1190,18 @@ async function searchRagIndex(query, limit = 6, options = {}) {
   return { ok: true, connected: true, query: cleanQuery, mode, embedding: index.embedding, stats: index.stats, results: deduped, index };
 }
 
+function publicRagSearchResponse(search = {}) {
+  return {
+    ok: search.ok !== false,
+    connected: search.connected !== false,
+    query: search.query || "",
+    mode: search.mode || "",
+    embedding: search.embedding || null,
+    stats: search.stats || null,
+    results: Array.isArray(search.results) ? search.results : []
+  };
+}
+
 async function buildRagStatus() {
   const vaultRoot = await findVaultRoot();
   if (!vaultRoot) return { connected: false, documentCount: 0, chunkCount: 0, lastIndexedAt: "", embeddingMode: "disconnected", provider: "", model: "", dirty: false };
@@ -1773,7 +1785,7 @@ async function buildOfficeState() {
     skills: await buildSkillsState(),
     context: {
       autoRag: true,
-      styleProfile: { label: styleProfile.label, enabled: styleProfile.enabled },
+      styleProfile: { label: styleProfile.label, enabled: styleProfile.enabled, memoryCount: Array.isArray(styleProfile.memory) ? styleProfile.memory.length : 0 },
       vaultContextLimit: 4,
       rag
     },
@@ -5390,7 +5402,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/rag/search") {
       const k = Math.max(1, Math.min(20, Number(url.searchParams.get("k") || 6)));
-      return sendJson(response, 200, await searchRagIndex(String(url.searchParams.get("q") || ""), k));
+      return sendJson(response, 200, publicRagSearchResponse(await searchRagIndex(String(url.searchParams.get("q") || ""), k)));
     }
     if (request.method === "GET" && url.pathname === "/api/vault-search") return sendJson(response, 200, { ok: true, ...(await searchVaultMarkdown(String(url.searchParams.get("q") || ""), 6)) });
     if (request.method === "POST" && url.pathname === "/api/vault-export") {
