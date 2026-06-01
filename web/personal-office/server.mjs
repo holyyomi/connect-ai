@@ -1396,6 +1396,62 @@ function formatStyleProfilePrompt(profile) {
   ].join("\n");
 }
 
+function contextTokenSet(text = "") {
+  return new Set(String(text || "").normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).map((item) => item.trim()).filter((item) => item.length >= 2));
+}
+
+function learnedSkillScore(skill, query = "") {
+  const queryTokens = contextTokenSet(query);
+  if (!queryTokens.size) return 1;
+  const haystack = contextTokenSet([skill.label, skill.description, skill.instructions].join(" "));
+  let score = 0;
+  for (const token of queryTokens) if (haystack.has(token)) score += 2;
+  const lowered = [skill.label, skill.description].join(" ").toLowerCase();
+  for (const token of queryTokens) if (token.length >= 3 && lowered.includes(token)) score += 1;
+  return score;
+}
+
+async function learnedSkillsForContext(query = "", limit = 4) {
+  const config = normalizeSkillsConfig(await readJson(skillsConfigPath, { agentSkills: {}, tools: {} }));
+  const assignedAgentsByTool = new Map();
+  for (const [agentId, skillIds] of Object.entries(config.agentSkills || {})) {
+    for (const toolId of Array.isArray(skillIds) ? skillIds : []) {
+      if (!assignedAgentsByTool.has(toolId)) assignedAgentsByTool.set(toolId, []);
+      assignedAgentsByTool.get(toolId).push(resolveAgent(agentId)?.name || agentId);
+    }
+  }
+  return Object.entries(config.tools || {})
+    .filter(([, tool]) => tool?.provider === "yomi-learning" && tool.enabled !== false && String(tool.instructions || "").trim())
+    .map(([id, tool]) => ({
+      id,
+      label: tool.label || id,
+      description: tool.description || "",
+      instructions: tool.instructions || "",
+      type: tool.type || "",
+      agents: assignedAgentsByTool.get(id) || [],
+      sourceCandidateId: tool.sourceCandidateId || "",
+      score: learnedSkillScore({ label: tool.label || id, description: tool.description || "", instructions: tool.instructions || "" }, query)
+    }))
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "ko"))
+    .slice(0, Math.max(0, Math.min(8, Number(limit) || 4)));
+}
+
+function formatLearnedSkillsPrompt(skills = []) {
+  if (!skills.length) return "";
+  return [
+    "## 자동 학습 스킬",
+    "아래 스킬은 사용자가 대화에서 승인한 반복 업무 방식입니다. 현재 요청과 관련 있는 항목만 적용하고, 맞지 않으면 무시합니다.",
+    "",
+    ...skills.map((skill, index) => [
+      `### 스킬 ${index + 1}. ${skill.label}`,
+      skill.agents?.length ? `- 담당: ${skill.agents.join(", ")}` : "",
+      skill.description ? `- 설명: ${skill.description}` : "",
+      "",
+      compactLine(skill.instructions, 900)
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
 function formatVaultContextPrompt(sources = []) {
   if (!sources.length) {
     return [
@@ -1419,17 +1475,21 @@ function formatVaultContextPrompt(sources = []) {
 
 function publicContextSummary(context = {}) {
   const sources = context.sources || [];
+  const learnedSkills = context.learnedSkills || [];
   return {
     profile: context.profile ? { label: context.profile.label, enabled: context.profile.enabled } : null,
     vaultConnected: Boolean(context.vaultConnected),
     rag: context.rag || null,
     sourceCount: sources.length,
-    sources: sources.map((item) => ({ title: item.title, relPath: item.relPath, displayPath: item.displayPath, score: item.score }))
+    sources: sources.map((item) => ({ title: item.title, relPath: item.relPath, displayPath: item.displayPath, score: item.score })),
+    learnedSkillCount: learnedSkills.length,
+    learnedSkills: learnedSkills.map((skill) => ({ id: skill.id, label: skill.label, type: skill.type, agents: skill.agents, score: skill.score }))
   };
 }
 
 async function buildPersonalContext(query, options = {}) {
   const profile = await readStyleProfile();
+  const learnedSkills = await learnedSkillsForContext(query, options.skillLimit || 4);
   const rag = await searchRagIndex(query, options.limit || 4);
   const fallbackSearch = rag.results?.length ? null : await searchVaultMarkdown(query, options.limit || 4);
   const search = rag.results?.length ? rag : fallbackSearch;
@@ -1445,8 +1505,10 @@ async function buildPersonalContext(query, options = {}) {
       stats: rag.stats || null
     },
     sources,
+    learnedSkills,
     promptBlock: [
       formatStyleProfilePrompt(profile),
+      formatLearnedSkillsPrompt(learnedSkills),
       formatVaultContextPrompt(sources)
     ].filter(Boolean).join("\n\n")
   };

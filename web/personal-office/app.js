@@ -2397,7 +2397,13 @@ function updateChatResultPanel(data, originalMessage) {
     return;
   }
 
-  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = data.context?.sourceCount ? `자동 Vault 참조 ${data.context.sourceCount}개 · ${data.context.profile?.label || "톤 프로필"}` : data.sources?.length ? `참조 문서 ${data.sources.length}개` : "일반 대화";
+  if (nodes.chatRunMeta) {
+    const contextBits = [];
+    if (data.context?.sourceCount) contextBits.push(`자동 Vault 참조 ${data.context.sourceCount}개`);
+    if (data.context?.learnedSkillCount) contextBits.push(`자동 스킬 ${data.context.learnedSkillCount}개`);
+    if (data.context?.profile?.label) contextBits.push(data.context.profile.label);
+    nodes.chatRunMeta.textContent = contextBits.length ? contextBits.join(" · ") : data.sources?.length ? `참조 문서 ${data.sources.length}개` : "일반 대화";
+  }
   nodes.chatResultPreview.textContent = [
     "# 최근 응답",
     "",
