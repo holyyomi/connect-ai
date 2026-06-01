@@ -1626,17 +1626,28 @@ function renderSkillCandidates(state = skillCandidatesState) {
   if (!nodes.skillCandidateList) return;
   const candidates = (skillCandidatesState.candidates || []).filter((candidate) => candidate.status !== "dismissed").slice(0, 12);
   const pending = candidates.filter((candidate) => candidate.status === "pending");
-  if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = pending.length ? `${pending.length}개 대기` : "대기";
+  const approved = candidates.filter((candidate) => candidate.status === "approved").length;
+  if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = pending.length ? `${pending.length}개 검토 · 적용 ${approved}개` : approved ? `적용 ${approved}개` : "대기";
   if (!candidates.length) {
     nodes.skillCandidateList.innerHTML = '<div class="empty">스킬 후보 없음</div>';
     return;
   }
   nodes.skillCandidateList.innerHTML = candidates.map((candidate) => `
     <article class="skill-candidate-item ${escapeHtml(candidate.status || "")}">
-      <strong>${escapeHtml(candidate.title || candidate.id)}</strong>
-      <span><b class="skill-candidate-kind">${escapeHtml(skillCandidateKindLabel(candidate.kind))}</b> ${escapeHtml((candidate.agentIds || []).map((id) => agents.find((agent) => agent.id === id)?.name || id).join(", "))}</span>
+      <div class="skill-candidate-head">
+        <strong>${escapeHtml(candidate.title || candidate.id)}</strong>
+        <b>${escapeHtml(candidate.statusLabel || (candidate.status === "approved" ? "적용됨" : "검토 대기"))}</b>
+      </div>
+      <span><b class="skill-candidate-kind">${escapeHtml(skillCandidateKindLabel(candidate.kind))}</b> ${escapeHtml((candidate.agentNames || (candidate.agentIds || []).map((id) => agents.find((agent) => agent.id === id)?.name || id)).join(", "))}</span>
+      <div class="skill-candidate-metrics">
+        <b>신뢰도 ${Number(candidate.confidence || 0)}점</b>
+        ${candidate.autoAppliedAt ? "<b>자동 반영</b>" : ""}
+        ${candidate.source?.sessionTitle ? `<b>${escapeHtml(candidate.source.sessionTitle)}</b>` : ""}
+        ${candidate.createdAt ? `<b>${escapeHtml(formatShortTime(candidate.createdAt))}</b>` : ""}
+      </div>
       <small>${escapeHtml(candidate.description || "")}</small>
-      ${candidate.confidence ? `<small>신뢰도 ${Number(candidate.confidence || 0)}점${candidate.autoAppliedAt ? " · 자동 반영" : ""}</small>` : ""}
+      ${candidate.evidencePreview ? `<p class="skill-candidate-evidence">${escapeHtml(candidate.evidencePreview)}</p>` : ""}
+      ${candidate.instructionsPreview ? `<p class="skill-candidate-instructions">${escapeHtml(candidate.instructionsPreview)}</p>` : ""}
       <div class="connection-row-actions">
         ${candidate.status === "approved" ? `<b>적용됨</b>` : `
           <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>

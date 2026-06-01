@@ -2576,12 +2576,48 @@ async function createSkillCandidateFromTurn({ session, turn, assessment }) {
   return candidate;
 }
 
+function skillCandidateStatusLabel(status = "") {
+  return {
+    pending: "검토 대기",
+    approved: "적용됨",
+    dismissed: "숨김"
+  }[status] || status || "검토 대기";
+}
+
+function publicSkillCandidate(candidate, sessionsById = new Map()) {
+  const session = sessionsById.get(candidate.sourceSessionId);
+  const turn = session?.turns?.find((item) => item.id === candidate.sourceTurnId) || null;
+  return {
+    ...candidate,
+    statusLabel: skillCandidateStatusLabel(candidate.status),
+    agentNames: (candidate.agentIds || []).map((id) => resolveAgent(id)?.name || id),
+    evidencePreview: compactLine(candidate.evidence || turn?.user || "", 160),
+    instructionsPreview: compactLine(candidate.instructions || "", 220),
+    source: {
+      sessionId: candidate.sourceSessionId || "",
+      sessionTitle: session?.title || "",
+      turnId: candidate.sourceTurnId || "",
+      turnCreatedAt: turn?.createdAt || "",
+      user: compactLine(turn?.user || candidate.evidence || "", 140),
+      relPath: candidate.sourceRelPath || ""
+    }
+  };
+}
+
 async function buildSkillCandidatesState() {
   const state = await readSkillCandidatesState();
+  const sessions = await readChatSessionsState();
+  const sessionsById = new Map(sessions.sessions.map((session) => [session.id, session]));
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    candidates: state.candidates
+    summary: {
+      total: state.candidates.length,
+      pending: state.candidates.filter((candidate) => candidate.status === "pending").length,
+      approved: state.candidates.filter((candidate) => candidate.status === "approved").length,
+      memory: state.candidates.filter((candidate) => candidate.kind === "memory").length
+    },
+    candidates: state.candidates.map((candidate) => publicSkillCandidate(candidate, sessionsById))
   };
 }
 
