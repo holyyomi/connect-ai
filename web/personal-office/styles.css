@@ -214,6 +214,13 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .skill-candidate-metrics b { border: 1px solid rgba(255,255,255,.11); border-radius: 999px; color: var(--dim); padding: 2px 6px; font-size: 9px; }
 .skill-candidate-evidence, .skill-candidate-instructions { margin: 6px 0 0; color: var(--text); font-size: 11px; line-height: 1.45; }
 .skill-candidate-instructions { color: var(--dim); }
+.skill-candidate-editor { display: grid; grid-template-columns: 1fr; gap: 7px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 8px; }
+.skill-candidate-editor label { display: grid; gap: 4px; color: var(--dim); font-size: 10px; font-weight: 900; }
+.skill-candidate-editor input, .skill-candidate-editor textarea { width: 100%; min-width: 0; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; background: rgba(0,0,0,.28); color: var(--text); padding: 7px; font-size: 11px; line-height: 1.4; }
+.skill-candidate-editor textarea { resize: vertical; }
+.skill-candidate-agent-picker { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; }
+.skill-candidate-agent-picker label { grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 5px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; padding: 5px; }
+.skill-candidate-agent-picker input { width: auto; accent-color: var(--accent); }
 .chat-browser { display: grid; min-height: 0; grid-template-columns: minmax(0,1fr); gap: 10px; }
 .browser-main, .browser-side { min-height: 0; }
 .browser-main { border: 1px solid var(--line); border-radius: 8px; background: rgba(12,18,13,.9); padding: 12px; }

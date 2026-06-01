@@ -2777,9 +2777,31 @@ async function applySkillCandidate(candidateId) {
   return { ok: true, candidate, skills: await buildSkillsState() };
 }
 
+async function updateSkillCandidateDraft(input = {}) {
+  const state = await readSkillCandidatesState();
+  const candidate = state.candidates.find((item) => item.id === String(input.id || ""));
+  if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
+  if (candidate.status === "approved") throw new Error("이미 적용된 후보는 수정할 수 없습니다");
+  const title = compactLine(input.title || candidate.title, 42);
+  if (!title) throw new Error("스킬 후보 제목이 필요합니다");
+  const agentIds = normalizeStringList(input.agentIds || candidate.agentIds, 8).filter((idValue) => specialistRoles.some((agent) => agent.id === idValue));
+  if (!agentIds.length) throw new Error("담당 직원은 1명 이상 선택해야 합니다");
+  candidate.title = title;
+  candidate.description = typeof input.description === "undefined" ? candidate.description : compactLine(input.description, 180);
+  candidate.instructions = String(input.instructions ?? candidate.instructions ?? "").trim();
+  if (!candidate.instructions) throw new Error("스킬 지침이 필요합니다");
+  candidate.agentIds = agentIds;
+  if (typeof input.confidence !== "undefined") candidate.confidence = clampScore(input.confidence);
+  if (input.toolId) candidate.toolId = slugId(input.toolId);
+  candidate.updatedAt = new Date().toISOString();
+  await writeSkillCandidatesState(state);
+  return await buildSkillCandidatesState();
+}
+
 async function updateSkillCandidate(input = {}) {
   const action = String(input.action || "");
   if (!action || action === "list") return await buildSkillCandidatesState();
+  if (action === "update") return await updateSkillCandidateDraft(input);
   if (action === "approve") return await applySkillCandidate(input.id);
   const state = await readSkillCandidatesState();
   const candidate = state.candidates.find((item) => item.id === String(input.id || ""));

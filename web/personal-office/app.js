@@ -166,6 +166,7 @@ let activeCodexJobId = "";
 let activeChatSessionId = "";
 let chatSessionsState = { sessions: [] };
 let skillCandidatesState = { candidates: [] };
+let editingSkillCandidateId = "";
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
@@ -1627,6 +1628,34 @@ function skillCandidateKindLabel(kind = "") {
   return "스킬";
 }
 
+function renderSkillCandidateAgentPicker(candidate = {}) {
+  const selected = new Set(candidate.agentIds || []);
+  return agents.map((agent) => `
+    <label>
+      <input type="checkbox" data-skill-candidate-agent="${escapeHtml(agent.id)}" ${selected.has(agent.id) ? "checked" : ""}>
+      <span>${escapeHtml(agent.name)}</span>
+    </label>
+  `).join("");
+}
+
+function renderSkillCandidateEditor(candidate = {}) {
+  if (editingSkillCandidateId !== candidate.id || candidate.status === "approved") return "";
+  return `
+    <div class="skill-candidate-editor">
+      <label>제목<input type="text" data-skill-candidate-field="title" value="${escapeHtml(candidate.title || "")}" autocomplete="off"></label>
+      <label>설명<textarea data-skill-candidate-field="description" rows="2">${escapeHtml(candidate.description || "")}</textarea></label>
+      <label class="wide">지침<textarea data-skill-candidate-field="instructions" rows="5">${escapeHtml(candidate.instructions || "")}</textarea></label>
+      <div class="skill-candidate-agent-picker" aria-label="담당 직원 선택">
+        ${renderSkillCandidateAgentPicker(candidate)}
+      </div>
+      <div class="connection-row-actions">
+        <button type="button" data-skill-candidate-action="update" data-candidate-id="${escapeHtml(candidate.id)}">수정 저장</button>
+        <button type="button" data-skill-candidate-action="cancel-edit" data-candidate-id="${escapeHtml(candidate.id)}">취소</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderSkillCandidates(state = skillCandidatesState) {
   skillCandidatesState = state || { candidates: [] };
   if (!nodes.skillCandidateList) return;
@@ -1654,8 +1683,10 @@ function renderSkillCandidates(state = skillCandidatesState) {
       <small>${escapeHtml(candidate.description || "")}</small>
       ${candidate.evidencePreview ? `<p class="skill-candidate-evidence">${escapeHtml(candidate.evidencePreview)}</p>` : ""}
       ${candidate.instructionsPreview ? `<p class="skill-candidate-instructions">${escapeHtml(candidate.instructionsPreview)}</p>` : ""}
+      ${renderSkillCandidateEditor(candidate)}
       <div class="connection-row-actions">
         ${candidate.status === "approved" ? `<b>적용됨</b>` : `
+          <button type="button" data-skill-candidate-action="edit" data-candidate-id="${escapeHtml(candidate.id)}">${editingSkillCandidateId === candidate.id ? "수정 중" : "수정"}</button>
           <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
           <button type="button" data-skill-candidate-action="dismiss" data-candidate-id="${escapeHtml(candidate.id)}">숨김</button>
         `}
@@ -1682,23 +1713,44 @@ async function loadSkillCandidates() {
 async function handleSkillCandidateClick(event) {
   const button = event.target.closest("button[data-skill-candidate-action]");
   if (!button || !nodes.skillCandidateList?.contains(button)) return;
-  button.disabled = true;
   const action = button.dataset.skillCandidateAction || "";
   const id = button.dataset.candidateId || "";
+  if (action === "edit") {
+    editingSkillCandidateId = editingSkillCandidateId === id ? "" : id;
+    renderSkillCandidates();
+    return;
+  }
+  if (action === "cancel-edit") {
+    editingSkillCandidateId = "";
+    renderSkillCandidates();
+    return;
+  }
+  button.disabled = true;
   try {
+    const payload = { action, id };
+    if (action === "update") {
+      const editor = button.closest(".skill-candidate-item")?.querySelector(".skill-candidate-editor");
+      payload.title = editor?.querySelector('[data-skill-candidate-field="title"]')?.value || "";
+      payload.description = editor?.querySelector('[data-skill-candidate-field="description"]')?.value || "";
+      payload.instructions = editor?.querySelector('[data-skill-candidate-field="instructions"]')?.value || "";
+      payload.agentIds = [...(editor?.querySelectorAll("[data-skill-candidate-agent]:checked") || [])].map((input) => input.dataset.skillCandidateAgent);
+    }
     const response = await fetch("/api/skill-candidates", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, id })
+      body: JSON.stringify(payload)
     });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.skills) renderSkillsState(data.skills);
     if (data.profile) renderProfileState(data.profile);
+    if (action === "update") editingSkillCandidateId = "";
     await loadSkillCandidates();
     if (action === "approve") {
       addChatMessage("assistant", "대화에서 만든 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI Office", "스킬 적용");
       if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = "스킬 적용 완료";
+    } else if (action === "update") {
+      if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = "스킬 후보 수정 완료";
     }
   } catch (error) {
     if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = `처리 실패: ${error.message}`;
