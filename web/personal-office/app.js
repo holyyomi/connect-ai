@@ -2129,7 +2129,15 @@ function renderTaskQueue(state = {}) {
   const jobs = state.jobs || [];
   if (nodes.taskQueueStatus) {
     const running = state.summary?.running || 0;
-    nodes.taskQueueStatus.textContent = running ? `${running}개 실행 중` : jobs.length ? `${jobs.length}개 기록` : "대기";
+    const completed = state.summary?.completed || 0;
+    const attention = state.summary?.attention || 0;
+    nodes.taskQueueStatus.textContent = running
+      ? `${running}개 실행 · 완료 ${completed}개`
+      : attention
+        ? `주의 ${attention}개 · 완료 ${completed}개`
+        : jobs.length
+          ? `완료 ${completed}개 · 기록 ${jobs.length}개`
+          : "대기";
   }
   if (!jobs.length) {
     nodes.taskQueueList.innerHTML = '<div class="office-agent-empty">대기 중인 작업이 없습니다.</div>';
@@ -2147,6 +2155,7 @@ function renderTaskQueue(state = {}) {
           <span>${escapeHtml(job.restored ? "기록" : job.type === "codex" ? "Codex" : "직원")}</span>
           <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
           <p>${escapeHtml(job.progress || job.detail || "")}</p>
+          <small>${escapeHtml(formatShortTime(job.updatedAt || job.completedAt || job.createdAt))}</small>
         </button>
         <div class="task-queue-actions">
           ${running ? `<button type="button" data-task-queue-action="cancel" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">취소</button>` : ""}

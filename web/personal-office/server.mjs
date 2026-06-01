@@ -3664,14 +3664,28 @@ function buildTaskQueueState(limit = 20) {
   const mergedRows = mergeTaskQueueRows(currentRows, readTaskQueueHistorySync().jobs);
   writeTaskQueueHistorySync(mergedRows);
   const jobs = mergedRows.slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
-  const running = jobs.filter((job) => ["queued", "running", "retrying", "finalizing"].includes(job.status));
+  const activeStatuses = new Set(["queued", "running", "retrying", "finalizing"]);
+  const running = jobs.filter((job) => activeStatuses.has(job.status));
+  const completed = jobs.filter((job) => job.status === "completed");
+  const failed = jobs.filter((job) => ["failed", "cancelled"].includes(job.status));
+  const waiting = jobs.filter((job) => job.status === "waiting_question");
+  const partial = jobs.filter((job) => job.status === "completed_with_errors");
+  const latestCompleted = [...completed, ...partial]
+    .sort((a, b) => jobTimeValue(b.completedAt || b.updatedAt || b.createdAt) - jobTimeValue(a.completedAt || a.updatedAt || a.createdAt))[0] || null;
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     summary: {
       total: jobs.length,
       running: running.length,
-      attention: jobs.filter((job) => ["failed", "waiting_question", "completed_with_errors"].includes(job.status)).length
+      queued: jobs.filter((job) => job.status === "queued").length,
+      completed: completed.length,
+      partial: partial.length,
+      failed: failed.length,
+      waiting: waiting.length,
+      attention: failed.length + waiting.length + partial.length,
+      latestCompletedAt: latestCompleted?.completedAt || latestCompleted?.updatedAt || "",
+      latestCompletedTitle: latestCompleted?.title || ""
     },
     jobs
   };
