@@ -2232,8 +2232,20 @@ async function writeChatSessionsState(state) {
   return normalized;
 }
 
+function chatSessionMetrics(session) {
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  return turns.reduce((acc, turn) => {
+    if (turn.capture?.ok) acc.assetCount += 1;
+    acc.skillCandidateCount += Array.isArray(turn.skillCandidateIds) ? turn.skillCandidateIds.length : 0;
+    acc.sourceCount += Array.isArray(turn.sources) ? turn.sources.length : 0;
+    acc.memoryCount += Array.isArray(turn.learning?.autoAppliedMemoryIds) ? turn.learning.autoAppliedMemoryIds.length : 0;
+    return acc;
+  }, { assetCount: 0, skillCandidateCount: 0, sourceCount: 0, memoryCount: 0 });
+}
+
 function publicChatSessionSummary(session) {
   const lastTurn = session.turns?.[session.turns.length - 1] || {};
+  const metrics = chatSessionMetrics(session);
   return {
     id: session.id,
     title: session.title,
@@ -2241,7 +2253,8 @@ function publicChatSessionSummary(session) {
     updatedAt: session.updatedAt,
     turnCount: session.turns?.length || 0,
     lastUser: compactLine(lastTurn.user || "", 90),
-    lastMode: lastTurn.modeLabel || ""
+    lastMode: lastTurn.modeLabel || "",
+    ...metrics
   };
 }
 

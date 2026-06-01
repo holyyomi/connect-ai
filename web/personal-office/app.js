@@ -1510,6 +1510,13 @@ function renderChatSessions(state = chatSessionsState) {
         <strong>${escapeHtml(session.title || "새 대화")}</strong>
         <span>${escapeHtml(session.lastMode || `${session.turnCount || 0}턴`)}</span>
         <small>${escapeHtml(session.lastUser || "")}</small>
+        <div class="chat-session-metrics" aria-label="세션 자산화 요약">
+          <b>턴 ${Number(session.turnCount || 0)}</b>
+          <b>자산 ${Number(session.assetCount || 0)}</b>
+          <b>스킬 ${Number(session.skillCandidateCount || 0)}</b>
+          <b>근거 ${Number(session.sourceCount || 0)}</b>
+          ${Number(session.memoryCount || 0) ? `<b>메모리 ${Number(session.memoryCount || 0)}</b>` : ""}
+        </div>
       </button>
       <button class="chat-session-delete" type="button" title="대화 삭제" aria-label="대화 삭제" data-session-action="delete" data-session-id="${escapeHtml(session.id)}">×</button>
     </article>
@@ -1524,7 +1531,13 @@ function renderSessionTurns(session) {
     const meta = turn.capture?.ok ? "Vault 저장" : turn.skillCandidateIds?.length ? "스킬 후보" : turn.modeLabel || "기록";
     addChatMessage("assistant", turn.assistant || "", "YOMI Office", meta);
   }
-  if (nodes.chatMemory) nodes.chatMemory.textContent = `${session.turnCount || session.turns?.length || 0}턴 기록`;
+  if (nodes.chatMemory) {
+    const turnCount = Number(session.turnCount || session.turns?.length || 0);
+    const assetCount = Number(session.assetCount || 0);
+    const skillCount = Number(session.skillCandidateCount || 0);
+    const sourceCount = Number(session.sourceCount || 0);
+    nodes.chatMemory.textContent = `${turnCount}턴 · 자산 ${assetCount} · 스킬 ${skillCount} · 근거 ${sourceCount}`;
+  }
 }
 
 async function loadChatSessions(selectId = "") {

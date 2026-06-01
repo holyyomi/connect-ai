@@ -199,6 +199,8 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .chat-session-item strong, .chat-session-item span, .chat-session-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-session-item strong { color: var(--bright); font-size: 12px; }
 .chat-session-item span, .chat-session-item small { margin-top: 4px; color: var(--dim); font-size: 10px; }
+.chat-session-metrics { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chat-session-metrics b { border: 1px solid rgba(65,242,122,.15); border-radius: 999px; background: rgba(65,242,122,.05); color: var(--accent); padding: 2px 6px; font-size: 9px; font-weight: 900; }
 .skill-candidate-item { border: 1px solid rgba(65,242,122,.14); border-radius: 8px; background: rgba(65,242,122,.04); padding: 9px; }
 .skill-candidate-item strong, .skill-candidate-item span, .skill-candidate-item small { display: block; overflow-wrap: anywhere; }
 .skill-candidate-item strong { color: var(--accent); font-size: 12px; }
