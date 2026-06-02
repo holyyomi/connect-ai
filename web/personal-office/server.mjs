@@ -477,17 +477,67 @@ function containsSecretPayload(input) {
 }
 
 const commandAvailabilityCache = new Map();
+const commandProbeCache = new Map();
 
 function commandExists(command) {
   const name = String(command || "").trim();
   if (!name) return false;
   if (commandAvailabilityCache.has(name)) return commandAvailabilityCache.get(name);
+  if (path.isAbsolute(name) || /[\\/]/.test(name)) {
+    const ok = existsSync(name);
+    commandAvailabilityCache.set(name, ok);
+    return ok;
+  }
   const result = process.platform === "win32"
-    ? spawnSync("where.exe", [name], { stdio: "ignore" })
+    ? spawnSync("where.exe", [name], { stdio: "ignore", windowsHide: true })
     : spawnSync("sh", ["-lc", `command -v ${JSON.stringify(name)}`], { stdio: "ignore" });
   const ok = result.status === 0;
   commandAvailabilityCache.set(name, ok);
   return ok;
+}
+
+function commandSpecExists(spec = {}) {
+  const commandOk = commandExists(spec.command || spec.label);
+  if (!commandOk) return false;
+  const requiredFiles = (spec.argsPrefix || []).filter((arg) => path.isAbsolute(String(arg || "")) && /\.(ps1|cmd|bat|exe)$/i.test(String(arg || "")));
+  return requiredFiles.every((filePath) => existsSync(filePath));
+}
+
+function commandProbeCacheKey(spec = {}, args = []) {
+  return JSON.stringify([spec.command || "", spec.argsPrefix || [], args]);
+}
+
+function commandProbeDetail(result = {}) {
+  const error = result.error ? result.error.message || String(result.error) : "";
+  const text = stripAnsi(`${result.stdout || ""}\n${result.stderr || ""}`);
+  const firstLine = text.split(/\n+/).map((line) => line.trim()).filter(Boolean)[0] || "";
+  return compactLine(firstLine || error || `종료 코드 ${result.status ?? "unknown"}`, 160);
+}
+
+function probeCommandSpec(spec = {}, args = ["--version"], timeoutMs = 8000) {
+  const key = commandProbeCacheKey(spec, args);
+  const cached = commandProbeCache.get(key);
+  if (cached && Date.now() - cached.checkedAt < 60_000) return cached;
+  if (!commandSpecExists(spec)) {
+    const missing = { ok: false, detail: "실행 파일을 찾지 못했습니다.", checkedAt: Date.now() };
+    commandProbeCache.set(key, missing);
+    return missing;
+  }
+  const result = spawnSync(spec.command, [...(spec.argsPrefix || []), ...args], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    shell: false,
+    timeout: timeoutMs,
+    windowsHide: true
+  });
+  const probe = {
+    ok: result.status === 0 && !result.error,
+    detail: commandProbeDetail(result),
+    exitCode: result.status,
+    checkedAt: Date.now()
+  };
+  commandProbeCache.set(key, probe);
+  return probe;
 }
 
 function installCommandName(install) {
@@ -501,6 +551,28 @@ function connectionStatusMeta(status) {
     disconnected: { label: "미연결", tone: "bad" },
     disabled: { label: "비활성", tone: "muted" }
   }[status] || { label: "확인 필요", tone: "warn" };
+}
+
+function connectionsSummary(connections = []) {
+  const count = (status) => connections.filter((connection) => connection.status === status).length;
+  const researchIds = new Set(["exa_mcp", "firecrawl_mcp", "tavily_search"]);
+  const research = connections.filter((connection) => researchIds.has(connection.id));
+  const modelIds = new Set(["codex_cli", "claude_cli"]);
+  const models = connections.filter((connection) => modelIds.has(connection.id));
+  const keyRequired = count("key_required");
+  const disconnected = count("disconnected");
+  return {
+    total: connections.length,
+    normal: count("normal"),
+    keyRequired,
+    disconnected,
+    disabled: count("disabled"),
+    attention: keyRequired + disconnected,
+    modelReady: models.filter((connection) => connection.status === "normal").length,
+    modelTotal: models.length,
+    researchReady: research.filter((connection) => connection.status === "normal").length,
+    researchTotal: research.length
+  };
 }
 
 async function buildConnectionsState() {
@@ -519,12 +591,16 @@ async function buildConnectionsState() {
       detail = vaultRoot ? `연결됨: ${vaultRoot}` : "Vault 경로를 찾지 못했습니다.";
     } else if (connection.id === "codex_cli") {
       const command = codexCommand();
-      status = command ? "normal" : "disconnected";
-      detail = command ? `명령: ${command}` : "codex-cli 명령을 찾지 못했습니다.";
+      const probe = probeCommandSpec({ command, argsPrefix: [], label: command });
+      status = probe.ok ? "normal" : "disconnected";
+      detail = probe.ok ? `실행 확인: ${probe.detail || command}` : `codex-cli 확인 실패: ${probe.detail}`;
     } else if (connection.id === "claude_cli") {
-      const command = claudeCommand();
-      status = command ? "normal" : "disconnected";
-      detail = command ? `명령: ${command} · 자동 라우팅/직접 호출 가능` : "claude 명령을 찾지 못했습니다.";
+      const spec = claudeCommandSpec();
+      const probe = probeCommandSpec(spec);
+      status = probe.ok ? "normal" : "disconnected";
+      detail = probe.ok
+        ? `실행 확인: ${probe.detail || spec.label} · plan 권한 · 예산상한 ${claudeMaxBudgetUsd} USD`
+        : `Claude Code 확인 실패: ${probe.detail}`;
     } else if (connection.kind === "mcp" && connection.install) {
       const command = installCommandName(connection.install);
       status = commandExists(command) ? "normal" : "disconnected";
@@ -534,15 +610,19 @@ async function buildConnectionsState() {
     } else if (requiresEnv && connection.envKeys.length && envState.some((item) => !item.present)) {
       status = "key_required";
       detail = `${envState.filter((item) => !item.present).map((item) => item.name).join(", ")} 환경변수가 필요합니다.`;
+    } else if (requiresEnv && connection.envKeys.length) {
+      detail = `${connection.envKeys.join(", ")} 환경변수 확인됨 · 키 값 미표시`;
     }
     const meta = connectionStatusMeta(status);
     return { ...connection, status, statusLabel: meta.label, tone: meta.tone, detail, envState };
   });
+  const summary = connectionsSummary(connections);
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     secretsStored: false,
     secretPolicy: "실제 API 키/토큰은 저장하지 않습니다. 환경변수 또는 .env를 사용하고 화면에는 존재 여부만 표시합니다.",
+    summary,
     connections,
     candidates: config.candidates,
     harnessScopes: config.harnessScopes

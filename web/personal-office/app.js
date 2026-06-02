@@ -838,8 +838,8 @@ function renderConnectionCard(connection) {
       <div>
         <strong>${escapeHtml(connection.name)}</strong>
         <span>${escapeHtml(connection.kind)} · ${escapeHtml(connection.provider || "provider 미설정")}${connection.mcpServer ? ` · MCP: ${escapeHtml(connection.mcpServer)}` : ""}</span>
-        ${renderEnvState(connection.envState || [])}
         <small>${escapeHtml(connection.detail || connection.notes || "")}</small>
+        ${renderEnvState(connection.envState || [])}
       </div>
       <b>${escapeHtml(connection.statusLabel || connection.status || "")}</b>
       <div class="connection-row-actions">
@@ -1288,6 +1288,10 @@ function summarizeDiagnostic(pathValue, data = {}) {
     const profile = data.profile || {};
     return `${profile.enabled !== false ? "프로필 켜짐" : "프로필 꺼짐"} · 메모리 ${Array.isArray(profile.memory) ? profile.memory.length : 0}개`;
   }
+  if (pathValue === "/api/connections") {
+    const summary = data.summary || {};
+    return `정상 ${Number(summary.normal || 0)}개 · 주의 ${Number(summary.attention || 0)}개 · 모델 ${Number(summary.modelReady || 0)}/${Number(summary.modelTotal || 0)} · 리서치 ${Number(summary.researchReady || 0)}/${Number(summary.researchTotal || 0)}`;
+  }
   if (pathValue.startsWith("/api/vault-overview")) {
     return `그래프 ${data.graph?.nodes?.length || 0}노드 · ${data.graph?.edges?.length || 0}연결`;
   }
@@ -1295,10 +1299,17 @@ function summarizeDiagnostic(pathValue, data = {}) {
   return "JSON 응답 정상";
 }
 
+function diagnosticTone(pathValue, data = {}, ok = false) {
+  if (!ok) return "bad";
+  if (pathValue === "/api/connections" && Number(data.summary?.attention || 0) > 0) return "warn";
+  return "ok";
+}
+
 async function runApiDiagnostics() {
   if (!nodes.apiDiagnosticList) return;
   const checks = [
     { label: "Health", path: "/api/health" },
+    { label: "연결", path: "/api/connections" },
     { label: "RAG", path: "/api/rag" },
     { label: "프로필", path: "/api/profile" },
     { label: "Vault 그래프", path: "/api/vault-overview?limit=3" },
@@ -1323,14 +1334,16 @@ async function runApiDiagnostics() {
         continue;
       }
       const ok = response.ok && data.ok !== false;
-      rows.push({ label: check.label, status: ok ? "정상" : `HTTP ${response.status}`, detail: summarizeDiagnostic(check.path, data), tone: ok ? "ok" : "bad" });
+      const tone = diagnosticTone(check.path, data, ok);
+      rows.push({ label: check.label, status: ok ? (tone === "warn" ? "주의" : "정상") : `HTTP ${response.status}`, detail: summarizeDiagnostic(check.path, data), tone });
     } catch (error) {
       rows.push({ label: check.label, status: "실패", detail: error.message, tone: "bad" });
     }
     renderApiDiagnostics(rows);
   }
   const badCount = rows.filter((row) => row.tone === "bad").length;
-  if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = badCount ? `문제 ${badCount}개` : "정상";
+  const warnCount = rows.filter((row) => row.tone === "warn").length;
+  if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = badCount ? `문제 ${badCount}개` : warnCount ? `주의 ${warnCount}개` : "정상";
 }
 
 async function handleRagReindex() {
