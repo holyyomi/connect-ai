@@ -1752,6 +1752,7 @@ function formatVaultContextPrompt(sources = []) {
   return [
     "## 자동 Vault 참조",
     "아래 문서는 사용자의 기존 자산에서 자동으로 찾은 참고자료입니다. 직접 관련 있는 내용만 반영하고, 부족하면 부족하다고 밝힙니다.",
+    "자료를 사용한 경우 산출물의 근거 출처에 제목과 Vault 경로를 남깁니다.",
     "",
     ...sources.map((item, index) => [
       `### 참고 ${index + 1}. ${item.title}`,
@@ -1771,10 +1772,130 @@ function publicContextSummary(context = {}) {
     vaultConnected: Boolean(context.vaultConnected),
     rag: context.rag || null,
     sourceCount: sources.length,
-    sources: sources.map((item) => ({ title: item.title, relPath: item.relPath, displayPath: item.displayPath, score: item.score })),
+    sources: sources.map((item) => ({
+      title: item.title,
+      relPath: item.relPath,
+      displayPath: item.displayPath,
+      score: item.score,
+      excerpt: compactLine(item.excerpt || "", 260)
+    })),
     learnedSkillCount: learnedSkills.length,
     learnedSkills: learnedSkills.map((skill) => ({ id: skill.id, label: skill.label, type: skill.type, agents: skill.agents, score: skill.score }))
   };
+}
+
+function compactContextSources(sources = [], limit = 5) {
+  return (Array.isArray(sources) ? sources : []).slice(0, Math.max(0, Math.min(8, Number(limit) || 5))).map((item, index) => ({
+    rank: index + 1,
+    title: String(item.title || "문서"),
+    relPath: String(item.relPath || ""),
+    displayPath: String(item.displayPath || item.relPath || ""),
+    score: Number(item.score || 0),
+    excerpt: compactLine(item.excerpt || "", 420)
+  }));
+}
+
+function buildContextUsePlan(context = {}, query = "") {
+  const sources = compactContextSources(context?.sources || [], 5);
+  const embedding = context?.rag?.embedding || null;
+  const embeddingLabel = embedding && typeof embedding === "object"
+    ? [embedding.provider, embedding.model].filter(Boolean).join(":")
+    : String(embedding || "");
+  return {
+    status: sources.length ? "ready" : "empty",
+    query: compactLine(query || "", 180),
+    mode: context?.rag?.mode || "unknown",
+    embedding: embeddingLabel,
+    sourceCount: sources.length,
+    instructions: [
+      "직접 관련 있는 Vault 근거만 사용한다.",
+      "근거가 부족하면 부족하다고 밝히고 필요한 추가 자료를 질문한다.",
+      "사용한 문서는 결과의 근거 출처에 제목과 경로를 남긴다.",
+      "근거와 추정을 섞지 않는다."
+    ],
+    sources
+  };
+}
+
+function formatContextUsePlan(contextUse = {}) {
+  const sources = compactContextSources(contextUse.sources || [], 5);
+  const header = [
+    "## RAG 근거 사용 계획",
+    `- 상태: ${contextUse.status || (sources.length ? "ready" : "empty")}`,
+    contextUse.query ? `- 검색 기준: ${contextUse.query}` : "",
+    `- 검색 모드: ${contextUse.mode || "unknown"}`,
+    `- 연결 문서: ${sources.length}개`,
+    "- 사용 규칙: 직접 관련 있는 근거만 쓰고, 사용한 문서는 근거 출처에 제목과 경로를 남긴다."
+  ].filter(Boolean);
+  if (!sources.length) {
+    return [...header, "- 현재 연결된 Vault 근거가 없으므로 사용자 입력과 역할 기준으로 진행한다."].join("\n");
+  }
+  return [
+    ...header,
+    "",
+    ...sources.map((item) => [
+      `### 근거 ${item.rank}. ${item.title}`,
+      `- 경로: ${item.displayPath || item.relPath}`,
+      `- 점수: ${item.score}`
+    ].filter(Boolean).join("\n"))
+  ].join("\n");
+}
+
+function attachContextToOrchestrationJob(job, context, query = "") {
+  const contextUse = buildContextUsePlan(context || {}, query);
+  if (!job) return contextUse;
+  job.context = context || job.context || null;
+  job.contextUse = contextUse;
+  job.capsule = {
+    ...(job.capsule || {}),
+    contextUse,
+    materialBrief: {
+      ...(job.capsule?.materialBrief || {}),
+      ragQuery: contextUse.query || job.capsule?.materialBrief?.ragQuery || query || "",
+      ragSources: contextUse.sources.map((item) => ({
+        rank: item.rank,
+        title: item.title,
+        relPath: item.relPath,
+        displayPath: item.displayPath,
+        score: item.score
+      }))
+    }
+  };
+  job.plan = {
+    ...(job.plan || {}),
+    contextUse,
+    subtasks: (job.plan?.subtasks || []).map((step) => ({
+      ...step,
+      contextUse: {
+        status: contextUse.status,
+        mode: contextUse.mode,
+        sourceCount: contextUse.sourceCount,
+        sources: contextUse.sources.slice(0, 3).map((item) => ({
+          rank: item.rank,
+          title: item.title,
+          relPath: item.relPath,
+          displayPath: item.displayPath,
+          score: item.score
+        }))
+      }
+    }))
+  };
+  job.subtasks = (job.subtasks || []).map((step) => ({
+    ...step,
+    contextUse: {
+      status: contextUse.status,
+      mode: contextUse.mode,
+      sourceCount: contextUse.sourceCount,
+      sources: contextUse.sources.slice(0, 3).map((item) => ({
+        rank: item.rank,
+        title: item.title,
+        relPath: item.relPath,
+        displayPath: item.displayPath,
+        score: item.score
+      }))
+    }
+  }));
+  return contextUse;
 }
 
 async function buildPersonalContext(query, options = {}) {
@@ -2214,25 +2335,42 @@ function stripAnsi(text) {
   return String(text || "").replace(/\u001b\[[0-9;]*m/g, "").replace(/\r\n/g, "\n").trim();
 }
 
+function compactCliFailureDetail(text, maxLength = 320) {
+  const raw = stripAnsi(text || "");
+  if (!raw) return "";
+  const lines = raw
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^(user|assistant|system)$|^--------$|^workdir:|^model:|^provider:|^approval:|^sandbox:|^reasoning|^session id:/i.test(line))
+    .filter((line) => !/^너는 YOMI Office|^현재 단계는|^아래 작업캡슐|^사용자 톤|^## |^### |^\{|^\}|^\"/.test(line));
+  const priority = lines.find((line) => /error|failed|auth|login|sandbox|permission|denied|timeout|unauthori[sz]ed|credential|not found|ENOENT/i.test(line))
+    || lines.find((line) => line.length <= maxLength)
+    || raw;
+  return compactLine(priority, maxLength);
+}
+
 function codexFailureMessage(result, label = "Codex CLI 호출") {
   const stderr = stripAnsi(result?.stderr || "");
   const error = stripAnsi(result?.error || "");
-  const detail = stderr || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
-  if (/auth|login|sign.?in|unauthori[sz]ed|credential/i.test(detail)) return `${label} 실패: 인증 상태를 확인해야 합니다. codex-cli 로그인 세션이 만료됐을 수 있습니다. (${detail})`;
+  const rawDetail = stderr || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  const detail = compactCliFailureDetail(rawDetail) || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  if (/auth|login|sign.?in|unauthori[sz]ed|credential/i.test(rawDetail)) return `${label} 실패: 인증 상태를 확인해야 합니다. codex-cli 로그인 세션이 만료됐을 수 있습니다. (${detail})`;
   if (/timeout/i.test(detail)) return `${label} 실패: 응답 시간이 초과됐습니다. 작업을 더 작게 나눠 다시 시도하세요.`;
-  if (/permission|sandbox|denied|access/i.test(detail)) return `${label} 실패: 권한 또는 샌드박스 제한에 걸렸습니다. (${detail})`;
-  if (/ENOENT|not found/i.test(detail)) return `${label} 실패: codex-cli 실행 파일을 찾지 못했습니다. YOMI_AI_CODEX_COMMAND 설정을 확인하세요.`;
+  if (/permission|sandbox|denied|access/i.test(rawDetail)) return `${label} 실패: 권한 또는 샌드박스 제한에 걸렸습니다. (${detail})`;
+  if (/ENOENT|not found/i.test(rawDetail)) return `${label} 실패: codex-cli 실행 파일을 찾지 못했습니다. YOMI_AI_CODEX_COMMAND 설정을 확인하세요.`;
   return `${label} 실패: ${detail}`;
 }
 
 function claudeFailureMessage(result, label = "Claude Code CLI 호출") {
   const stderr = stripAnsi(result?.stderr || "");
   const error = stripAnsi(result?.error || "");
-  const detail = stderr || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
-  if (/auth|login|sign.?in|unauthori[sz]ed|credential|api.?key/i.test(detail)) return `${label} 실패: Claude Code 인증 상태를 확인해야 합니다. (${detail})`;
+  const rawDetail = stderr || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  const detail = compactCliFailureDetail(rawDetail) || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  if (/auth|login|sign.?in|unauthori[sz]ed|credential|api.?key/i.test(rawDetail)) return `${label} 실패: Claude Code 인증 상태를 확인해야 합니다. (${detail})`;
   if (/timeout/i.test(detail)) return `${label} 실패: 응답 시간이 초과됐습니다. 요청을 더 작게 나눠 다시 시도하세요.`;
-  if (/permission|denied|access/i.test(detail)) return `${label} 실패: Claude Code 권한 제한에 걸렸습니다. (${detail})`;
-  if (/ENOENT|not found/i.test(detail)) return `${label} 실패: claude 실행 파일을 찾지 못했습니다. YOMI_AI_CLAUDE_COMMAND 설정을 확인하세요.`;
+  if (/permission|denied|access/i.test(rawDetail)) return `${label} 실패: Claude Code 권한 제한에 걸렸습니다. (${detail})`;
+  if (/ENOENT|not found/i.test(rawDetail)) return `${label} 실패: claude 실행 파일을 찾지 못했습니다. YOMI_AI_CLAUDE_COMMAND 설정을 확인하세요.`;
   return `${label} 실패: ${detail}`;
 }
 
@@ -4024,6 +4162,7 @@ function formatYomiPlanReply(orchestration) {
   const questionBlock = capsule.needsQuestion
     ? ["", "## 확인 필요", ...capsule.questionReasons.map((item) => `- ${item.reason}`)].join("\n")
     : "";
+  const contextUseBlock = formatContextUsePlan(capsule.contextUse || plan.contextUse || {});
   return [
     "# 요미 라우팅 결과",
     "",
@@ -4043,6 +4182,8 @@ function formatYomiPlanReply(orchestration) {
     "",
     "## 직원 분배 계획",
     ...plan.subtasks.map((step) => `- ${step.agentName}(${step.role}): ${step.label} → ${step.expectedOutput} · ${step.engine?.label || "Codex CLI"}`),
+    "",
+    contextUseBlock,
     questionBlock,
     "",
     "## 작업캡슐 JSON",
@@ -4071,6 +4212,7 @@ function publicOrchestrationJob(job) {
     reflections: job.reflections || [],
     performance: job.performance || null,
     learning: job.learning || null,
+    contextUse: job.contextUse || job.capsule?.contextUse || null,
     report: job.report || "",
     error: job.error || "",
     llm: job.llm,
@@ -4103,6 +4245,7 @@ function taskQueueCodexRow(job) {
 function taskQueueOrchestrationRow(job) {
   const subtasks = job.subtasks || [];
   const completed = subtasks.filter((step) => step.status === "completed").length;
+  const sourceCount = Number(job.contextUse?.sourceCount || job.context?.sources?.length || 0);
   const current = subtasks.find((step) => ["running", "retrying"].includes(step.status))
     || subtasks.find((step) => step.status === "queued")
     || subtasks.find((step) => !["completed", "failed"].includes(step.status));
@@ -4116,7 +4259,7 @@ function taskQueueOrchestrationRow(job) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt || (finalJobStatuses.has(job.status) ? job.updatedAt : ""),
-    detail: `${completed}/${subtasks.length || 0}명 완료 · ${job.capsule?.staffing?.level || "standard"}`,
+    detail: `${completed}/${subtasks.length || 0}명 완료 · ${job.capsule?.staffing?.level || "standard"}${sourceCount ? ` · RAG ${sourceCount}` : ""}`,
     progress: current ? `${current.agentName || current.agentId} · ${current.label || "진행 중"} · ${serverJobStatusLabel(current.status)}` : (job.error || job.saved?.reason || ""),
     saved: job.saved || null,
     activeAgentIds: finalJobStatuses.has(job.status) ? [] : subtasks.filter((step) => ["running", "retrying", "queued"].includes(step.status)).map((step) => step.agentId).filter(Boolean),
@@ -4439,6 +4582,7 @@ async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], criti
   const agent = resolveAgent(subtask.agentId) || { name: subtask.agentName, role: subtask.role, work: "" };
   const previous = previousOutputs.length ? orchestrationOutputSummary(previousOutputs) : "이전 그룹 산출물 없음";
   const contextBlock = job.context?.promptBlock || "";
+  const contextUseBlock = formatContextUsePlan(job.contextUse || job.capsule?.contextUse || {});
   const handoffText = subtask.handoffFrom?.length
     ? subtask.handoffFrom.map((item) => `- ${item.agentName}/${item.label}`).join("\n")
     : "- 선행 인계 없음";
@@ -4449,6 +4593,8 @@ async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], criti
     "사용자 톤/스타일 프로필과 자동 Vault 참조를 우선 반영하되, 직접 관련 있는 내용만 사용한다.",
     "",
     contextBlock,
+    "",
+    contextUseBlock,
     "",
     "## 작업캡슐",
     JSON.stringify(job.capsule, null, 2),
@@ -4478,6 +4624,7 @@ async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], criti
     "## 출력 형식",
     "### 담당 해석",
     "### 산출물",
+    "### 근거 출처",
     "### 요미에게 인계할 메모",
     "",
     "고정 안내문이 아니라 이 요청에 맞춘 실제 결과만 작성한다."
@@ -4544,6 +4691,7 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
 
 async function buildYomiFinalReport(job) {
   const contextBlock = job.context?.promptBlock || "";
+  const contextUseBlock = formatContextUsePlan(job.contextUse || job.capsule?.contextUse || {});
   const prompt = [
     "너는 YOMI Office의 총괄 매니저 요미다.",
     "직원별 병렬 산출물을 하나의 최종 보고서로 취합한다.",
@@ -4552,6 +4700,8 @@ async function buildYomiFinalReport(job) {
     "사용자 톤/스타일 프로필을 지키고, 자동 Vault 참조에서 직접 관련 있는 기존 자산만 녹여낸다.",
     "",
     contextBlock,
+    "",
+    contextUseBlock,
     "",
     "## 작업캡슐",
     JSON.stringify(job.capsule, null, 2),
@@ -4577,6 +4727,7 @@ async function buildYomiFinalReport(job) {
     "## 직원별 핵심 산출물",
     "## 직원 간 인계와 재계획",
     "## 근거 출처",
+    "사용한 Vault 문서만 제목과 경로로 명시한다. 사용하지 않은 문서는 넣지 않는다.",
     "## 통합 결과",
     "## 리스크와 확인 필요 사항",
     "## 다음 행동"
@@ -4605,6 +4756,9 @@ async function buildYomiFinalReport(job) {
       formatHandoffLinks(job),
       "",
       formatOrchestrationReflections(job.reflections || []),
+      "",
+      "## 근거 출처",
+      ...(compactContextSources(job.contextUse?.sources || job.context?.sources || [], 5).map((item) => `- ${item.title} · ${item.displayPath || item.relPath}`)),
       "",
       "## 리스크와 확인 필요 사항",
       `- 최종 취합 Codex 호출 실패: ${message}`,
@@ -5083,8 +5237,10 @@ async function runOrchestrationJob(job) {
   job.status = "running";
   job.startedAt = new Date().toISOString();
   job.updatedAt = job.startedAt;
-  job.context = job.context || await buildPersonalContext(`${job.capsule?.normalizedTask || job.message || ""} ${job.capsule?.workType || ""}`, { limit: 5 });
-  appendJobLog(job, `자동 Vault 참조 ${job.context.sources.length}개와 톤 프로필을 적용했습니다.`, "archivist");
+  const contextQuery = job.capsule?.materialBrief?.ragQuery || `${job.capsule?.normalizedTask || job.message || ""} ${job.capsule?.workType || ""}`;
+  job.context = job.context || await buildPersonalContext(contextQuery, { limit: 5 });
+  const contextUse = attachContextToOrchestrationJob(job, job.context, contextQuery);
+  appendJobLog(job, `자동 Vault 참조 ${contextUse.sourceCount}개와 톤 프로필을 적용했습니다.`, "archivist");
   appendJobLog(job, "직원 병렬 실행을 시작했습니다.", "ceo");
   setOrchestrationRuntime(job, "직원 실행 시작", "running");
   const groups = new Map();
@@ -5150,7 +5306,7 @@ async function runOrchestrationJob(job) {
   }
 }
 
-function createOrchestrationJob(message, route, orchestration) {
+function createOrchestrationJob(message, route, orchestration, options = {}) {
   const job = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     mode: "parallel_worker_pool",
@@ -5168,12 +5324,17 @@ function createOrchestrationJob(message, route, orchestration) {
     subtasks: (orchestration.plan.subtasks || []).map((step) => ({ ...step, output: "", error: "", attempts: 0 })),
     handoffs: [],
     reflections: [],
+    context: options.context || null,
+    contextUse: null,
     report: "",
     error: "",
     saved: { ok: false, skipped: true, reason: "완료 후 재사용 가치가 있으면 Vault 50_Outputs에 자동 저장합니다." },
     llm: { provider: "dual-cli", model: "codex-default-claude-reasoning", used: false },
     logs: []
   };
+  if (options.context) {
+    attachContextToOrchestrationJob(job, options.context, options.contextQuery || orchestration.capsule?.materialBrief?.ragQuery || route.task || message);
+  }
   appendJobLog(job, "요미 작업이 큐에 등록되었습니다.", "ceo");
   orchestrationJobs.set(job.id, job);
   queueMicrotask(() => {
@@ -5278,19 +5439,20 @@ async function generateCodexConversation(message) {
 }
 
 async function generateClaudeConversation(message) {
-  const profile = await readStyleProfile();
+  const context = await buildPersonalContext(message, { limit: 4 });
   const prompt = [
     "너는 YOMI Office / 요미오피스에서 사용자가 명시적으로 호출한 Claude Code CLI다.",
     "사용자가 /cc 또는 /claude 명령을 썼을 때만 이 호출이 실행된다.",
     "한국어로 답하고, 요청한 산출물을 바로 제공한다.",
     "이 호출은 안전한 계획 모드다. 파일 수정, 삭제, Git 쓰기, 외부 전송 같은 상태 변경은 실행하지 말고 필요한 경우 확인 질문이나 제안으로만 남긴다.",
-    "사용자 톤/스타일 프로필을 지킨다.",
+    "사용자 톤/스타일 프로필을 지키고, 자동 Vault 참조가 직접 관련 있으면 답변에 반영한다.",
     "",
-    formatStyleProfilePrompt(profile),
+    context.promptBlock,
     "",
     `사용자 요청: ${message}`
   ].join("\n");
-  return await runClaudeText(prompt, "Claude 직접 호출");
+  const generated = await runClaudeText(prompt, "Claude 직접 호출");
+  return { ...generated, context: publicContextSummary(context) };
 }
 
 async function generateCodexVaultAnswer(message, sources) {
@@ -5363,8 +5525,9 @@ async function runChatMessageCore({ message }) {
       intent: "claude",
       modeLabel: "Claude 직접 호출",
       reply: generated.text,
-      sources: [],
+      sources: generated.context?.sources || [],
       llm: { provider: "claude-code", model: "manual-plan", used: true, commandLabel: generated.commandLabel },
+      context: generated.context,
       capture: { ok: false, skipped: true, reason: "Claude 직접 호출 결과는 자동 저장하지 않았습니다" }
     };
   }
@@ -5380,7 +5543,28 @@ async function runChatMessageCore({ message }) {
       };
     }
     const orchestration = createYomiOrchestration(message, route);
-    const job = createOrchestrationJob(message, route, orchestration);
+    const contextQuery = orchestration.capsule?.materialBrief?.ragQuery || `${route.task || message} ${orchestration.capsule?.workType || ""}`;
+    const context = await buildPersonalContext(contextQuery, { limit: 5 });
+    const contextUse = buildContextUsePlan(context, contextQuery);
+    orchestration.capsule = {
+      ...orchestration.capsule,
+      contextUse,
+      materialBrief: {
+        ...(orchestration.capsule.materialBrief || {}),
+        ragSources: contextUse.sources.map((item) => ({
+          rank: item.rank,
+          title: item.title,
+          relPath: item.relPath,
+          displayPath: item.displayPath,
+          score: item.score
+        }))
+      }
+    };
+    orchestration.plan = {
+      ...orchestration.plan,
+      contextUse
+    };
+    const job = createOrchestrationJob(message, route, orchestration, { context, contextQuery });
     const workflowRun = workflowRunFromYomiPlan(orchestration.plan);
     return {
       intent: "office",
@@ -5392,7 +5576,8 @@ async function runChatMessageCore({ message }) {
         saved: { ok: false, skipped: true, reason: "완료 후 재사용 가치가 있으면 Vault 50_Outputs에 자동 저장합니다." },
         workflowRun
       },
-      sources: [],
+      sources: context.sources || [],
+      context: publicContextSummary(context),
       llm: { provider: "dual-cli", model: "codex-default-claude-reasoning", used: !orchestration.plan.questionRequired }
     };
   }
