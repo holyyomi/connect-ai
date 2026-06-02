@@ -2564,7 +2564,7 @@ function classifyVaultSave(task, report, options = {}) {
       title: titleFromReport(task, report, { ...options, title: "검토 필요 산출물" })
     };
   }
-  return { quality: options.quality || "candidate", rag: options.rag !== false, quarantine: false, reason: "", title: titleFromReport(task, report, options) };
+  return { quality: options.quality || "candidate", rag: options.rag === true, quarantine: false, reason: "", title: titleFromReport(task, report, options) };
 }
 
 async function saveReportToVault(task, report, assigned, options = {}) {
@@ -2582,22 +2582,34 @@ async function saveReportToVault(task, report, assigned, options = {}) {
   const fullPath = path.join(outDir, `${stamp}-${slugify(saveClass.title || task)}.md`);
   const relPath = path.relative(vaultRoot, fullPath).replace(/\\/g, "/");
   const tags = Array.isArray(options.tags) && options.tags.length ? options.tags : ["yomi-office", "yomi-ai", "personal-office", "auto-asset"];
-  const finalTags = [...new Set([...tags, saveClass.quality, ...(saveClass.quarantine ? ["quarantine", "no-rag"] : [])])];
+  const review = options.assetReview && typeof options.assetReview === "object" ? options.assetReview : null;
+  const finalTags = [...new Set([
+    ...tags,
+    saveClass.quality,
+    ...(saveClass.rag ? ["rag-ready", "verified"] : ["needs-review"]),
+    ...(saveClass.quarantine ? ["quarantine", "no-rag"] : [])
+  ])];
   const frontmatter = [
     "---",
     `type: ${yamlString(options.type || "yomi_office_report")}`,
     `title: ${yamlString(saveClass.title)}`,
     `created: ${now.toISOString()}`,
+    `reviewed: ${now.toISOString()}`,
     `task: ${yamlString(task)}`,
     `quality: ${yamlString(saveClass.quality)}`,
+    review ? `quality_score: ${Number(review.score || 0)}` : "",
+    review ? `quality_grade: ${yamlString(review.grade || scoreGrade(review.score || 0))}` : "",
+    review ? `quality_reason: ${yamlString(review.reason || saveClass.reason || "")}` : "",
+    review?.issues?.length ? `quality_issues: [${review.issues.slice(0, 8).map(yamlString).join(", ")}]` : "",
     `rag: ${saveClass.rag ? "true" : "false"}`,
+    `rag_ready: ${saveClass.rag ? "true" : "false"}`,
     saveClass.reason ? `quarantine_reason: ${yamlString(saveClass.reason)}` : "",
     `agents: [${assigned.map((agent) => yamlString(agent.id)).join(", ")}]`,
     `tags: [${finalTags.map(yamlString).join(", ")}]`,
     "---"
   ].filter(Boolean).join("\n");
   await writeFile(fullPath, `${frontmatter}\n\n${report}\n`, "utf8");
-  return { ok: true, relPath, fullPath, quality: saveClass.quality, rag: saveClass.rag, quarantine: saveClass.quarantine, reason: saveClass.reason || "" };
+  return { ok: true, relPath, fullPath, quality: saveClass.quality, rag: saveClass.rag, quarantine: saveClass.quarantine, reason: saveClass.reason || "", assetReview: review };
 }
 
 async function resolveVaultMarkdownDocument(relPath) {
@@ -3584,7 +3596,7 @@ async function runOfficeTask(task) {
     "- 필요한 산출물 형식을 정하고 이어서 실행합니다.",
     "- 저장 가치가 있는 결과는 Vault에 남깁니다."
   ].join("\n");
-  const assessment = assessReusableOrchestration({
+  const assessmentJob = {
     report,
     capsule: {
       originalInput: task,
@@ -3595,11 +3607,20 @@ async function runOfficeTask(task) {
       status: ["completed", "reworked"].includes(step.status) ? "completed" : "failed"
     })),
     plan: {}
-  });
-  let saved = { ok: false, skipped: true, reason: assessment.reason };
+  };
+  const assessment = assessReusableOrchestration(assessmentJob);
+  let saved = { ok: false, skipped: true, reason: assessment.reason, quality: assessment.quality, rag: false, assetReview: assessment };
   if (assessment.shouldSave) {
-    saved = await saveReportToVault(task, report, assigned);
-    if (saved?.ok) saved.reason = assessment.reason;
+    saved = await saveReportToVault(task, report, assigned, {
+      quality: assessment.quality,
+      rag: assessment.rag,
+      assetReview: assessment,
+      tags: ["yomi-office", "yomi-ai", "personal-office", "auto-asset", "legacy-workflow", assessment.ragReady ? "rag-ready" : "review-candidate"]
+    });
+    if (saved?.ok) {
+      saved.reason = assessment.reason;
+      saved.assetReview = assessment;
+    }
   }
   return { report, assigned, workflowRun, saved, llm: { provider: "codex-cli", model: "exec", used: true } };
 }
@@ -4278,6 +4299,7 @@ function publicOrchestrationJob(job) {
     reflections: job.reflections || [],
     performance: job.performance || null,
     learning: job.learning || null,
+    assetReview: job.assetReview || job.saved?.assetReview || null,
     contextUse: job.contextUse || job.capsule?.contextUse || null,
     report: job.report || "",
     error: job.error || "",
@@ -4855,6 +4877,75 @@ function scoreGrade(score) {
   return "F";
 }
 
+function assetSignal(condition, label, points, detail = "") {
+  return {
+    label,
+    points: condition ? points : 0,
+    max: points,
+    passed: Boolean(condition),
+    detail
+  };
+}
+
+function buildAssetQualityReview(job) {
+  const subtasks = job.subtasks || [];
+  const completed = subtasks.filter((step) => step.status === "completed");
+  const failed = subtasks.filter((step) => step.status === "failed");
+  const reportText = String(job.report || "").trim();
+  const reportLength = reportText.length;
+  const input = `${job.capsule?.originalInput || ""} ${job.capsule?.normalizedTask || ""}`;
+  const sourceCount = job.context?.sources?.length || 0;
+  const criteriaCount = job.capsule?.completionCriteria?.length || 0;
+  const staffingLevel = job.capsule?.staffing?.level || "";
+  const durableAssetKeyword = /(보고서|전략|자료|초안|문서|콘텐츠|기획안|분석|조사|자산|저장|매뉴얼|가이드|템플릿|로드맵|프로세스|정책|포트폴리오|자동화)/i.test(input);
+  const hasSourceSection = /근거\s*출처|RAG\s*근거|Vault\s*참조|참고\s*자료/i.test(reportText);
+  const hasActionSection = /다음\s*(액션|단계)|실행\s*계획|우선순위|체크리스트|To-?do/i.test(reportText);
+  const hasRetrospectiveSection = /회고|보완|리스크|한계|검수|평가/i.test(reportText);
+  const hasConcreteOutput = /##\s*(산출물|최종|결론|초안|전략|계획|보고서)|#\s+.+/i.test(reportText);
+  const completionRatio = subtasks.length ? completed.length / subtasks.length : 0;
+  const signals = [
+    assetSignal(reportLength >= 520, "충분한 산출물 분량", reportLength >= 1200 ? 18 : 14, `${reportLength}자`),
+    assetSignal(completionRatio >= 1 && completed.length > 0 && failed.length === 0, "직원 실행 완료", 18, `${completed.length}/${subtasks.length || 0} 완료`),
+    assetSignal(criteriaCount >= 2, "완료 기준 명확성", 12, `${criteriaCount}개 기준`),
+    assetSignal(durableAssetKeyword || staffingLevel === "deep", "재사용 가능한 업무 유형", 16, job.capsule?.workType || "general_work"),
+    assetSignal(hasConcreteOutput, "구체 산출물 포함", 12),
+    assetSignal(sourceCount >= 2 && hasSourceSection, "근거 출처 연결", 14, `${sourceCount}개 Vault 근거`),
+    assetSignal(hasActionSection, "다음 실행 액션 포함", 8),
+    assetSignal(hasRetrospectiveSection || job.reflections?.length, "검수/회고 포함", 8, `${job.reflections?.length || 0}회 반성`)
+  ];
+  const earnedPoints = signals.reduce((sum, item) => sum + item.points, 0);
+  const maxPoints = signals.reduce((sum, item) => sum + item.max, 0) || 1;
+  const score = clampScore((earnedPoints / maxPoints) * 100);
+  const issues = [];
+  if (job.plan?.questionRequired || job.capsule?.needsQuestion) issues.push("사용자 확인이 필요한 상태입니다.");
+  if (!reportText) issues.push("최종 보고서가 없습니다.");
+  if (reportLength < 520) issues.push("재사용 자산으로 보기엔 보고서 분량이 부족합니다.");
+  if (failed.length) issues.push(`실패한 직원 산출물 ${failed.length}개가 있습니다.`);
+  if (isTrivialAutoSaveInput(input)) issues.push("단발성 추천/잡담으로 판단됩니다.");
+  if (!durableAssetKeyword && staffingLevel !== "deep" && reportLength < 1200) issues.push("반복 활용할 업무 유형 신호가 약합니다.");
+  if (!hasConcreteOutput) issues.push("구체 산출물 섹션이 부족합니다.");
+  if (sourceCount && !hasSourceSection) issues.push("Vault 근거를 사용했지만 근거 출처 섹션이 명확하지 않습니다.");
+  if (sourceCount < 2 && /조사|분석|전략|트렌드|자료|리서치/i.test(input)) issues.push("리서치/전략 업무인데 연결된 근거가 부족합니다.");
+  if (!hasActionSection) issues.push("다음 실행 액션이 부족합니다.");
+  const shouldSave = score >= 62 && !issues.some((issue) => /확인|보고서가 없습니다|실패한 직원|단발성/.test(issue));
+  const ragReady = shouldSave && score >= 82 && !issues.some((issue) => /근거|출처|분량|구체 산출물/.test(issue));
+  return {
+    score,
+    grade: scoreGrade(score),
+    shouldSave,
+    ragReady,
+    quality: ragReady ? "verified" : shouldSave ? "candidate" : "quarantine",
+    rag: ragReady,
+    reason: ragReady
+      ? "자산화 품질 기준과 RAG 포함 기준을 모두 통과했습니다."
+      : shouldSave
+        ? "재사용 후보로 저장하되 RAG에는 검토 후 포함합니다."
+        : "자동 자산화 기준을 통과하지 못했습니다.",
+    issues,
+    signals
+  };
+}
+
 function defaultPerformanceLog() {
   return { records: [] };
 }
@@ -4874,6 +4965,7 @@ function normalizePerformanceRecord(record = {}) {
     metrics: record.metrics && typeof record.metrics === "object" ? record.metrics : {},
     rubric: Array.isArray(record.rubric) ? record.rubric : [],
     retrospective: record.retrospective && typeof record.retrospective === "object" ? record.retrospective : {},
+    assetReview: record.assetReview && typeof record.assetReview === "object" ? record.assetReview : null,
     savedRelPath: String(record.savedRelPath || ""),
     portfolioRelPath: String(record.portfolioRelPath || ""),
     sources: Array.isArray(record.sources) ? record.sources.slice(0, 8) : []
@@ -4930,6 +5022,7 @@ function buildJobQualityEvaluation(job) {
   const criteriaCount = job.capsule?.completionCriteria?.length || 0;
   const reflectionCount = job.reflections?.length || 0;
   const saved = job.saved?.ok === true;
+  const assetReview = job.assetReview || buildAssetQualityReview(job);
   const completionRatio = subtasks.length ? completed.length / subtasks.length : 0;
   const rubric = [
     {
@@ -4965,8 +5058,8 @@ function buildJobQualityEvaluation(job) {
     {
       id: "assetization",
       label: "성과기록/자산화",
-      score: clampScore((saved ? 65 : 25) + (reportLength >= 900 ? 20 : reportLength >= 450 ? 10 : 0) + (job.saved?.reason ? 15 : 0)),
-      note: saved ? `Vault 저장: ${job.saved.relPath}` : job.saved?.reason || "저장 대기"
+      score: clampScore((saved ? 35 : 12) + Math.min(45, Math.round(Number(assetReview.score || 0) * 0.45)) + (assetReview.ragReady ? 20 : assetReview.shouldSave ? 10 : 0)),
+      note: saved ? `Vault 저장: ${job.saved.relPath} · 품질 ${assetReview.score || 0}점` : job.saved?.reason || assetReview.reason || "저장 대기"
     }
   ];
   const score = clampScore(rubric.reduce((sum, item) => sum + item.score, 0) / rubric.length);
@@ -4985,7 +5078,9 @@ function buildJobQualityEvaluation(job) {
       completedCount: completed.length,
       failedCount: failed.length,
       reflectionCount,
-      saved
+      saved,
+      assetReviewScore: assetReview.score || 0,
+      ragReady: Boolean(assetReview.ragReady)
     }
   };
 }
@@ -5030,6 +5125,17 @@ function formatPerformanceRecordMarkdown(record, job) {
     "",
     "## 성과 메트릭",
     ...Object.entries(record.metrics || {}).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## 자산화 품질 게이트",
+    record.assetReview
+      ? [
+          `- 저장 판단: ${record.assetReview.shouldSave ? "save" : "skip"}`,
+          `- RAG 포함: ${record.assetReview.ragReady ? "yes" : "no"}`,
+          `- 품질: ${record.assetReview.score || 0}/100 (${record.assetReview.grade || ""})`,
+          `- 사유: ${record.assetReview.reason || ""}`,
+          ...(record.assetReview.issues || []).map((item) => `- 이슈: ${item}`)
+        ].join("\n")
+      : "- 기록 없음",
     "",
     "## 회고",
     "### 잘된 점",
@@ -5100,6 +5206,7 @@ async function recordJobPerformance(job) {
     metrics: evaluation.metrics,
     rubric: evaluation.rubric,
     retrospective: buildJobRetrospective(job, evaluation),
+    assetReview: job.assetReview || buildAssetQualityReview(job),
     savedRelPath: job.saved?.ok ? job.saved.relPath : "",
     sources: (job.context?.sources || []).map((item) => ({ title: item.title || "", relPath: item.relPath || "", displayPath: item.displayPath || "" }))
   });
@@ -5200,34 +5307,20 @@ async function recordLearningFromOrchestration(job) {
 }
 
 function assessReusableOrchestration(job) {
-  if (job.plan?.questionRequired || job.capsule?.needsQuestion) {
-    return { shouldSave: false, reason: "사용자 확인이 필요한 작업이라 자동 저장하지 않았습니다." };
+  const review = buildAssetQualityReview(job);
+  job.assetReview = review;
+  if (!review.shouldSave) {
+    return {
+      ...review,
+      shouldSave: false,
+      reason: review.issues.length ? `자동 저장 제외: ${review.issues[0]}` : review.reason
+    };
   }
-  const reportText = String(job.report || "");
-  const reportLength = reportText.trim().length;
-  if (!job.report || reportLength < 320) {
-    return { shouldSave: false, reason: "재사용 가능한 보고서 분량이 부족해 자동 저장하지 않았습니다." };
-  }
-  const completed = (job.subtasks || []).filter((step) => step.status === "completed");
-  const failed = (job.subtasks || []).filter((step) => step.status === "failed");
-  if (failed.length) {
-    return { shouldSave: false, reason: "실패한 직원 산출물이 있어 자동 저장하지 않았습니다." };
-  }
-  const input = `${job.capsule?.originalInput || ""} ${job.capsule?.normalizedTask || ""}`;
-  if (isTrivialAutoSaveInput(input)) {
-    return { shouldSave: false, reason: "단발성 추천/잡담으로 판단해 자동 저장하지 않았습니다." };
-  }
-  const durableAssetKeyword = /(보고서|전략|자료|초안|문서|콘텐츠|기획안|분석|조사|자산|저장|매뉴얼|가이드|템플릿|로드맵|프로세스|정책)/i.test(input);
-  const staffingLevel = job.capsule?.staffing?.level || "";
-  if (
-    (durableAssetKeyword && reportLength >= 520) ||
-    (completed.length >= 2 && reportLength >= 720) ||
-    reportLength >= 1200 ||
-    (staffingLevel === "deep" && reportLength >= 640)
-  ) {
-    return { shouldSave: true, reason: "최종 보고서와 직원 산출물이 재사용 가치 기준을 충족했습니다." };
-  }
-  return { shouldSave: false, reason: "짧은 단발성 업무로 판단해 자동 저장하지 않았습니다." };
+  return {
+    ...review,
+    shouldSave: true,
+    reason: review.reason
+  };
 }
 
 function formatReusableOrchestrationMarkdown(job) {
@@ -5254,6 +5347,18 @@ function formatReusableOrchestrationMarkdown(job) {
     "",
     formatOrchestrationReflections(job.reflections || []),
     "",
+    "## 자산화 품질 게이트",
+    "",
+    job.assetReview
+      ? [
+          `- 저장 판단: ${job.assetReview.shouldSave ? "save" : "skip"}`,
+          `- RAG 포함: ${job.assetReview.ragReady ? "yes" : "no"}`,
+          `- 품질: ${job.assetReview.score}/100 (${job.assetReview.grade})`,
+          `- 사유: ${job.assetReview.reason}`,
+          ...(job.assetReview.issues || []).map((item) => `- 이슈: ${item}`)
+        ].join("\n")
+      : "품질 게이트 기록 없음",
+    "",
     "## 성과 평가",
     "",
     job.performance
@@ -5265,7 +5370,7 @@ function formatReusableOrchestrationMarkdown(job) {
 async function saveReusableOrchestrationAssets(job) {
   const assessment = assessReusableOrchestration(job);
   if (!assessment.shouldSave) {
-    job.saved = { ok: false, skipped: true, reason: assessment.reason };
+    job.saved = { ok: false, skipped: true, reason: assessment.reason, quality: assessment.quality, rag: false, assetReview: assessment };
     return job.saved;
   }
   const assigned = Array.from(new Set((job.subtasks || []).map((step) => step.agentId).filter(Boolean)))
@@ -5278,10 +5383,16 @@ async function saveReusableOrchestrationAssets(job) {
     assigned,
     {
       type: "yomi_office_orchestration",
-      tags: ["yomi-office", "yomi-ai", "personal-office", "auto-asset", "orchestration", workTag]
+      quality: assessment.quality,
+      rag: assessment.rag,
+      assetReview: assessment,
+      tags: ["yomi-office", "yomi-ai", "personal-office", "auto-asset", "orchestration", workTag, assessment.ragReady ? "rag-ready" : "review-candidate"]
     }
   );
-  if (job.saved?.ok) job.saved.reason = assessment.reason;
+  if (job.saved?.ok) {
+    job.saved.reason = assessment.reason;
+    job.saved.assetReview = assessment;
+  }
   return job.saved;
 }
 
@@ -5394,6 +5505,7 @@ function createOrchestrationJob(message, route, orchestration, options = {}) {
     contextUse: null,
     report: "",
     error: "",
+    assetReview: null,
     saved: { ok: false, skipped: true, reason: "완료 후 재사용 가치가 있으면 Vault 50_Outputs에 자동 저장합니다." },
     llm: { provider: "dual-cli", model: "codex-default-claude-reasoning", used: false },
     logs: []

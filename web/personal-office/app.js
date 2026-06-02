@@ -1626,6 +1626,7 @@ function renderPortfolioList(state = {}) {
   nodes.portfolioList.innerHTML = records.slice(0, 10).map((record) => {
     const rubric = Array.isArray(record.rubric) ? record.rubric.slice(0, 6) : [];
     const sources = Array.isArray(record.sources) ? record.sources.slice(0, 4) : [];
+    const assetReview = record.assetReview && typeof record.assetReview === "object" ? record.assetReview : null;
     return `
       <details class="portfolio-item">
         <summary>
@@ -1637,6 +1638,8 @@ function renderPortfolioList(state = {}) {
           <small>작업 ID: ${escapeHtml(record.jobId || "")}</small>
           <small>${escapeHtml(record.portfolioRelPath || record.savedRelPath || "Vault 포트폴리오 저장 대기")}</small>
           ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
+          ${assetReview ? `<div class="portfolio-rubric"><span>자산화 ${Number(assetReview.score || 0)}점</span><span>저장 ${assetReview.shouldSave ? "통과" : "제외"}</span><span>RAG ${assetReview.ragReady ? "포함" : "검토"}</span></div>` : ""}
+          ${assetReview?.reason ? `<small>${escapeHtml(assetReview.reason)}</small>` : ""}
           ${rubric.length ? `<div class="portfolio-rubric">${rubric.map((item) => `<span>${escapeHtml(item.label || item.id || "평가")} ${Number(item.score || 0)}점</span>`).join("")}</div>` : ""}
           ${sources.length ? `<div class="portfolio-sources">${sources.map((item) => `<small>${escapeHtml(item.displayPath || item.relPath || item.title || "")}</small>`).join("")}</div>` : ""}
         </div>
