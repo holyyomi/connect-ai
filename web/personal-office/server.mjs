@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1338,16 +1338,29 @@ async function searchRagIndex(query, limit = 6, options = {}) {
     };
   }).filter((row) => row.score > 0);
   scored.sort((a, b) => b.score - a.score);
-  const deduped = [];
-  const seen = new Set();
-  for (const row of scored) {
-    const key = `${row.relPath}:${row.chunkIndex}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(publicRagResult(row, mode));
-    if (deduped.length >= Math.max(1, Math.min(20, Number(limit || 6)))) break;
-  }
+  const deduped = selectDiverseRagRows(scored, limit).map((row) => publicRagResult(row, mode));
   return { ok: true, connected: true, query: cleanQuery, mode, embedding: index.embedding, stats: index.stats, results: deduped, index };
+}
+
+function selectDiverseRagRows(rows = [], limit = 6) {
+  const max = Math.max(1, Math.min(20, Number(limit || 6)));
+  const selected = [];
+  const selectedChunks = new Set();
+  const selectedDocs = new Set();
+  const addRow = (row) => {
+    const chunkKey = `${row.relPath || ""}:${row.chunkIndex ?? ""}`;
+    if (selectedChunks.has(chunkKey)) return false;
+    selectedChunks.add(chunkKey);
+    selectedDocs.add(String(row.relPath || chunkKey));
+    selected.push(row);
+    return selected.length >= max;
+  };
+  for (const row of rows) {
+    const docKey = String(row.relPath || `${row.chunkIndex ?? ""}`);
+    if (selectedDocs.has(docKey)) continue;
+    if (addRow(row)) return selected;
+  }
+  return selected;
 }
 
 function publicRagSearchResponse(search = {}) {
@@ -1785,7 +1798,8 @@ function publicContextSummary(context = {}) {
 }
 
 function compactContextSources(sources = [], limit = 5) {
-  return (Array.isArray(sources) ? sources : []).slice(0, Math.max(0, Math.min(8, Number(limit) || 5))).map((item, index) => ({
+  const items = selectUniqueSourceDocuments(sources, limit);
+  return items.map((item, index) => ({
     rank: index + 1,
     title: String(item.title || "문서"),
     relPath: String(item.relPath || ""),
@@ -1793,6 +1807,29 @@ function compactContextSources(sources = [], limit = 5) {
     score: Number(item.score || 0),
     excerpt: compactLine(item.excerpt || "", 420)
   }));
+}
+
+function selectUniqueSourceDocuments(sources = [], limit = 5) {
+  const items = Array.isArray(sources) ? sources : [];
+  const max = Math.max(0, Math.min(8, Number(limit) || 5));
+  const selected = [];
+  const seenDocs = new Set();
+  const seenChunks = new Set();
+  const addItem = (item) => {
+    const relPath = String(item.relPath || "");
+    const chunkKey = `${relPath}:${item.chunkIndex ?? item.excerpt ?? ""}`;
+    if (seenChunks.has(chunkKey)) return false;
+    seenChunks.add(chunkKey);
+    seenDocs.add(relPath || chunkKey);
+    selected.push(item);
+    return selected.length >= max;
+  };
+  for (const item of items) {
+    const relPath = String(item.relPath || "");
+    if (relPath && seenDocs.has(relPath)) continue;
+    if (addItem(item)) break;
+  }
+  return selected;
 }
 
 function buildContextUsePlan(context = {}, query = "") {
@@ -1904,9 +1941,10 @@ async function buildPersonalContext(query, options = {}) {
   const rag = await searchRagIndex(query, options.limit || 4);
   const fallbackSearch = rag.results?.length ? null : await searchVaultMarkdown(query, options.limit || 4);
   const search = rag.results?.length ? rag : fallbackSearch;
-  const sources = (search?.results || [])
-    .filter((item) => !isLowValueVaultOverviewDoc(item))
-    .slice(0, Math.max(0, Math.min(8, Number(options.limit || 4))));
+  const sources = selectUniqueSourceDocuments(
+    (search?.results || []).filter((item) => !isLowValueVaultOverviewDoc(item)),
+    options.limit || 4
+  );
   return {
     profile,
     vaultConnected: Boolean(search?.connected),
@@ -2335,6 +2373,20 @@ function stripAnsi(text) {
   return String(text || "").replace(/\u001b\[[0-9;]*m/g, "").replace(/\r\n/g, "\n").trim();
 }
 
+function writePromptToChild(child, prompt, result) {
+  if (!child?.stdin) return;
+  child.stdin.on("error", (error) => {
+    if (result && !result.error) result.error = error.message;
+  });
+  try {
+    child.stdin.write(String(prompt || ""), "utf8");
+    child.stdin.end();
+  } catch (error) {
+    if (result) result.error = error instanceof Error ? error.message : String(error);
+    try { child.stdin.end(); } catch { /* ignore */ }
+  }
+}
+
 function compactCliFailureDetail(text, maxLength = 320) {
   const raw = stripAnsi(text || "");
   if (!raw) return "";
@@ -2378,16 +2430,20 @@ async function runCodexPrompt(prompt, options = {}) {
   const command = codexCommand();
   const sandbox = options.sandbox || "read-only";
   const timeoutMs = Number(options.timeoutMs || codexPromptTimeoutMs);
+  const outputDir = path.join(runtimeRoot, "cli");
+  await mkdir(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, `codex-last-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);
   return await new Promise((resolve) => {
     const result = {
       ok: false,
-      commandLabel: `${command} exec --sandbox ${sandbox}`,
+      commandLabel: `${command} exec --sandbox ${sandbox} --output-last-message <runtime> - <stdin>`,
       output: "",
       stderr: "",
       exitCode: null,
       error: ""
     };
-    const child = spawn(command, ["exec", "--sandbox", sandbox, String(prompt || "")], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, ["exec", "--sandbox", sandbox, "--output-last-message", outputPath, "-"], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    writePromptToChild(child, prompt, result);
     const timer = setTimeout(() => {
       result.error = `timeout after ${timeoutMs}ms`;
       child.kill();
@@ -2399,13 +2455,21 @@ async function runCodexPrompt(prompt, options = {}) {
       result.error = error.message;
       result.output = stripAnsi(result.output);
       result.stderr = stripAnsi(result.stderr);
+      rm(outputPath, { force: true }).catch(() => {});
       resolve(result);
     });
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       clearTimeout(timer);
       result.exitCode = code;
       result.output = stripAnsi(result.output);
       result.stderr = stripAnsi(result.stderr);
+      try {
+        const lastMessage = stripAnsi(await readFile(outputPath, "utf8"));
+        if (lastMessage) result.output = lastMessage;
+      } catch {
+        // If the CLI did not create the file, keep stdout as the fallback output.
+      }
+      await rm(outputPath, { force: true }).catch(() => {});
       result.ok = code === 0 && !result.error;
       resolve(result);
     });
@@ -2417,6 +2481,8 @@ async function runClaudePrompt(prompt, options = {}) {
   const timeoutMs = Number(options.timeoutMs || claudePromptTimeoutMs);
   const args = [
     "--print",
+    "--input-format",
+    "text",
     "--output-format",
     "text",
     "--permission-mode",
@@ -2427,17 +2493,17 @@ async function runClaudePrompt(prompt, options = {}) {
   ];
   const model = String(process.env.YOMI_AI_CLAUDE_MODEL || "").trim();
   if (model) args.push("--model", model);
-  args.push(String(prompt || ""));
   return await new Promise((resolve) => {
     const result = {
       ok: false,
-      commandLabel: `${commandSpec.label} --print --permission-mode plan`,
+      commandLabel: `${commandSpec.label} --print --input-format text --permission-mode plan <stdin>`,
       output: "",
       stderr: "",
       exitCode: null,
       error: ""
     };
-    const child = spawn(commandSpec.command, [...commandSpec.argsPrefix, ...args], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(commandSpec.command, [...commandSpec.argsPrefix, ...args], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    writePromptToChild(child, prompt, result);
     const timer = setTimeout(() => {
       result.error = `timeout after ${timeoutMs}ms`;
       child.kill();
