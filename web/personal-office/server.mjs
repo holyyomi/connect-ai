@@ -4429,7 +4429,10 @@ function buildTaskQueueState(limit = 20) {
   ];
   const mergedRows = mergeTaskQueueRows(currentRows, readTaskQueueHistorySync().jobs);
   writeTaskQueueHistorySync(mergedRows);
-  const jobs = mergedRows.slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  const reviewDecisionsByKey = taskQueueReviewDecisionMapSync();
+  const jobs = mergedRows
+    .slice(0, Math.max(1, Math.min(50, Number(limit) || 20)))
+    .map((job) => attachTaskQueueReviewDecision(job, reviewDecisionsByKey));
   const running = jobs.filter((job) => taskQueueActiveStatuses.has(job.status));
   const completed = jobs.filter((job) => job.status === "completed");
   const failed = jobs.filter((job) => ["failed", "cancelled"].includes(job.status));
@@ -4491,8 +4494,8 @@ function publicTaskQueueJob(type, job) {
 
 function publicResolvedTaskQueueJob(resolved) {
   if (!resolved) return null;
-  if (resolved.restored) return resolved.row;
-  return publicTaskQueueJob(resolved.type, resolved.job);
+  if (resolved.restored) return attachTaskQueueReviewDecision(resolved.row);
+  return attachTaskQueueReviewDecision(publicTaskQueueJob(resolved.type, resolved.job));
 }
 
 function cancelTaskQueueJob(input = {}) {
@@ -5577,6 +5580,42 @@ function normalizeReviewDecisionsState(input = {}) {
 async function readReviewDecisionsState() {
   if (!(await exists(reviewDecisionsPath))) return defaultReviewDecisionsState();
   return normalizeReviewDecisionsState(await readJson(reviewDecisionsPath, defaultReviewDecisionsState()));
+}
+
+function readReviewDecisionsStateSync() {
+  try {
+    if (!existsSync(reviewDecisionsPath)) return defaultReviewDecisionsState();
+    return normalizeReviewDecisionsState(JSON.parse(readFileSync(reviewDecisionsPath, "utf8")));
+  } catch {
+    return defaultReviewDecisionsState();
+  }
+}
+
+function publicTaskQueueReviewDecision(decision = null) {
+  if (!decision?.id || !decision.status || decision.status === "pending") return null;
+  return {
+    key: decision.key,
+    type: decision.type,
+    id: decision.id,
+    status: decision.status,
+    statusLabel: decision.statusLabel,
+    note: decision.note,
+    decidedAt: decision.decidedAt,
+    updatedAt: decision.updatedAt,
+    editSummary: decision.edit?.diff?.summary || ""
+  };
+}
+
+function taskQueueReviewDecisionMapSync() {
+  return new Map(readReviewDecisionsStateSync().decisions.map((decision) => [decision.key, decision]));
+}
+
+function attachTaskQueueReviewDecision(row = {}, decisionsByKey = taskQueueReviewDecisionMapSync()) {
+  const decision = decisionsByKey.get(reviewDecisionKey(row.type || "office", row.id || ""));
+  return {
+    ...row,
+    reviewDecision: publicTaskQueueReviewDecision(decision)
+  };
 }
 
 async function writeReviewDecisionsState(state) {

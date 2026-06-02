@@ -1989,7 +1989,9 @@ function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = ne
   `;
 }
 
-function reviewSkillCard(candidate = {}) {
+function reviewSkillCard(candidate = {}, decisionsByKey = new Map()) {
+  const decision = decisionsByKey.get(`skill:${candidate.id || ""}`);
+  const decisionLabel = reviewDecisionLabel(decision);
   return `
     <article class="review-item skill">
       <div class="review-item-head">
@@ -2003,16 +2005,25 @@ function reviewSkillCard(candidate = {}) {
       </div>
       ${candidate.description ? `<p>${escapeHtml(candidate.description)}</p>` : ""}
       ${candidate.evidencePreview ? `<small>${escapeHtml(candidate.evidencePreview)}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       <div class="review-actions">
         <button type="button" data-review-open="chat">대화 패널</button>
-        <button type="button" disabled title="현재 스킬 적용은 대화 탭의 후보 목록에서 처리합니다.">적용 준비</button>
+        <button type="button" data-review-skill-action="approve" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
+        <button type="button" data-review-skill-action="dismiss" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">숨김</button>
       </div>
     </article>
   `;
 }
 
-function reviewPortfolioCard(record = {}) {
+function reviewPortfolioId(record = {}) {
+  return String(record.id || record.recordId || record.jobId || "").trim();
+}
+
+function reviewPortfolioCard(record = {}, decisionsByKey = new Map()) {
   const assetReview = record.assetReview && typeof record.assetReview === "object" ? record.assetReview : null;
+  const portfolioId = reviewPortfolioId(record);
+  const decision = decisionsByKey.get(`portfolio:${portfolioId}`);
+  const decisionLabel = reviewDecisionLabel(decision);
   return `
     <article class="review-item portfolio">
       <div class="review-item-head">
@@ -2026,9 +2037,13 @@ function reviewPortfolioCard(record = {}) {
       </div>
       ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
       ${assetReview?.reason ? `<small>${escapeHtml(assetReview.reason)}</small>` : ""}
+      ${record.portfolioRelPath || record.savedRelPath ? `<small>${escapeHtml(record.portfolioRelPath || record.savedRelPath)}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">자산 검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       <div class="review-actions">
         <button type="button" data-review-open="vault">저장소</button>
-        <button type="button" disabled title="다음 단계에서 포트폴리오 승인 상태와 연결됩니다.">자산 승인 준비</button>
+        <button type="button" data-review-portfolio-action="approve" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">자산 승인</button>
+        <button type="button" data-review-portfolio-action="revision" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">보완 필요</button>
+        <button type="button" data-review-portfolio-action="reject" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">반려</button>
       </div>
     </article>
   `;
@@ -2065,9 +2080,9 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   if (nodes.reviewCompletedStatus) nodes.reviewCompletedStatus.textContent = completedJobs.length ? `${completedJobs.length}건` : "대기";
   if (nodes.reviewCompletedList) nodes.reviewCompletedList.innerHTML = completedJobs.length ? completedJobs.map((job) => reviewJobCard(job, recordsByJobId, decisionsByKey)).join("") : reviewEmpty("완료된 작업 기록이 없습니다.");
   if (nodes.reviewSkillStatus) nodes.reviewSkillStatus.textContent = pendingSkills.length ? `${pendingSkills.length}개` : "대기";
-  if (nodes.reviewSkillList) nodes.reviewSkillList.innerHTML = pendingSkills.length ? pendingSkills.map(reviewSkillCard).join("") : reviewEmpty("검토할 스킬 후보가 없습니다.");
+  if (nodes.reviewSkillList) nodes.reviewSkillList.innerHTML = pendingSkills.length ? pendingSkills.map((candidate) => reviewSkillCard(candidate, decisionsByKey)).join("") : reviewEmpty("검토할 스킬 후보가 없습니다.");
   if (nodes.reviewPortfolioStatus) nodes.reviewPortfolioStatus.textContent = portfolioRecords.length ? `${portfolioRecords.length}건` : "대기";
-  if (nodes.reviewPortfolioList) nodes.reviewPortfolioList.innerHTML = portfolioRecords.length ? portfolioRecords.map(reviewPortfolioCard).join("") : reviewEmpty("포트폴리오 후보가 없습니다.");
+  if (nodes.reviewPortfolioList) nodes.reviewPortfolioList.innerHTML = portfolioRecords.length ? portfolioRecords.map((record) => reviewPortfolioCard(record, decisionsByKey)).join("") : reviewEmpty("포트폴리오 후보가 없습니다.");
 }
 
 async function fetchReviewApiState(pathValue, label) {
@@ -2123,6 +2138,17 @@ function showReviewJobDetail(job = {}) {
 
 async function saveReviewDecision(payload = {}) {
   const response = await apiFetch("/api/review-decisions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+async function saveSkillCandidateAction(payload = {}) {
+  const response = await apiFetch("/api/skill-candidates", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -2196,6 +2222,63 @@ async function handleReviewClick(event) {
   if (openButton && nodes.reviewPage?.contains(openButton)) {
     const target = openButton.dataset.reviewOpen === "vault" ? "vault" : "chat";
     switchPage(target);
+    return;
+  }
+  const skillButton = event.target.closest("button[data-review-skill-action]");
+  if (skillButton && nodes.reviewPage?.contains(skillButton)) {
+    const action = skillButton.dataset.reviewSkillAction || "";
+    const id = skillButton.dataset.candidateId || "";
+    const title = skillButton.dataset.candidateTitle || id;
+    skillButton.disabled = true;
+    try {
+      if (!id) throw new Error("스킬 후보 ID가 없습니다");
+      const data = await saveSkillCandidateAction({ action: action === "dismiss" ? "dismiss" : "approve", id });
+      if (data.skills) renderSkillsState(data.skills);
+      if (data.profile) renderProfileState(data.profile);
+      await saveReviewDecision({
+        action: action === "dismiss" ? "reject" : "approve",
+        type: "skill",
+        id,
+        targetTitle: title,
+        note: action === "dismiss" ? "검수함에서 숨김 처리" : ""
+      });
+      await loadSkillCandidates();
+      await loadReviewInbox();
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "dismiss" ? "스킬 후보 숨김 완료" : "스킬 적용 완료";
+      if (action !== "dismiss") addChatMessage("assistant", "검수함에서 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI Office", "스킬 적용");
+    } catch (error) {
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `스킬 후보 처리 실패: ${error.message}`;
+    } finally {
+      skillButton.disabled = false;
+    }
+    return;
+  }
+  const portfolioButton = event.target.closest("button[data-review-portfolio-action]");
+  if (portfolioButton && nodes.reviewPage?.contains(portfolioButton)) {
+    const action = portfolioButton.dataset.reviewPortfolioAction || "";
+    const id = portfolioButton.dataset.recordId || portfolioButton.dataset.jobId || "";
+    const title = portfolioButton.dataset.recordTitle || id;
+    portfolioButton.disabled = true;
+    try {
+      if (!id) throw new Error("포트폴리오 기록 ID가 없습니다");
+      const needsNote = action !== "approve";
+      const note = needsNote ? window.prompt(action === "reject" ? "포트폴리오 반려 이유를 적어주세요." : "보완할 부분을 적어주세요.", "") : "";
+      if (needsNote && note === null) return;
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "포트폴리오 검수 저장 중";
+      await saveReviewDecision({
+        action,
+        type: "portfolio",
+        id,
+        targetTitle: title,
+        note: note || ""
+      });
+      await loadReviewInbox();
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "포트폴리오 승인 저장 완료" : "포트폴리오 검수 저장 완료";
+    } catch (error) {
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `포트폴리오 검수 실패: ${error.message}`;
+    } finally {
+      portfolioButton.disabled = false;
+    }
     return;
   }
   const detailButton = event.target.closest("button[data-review-job-action]");
@@ -2521,13 +2604,7 @@ async function handleSkillCandidateClick(event) {
       payload.instructions = editor?.querySelector('[data-skill-candidate-field="instructions"]')?.value || "";
       payload.agentIds = [...(editor?.querySelectorAll("[data-skill-candidate-agent]:checked") || [])].map((input) => input.dataset.skillCandidateAgent);
     }
-    const response = await apiFetch("/api/skill-candidates", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    const data = await saveSkillCandidateAction(payload);
     if (data.skills) renderSkillsState(data.skills);
     if (data.profile) renderProfileState(data.profile);
     if (action === "update") editingSkillCandidateId = "";
@@ -3050,6 +3127,7 @@ function renderTaskQueue(state = {}) {
     const retryable = ["failed", "completed_with_errors", "cancelled"].includes(job.status);
     const restored = job.restored ? " restored" : "";
     const elapsed = formatTaskQueueDuration(job.durationMs);
+    const decisionLabel = reviewDecisionLabel(job.reviewDecision);
     return `
       <article class="task-queue-item ${tone}${active}${restored}">
         <button class="task-queue-main" type="button" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">
@@ -3058,6 +3136,7 @@ function renderTaskQueue(state = {}) {
           <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
           <p>${escapeHtml(job.progress || job.detail || "")}</p>
           <small>${escapeHtml([formatShortTime(job.updatedAt || job.completedAt || job.createdAt), elapsed].filter(Boolean).join(" · "))}</small>
+          ${decisionLabel ? `<small class="task-queue-review ${escapeHtml(job.reviewDecision.status || "")}">검수: ${escapeHtml(decisionLabel)}${job.reviewDecision.editSummary ? ` · ${escapeHtml(job.reviewDecision.editSummary)}` : ""}</small>` : ""}
         </button>
         <div class="task-queue-actions">
           ${running ? `<button type="button" data-task-queue-action="cancel" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">취소</button>` : ""}

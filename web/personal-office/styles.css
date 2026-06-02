@@ -208,6 +208,9 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .task-queue-item b { float: right; margin-top: 5px; color: var(--accent); font-size: 10px; }
 .task-queue-item p { clear: both; margin: 6px 0 0; color: var(--dim); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .task-queue-item small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.task-queue-review { border-left: 2px solid rgba(65,242,122,.35); color: var(--dim); padding-left: 7px; }
+.task-queue-review.approved { color: var(--accent); }
+.task-queue-review.rejected, .task-queue-review.needs_revision { border-left-color: rgba(255,191,77,.45); color: var(--warn); }
 .task-queue-actions { display: flex; flex-direction: column; gap: 5px; }
 .task-queue-actions button { min-height: 26px; border: 1px solid rgba(65,242,122,.2); border-radius: 7px; background: rgba(65,242,122,.07); color: var(--accent); padding: 0 8px; font-size: 10px; font-weight: 900; }
 .task-queue-actions button:first-child { border-color: rgba(255,107,107,.24); background: rgba(255,107,107,.05); color: var(--danger); }
