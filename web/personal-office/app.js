@@ -1169,6 +1169,10 @@ function renderRagExclusionsState(state = {}) {
       <strong>${escapeHtml(item.title || "문서")}</strong>
       <span>${escapeHtml(ragExclusionReasonLabel(item.reason))} · ${escapeHtml(item.quality || "excluded")}</span>
       <small>${escapeHtml(item.displayPath || item.relPath || "")}</small>
+      <div class="rag-quality-actions">
+        <button type="button" data-rag-quality-action="promote" data-rel-path="${escapeHtml(item.relPath || "")}">RAG 살리기</button>
+        <button type="button" data-rag-quality-action="quarantine" data-rel-path="${escapeHtml(item.relPath || "")}">격리 유지</button>
+      </div>
     </article>
   `).join("");
 }
@@ -1187,6 +1191,38 @@ async function loadRagExclusions() {
     nodes.ragQualityList.innerHTML = `<div class="empty">RAG 제외 대상 로드 실패: ${escapeHtml(error.message)}</div>`;
     return null;
   }
+}
+
+async function updateRagQualityAction(action, relPath, button) {
+  if (!action || !relPath) return;
+  const message = action === "promote"
+    ? "이 문서에 rag:true / quality: verified를 붙여 RAG 재포함 대상으로 바꿉니다. 실제 인덱스 반영은 이후 인덱스 갱신이 필요합니다. 진행할까요?"
+    : "이 문서에 rag:false / quality: quarantine을 명시해 격리 상태를 유지합니다. 진행할까요?";
+  if (!window.confirm(message)) return;
+  if (button) button.disabled = true;
+  try {
+    if (nodes.ragQualityStatus) nodes.ragQualityStatus.textContent = "수정 중";
+    const response = await apiFetch("/api/rag/exclusions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, relPath, limit: 30 })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderRagExclusionsState(data.state || {});
+    if (nodes.ragIndexSummary && data.needsReindex) nodes.ragIndexSummary.textContent = "인덱스 갱신 필요";
+    if (nodes.ragQualityStatus) nodes.ragQualityStatus.textContent = data.needsReindex ? "수정 완료 · 인덱스 갱신 필요" : "수정 완료";
+  } catch (error) {
+    if (nodes.ragQualityStatus) nodes.ragQualityStatus.textContent = `수정 실패: ${error.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function handleRagQualityClick(event) {
+  const button = event.target.closest("button[data-rag-quality-action]");
+  if (!button || !nodes.ragQualityList?.contains(button)) return;
+  updateRagQualityAction(button.dataset.ragQualityAction || "", button.dataset.relPath || "", button);
 }
 
 function renderApiDiagnostics(rows = []) {
@@ -2812,6 +2848,7 @@ if (nodes.profileForm) nodes.profileForm.addEventListener("submit", saveProfileS
 if (nodes.profileReloadBtn) nodes.profileReloadBtn.addEventListener("click", loadProfileState);
 if (nodes.ragReindexBtn) nodes.ragReindexBtn.addEventListener("click", handleRagReindex);
 if (nodes.ragQualityRefreshBtn) nodes.ragQualityRefreshBtn.addEventListener("click", loadRagExclusions);
+if (nodes.ragQualityList) nodes.ragQualityList.addEventListener("click", handleRagQualityClick);
 if (nodes.ragSearchBtn) nodes.ragSearchBtn.addEventListener("click", handleRagSearch);
 if (nodes.ragSearchInput) nodes.ragSearchInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing) return;

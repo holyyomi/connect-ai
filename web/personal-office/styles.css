@@ -372,6 +372,10 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .rag-quality-item strong { color: var(--bright); font-size: 12px; }
 .rag-quality-item span { margin-top: 4px; color: var(--warning); font-size: 10px; font-weight: 900; }
 .rag-quality-item small { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.rag-quality-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rag-quality-actions button { min-height: 28px; border: 1px solid rgba(65,242,122,.22); border-radius: 7px; background: rgba(65,242,122,.08); color: var(--accent); padding: 0 9px; font-size: 10px; font-weight: 900; }
+.rag-quality-actions button + button { border-color: rgba(255,191,77,.22); background: rgba(255,191,77,.07); color: var(--warning); }
+.rag-quality-actions button:disabled { opacity: .55; cursor: wait; }
 .api-diagnostic-card { margin-top: 10px; }
 .api-diagnostic-list { display: grid; gap: 7px; margin-bottom: 10px; }
 .api-diagnostic-row { display: grid; grid-template-columns: minmax(88px,.5fr) minmax(64px,.35fr) minmax(0,1.6fr); gap: 8px; align-items: center; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(255,255,255,.03); padding: 8px; }
