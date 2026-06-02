@@ -1291,7 +1291,7 @@ function summarizeDiagnostic(pathValue, data = {}) {
   }
   if (pathValue === "/api/connections") {
     const summary = data.summary || {};
-    return `정상 ${Number(summary.normal || 0)}개 · 주의 ${Number(summary.attention || 0)}개 · 모델 ${Number(summary.modelReady || 0)}/${Number(summary.modelTotal || 0)} · 리서치 ${Number(summary.researchReady || 0)}/${Number(summary.researchTotal || 0)}`;
+    return `정상 ${Number(summary.normal || 0)}개 · 주의 ${Number(summary.attention || 0)}개 · 선택 ${Number(summary.optional || 0)}개 · 모델 ${Number(summary.modelReady || 0)}/${Number(summary.modelTotal || 0)} · 리서치 ${Number(summary.researchReady || 0)}/${Number(summary.researchTotal || 0)}`;
   }
   if (pathValue.startsWith("/api/vault-overview")) {
     return `그래프 ${data.graph?.nodes?.length || 0}노드 · ${data.graph?.edges?.length || 0}연결`;

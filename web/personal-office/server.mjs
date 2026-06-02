@@ -549,8 +549,13 @@ function connectionStatusMeta(status) {
     normal: { label: "정상", tone: "ok" },
     key_required: { label: "키 필요", tone: "warn" },
     disconnected: { label: "미연결", tone: "bad" },
+    optional_missing: { label: "선택", tone: "muted" },
     disabled: { label: "비활성", tone: "muted" }
   }[status] || { label: "확인 필요", tone: "warn" };
+}
+
+function optionalMcpMissing(connection = {}, command = "") {
+  return ["fetch_mcp", "git_mcp"].includes(connection.id) && !commandExists(command);
 }
 
 function connectionsSummary(connections = []) {
@@ -567,6 +572,7 @@ function connectionsSummary(connections = []) {
     keyRequired,
     disconnected,
     disabled: count("disabled"),
+    optional: count("optional_missing"),
     attention: keyRequired + disconnected,
     modelReady: models.filter((connection) => connection.status === "normal").length,
     modelTotal: models.length,
@@ -697,9 +703,12 @@ async function buildConnectionsState() {
         : `Claude Code 확인 실패: ${probe.detail}`;
     } else if (connection.kind === "mcp" && connection.install) {
       const command = installCommandName(connection.install);
-      status = commandExists(command) ? "normal" : "disconnected";
+      const optionalMissing = optionalMcpMissing(connection, command);
+      status = commandExists(command) ? "normal" : optionalMissing ? "optional_missing" : "disconnected";
       detail = status === "normal"
         ? `MCP 등록됨: ${connection.mcpServer || connection.provider}`
+        : status === "optional_missing"
+          ? `선택 후보입니다. 필요하면 ${command} 설치 후 사용합니다. 설치 명령: ${connection.install}`
         : `${command} 명령이 필요합니다. 설치 명령: ${connection.install}`;
     } else if (requiresEnv && connection.envKeys.length && envState.some((item) => !item.present)) {
       status = "key_required";

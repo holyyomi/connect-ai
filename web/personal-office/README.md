@@ -117,8 +117,8 @@ TAVILY_API_KEY
 - Exa: API 키 필요
 - Firecrawl: API 키 필요
 - Tavily: API 키 필요
-- Fetch MCP: 선택 후보, `uvx` 필요 가능
-- Git MCP: 선택 후보, `uvx` 필요 가능, 읽기 전용 권장
+- Fetch MCP: 선택 후보, `uvx`가 없으면 선택 상태로 표시
+- Git MCP: 선택 후보, `uvx`가 없으면 선택 상태로 표시, 읽기 전용 권장
 
 Playwright 브라우저 검증이 필요하면 Chromium 바이너리를 설치합니다.
 
