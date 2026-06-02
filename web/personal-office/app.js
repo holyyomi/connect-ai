@@ -1,3 +1,30 @@
+const apiBaseUrl = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const explicit = params.get("apiBase") || window.localStorage.getItem("yomiApiBase") || "";
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const localHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+  if (localHosts.has(window.location.hostname) && window.location.port && window.location.port !== "17331") {
+    const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname;
+    return `${window.location.protocol}//${host}:17331`;
+  }
+  return "";
+})();
+
+function apiUrl(pathValue = "") {
+  const value = String(pathValue || "");
+  if (/^https?:\/\//i.test(value)) return value;
+  if (!value.startsWith("/api")) return value;
+  return `${apiBaseUrl}${value}`;
+}
+
+function apiFetch(pathValue, options = {}) {
+  return fetch(apiUrl(pathValue), options);
+}
+
+function displayApiBase() {
+  return apiBaseUrl || window.location.origin;
+}
+
 const agents = [
   { id: "ceo", name: "총괄 요미", role: "총괄 매니저", roleShort: "총괄", sprite: "/assets/pixel/characters/ceo.png", spriteSheet: "/assets/pixel/characters/ceo_sheet.png", x: 50, y: 45, work: "목표와 완료 기준을 정하고 직원 작업을 지휘합니다." },
   { id: "secretary", name: "운영 나래", role: "운영 비서", roleShort: "운영", sprite: "/assets/pixel/characters/secretary.png", spriteSheet: "/assets/pixel/characters/secretary_sheet.png", x: 39, y: 51, work: "업무 티켓, 체크리스트, 검토 기준을 챙깁니다." },
@@ -133,6 +160,9 @@ const nodes = {
   harnessScopeList: document.getElementById("harnessScopeList"),
   braveKeyGuide: document.getElementById("braveKeyGuide"),
   braveKeyStatus: document.getElementById("braveKeyStatus"),
+  apiDiagnosticStatus: document.getElementById("apiDiagnosticStatus"),
+  apiDiagnosticList: document.getElementById("apiDiagnosticList"),
+  apiDiagnosticBtn: document.getElementById("apiDiagnosticBtn"),
   chatThread: document.getElementById("chatThread"),
   chatForm: document.getElementById("chatForm"),
   chatInput: document.getElementById("chatInput"),
@@ -530,9 +560,13 @@ function renderEngineOptions(selected = "codex") {
 
 function renderAgentSkillItem(agentId, skill) {
   const checked = skill.enabled !== false && skill.status !== "disabled" ? "checked" : "";
+  const detail = [skill.detail || "", skill.requiresConfirmation ? "확인 필요" : ""].filter(Boolean).join(" · ");
   return `
     <div class="agent-skill-item ${escapeHtml(skill.tone || "muted")}">
-      <span class="skill-badge ${escapeHtml(skill.tone || "muted")}">${escapeHtml(skill.label || skill.id)} <small>${escapeHtml(skill.statusLabel || "")}</small></span>
+      <div class="agent-skill-main">
+        <span class="skill-badge ${escapeHtml(skill.tone || "muted")}">${escapeHtml(skill.label || skill.id)} <small>${escapeHtml(skill.statusLabel || "")}</small></span>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+      </div>
       <label class="skill-toggle">
         <input type="checkbox" data-skill-action="toggle" data-agent-id="${escapeHtml(agentId)}" data-tool-id="${escapeHtml(skill.id)}" ${checked}>
         <span>활성</span>
@@ -655,7 +689,7 @@ async function loadProfileState() {
   if (!nodes.profileForm) return null;
   try {
     if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "불러오는 중";
-    const response = await fetch("/api/profile", { cache: "no-store" });
+    const response = await apiFetch("/api/profile", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     renderProfileState(data);
@@ -671,7 +705,7 @@ async function saveProfileState(event) {
   if (!nodes.profileForm) return;
   try {
     if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "저장 중";
-    const response = await fetch("/api/profile", {
+    const response = await apiFetch("/api/profile", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -706,7 +740,7 @@ async function updateSkillConfig(payload, pendingMessage) {
   setAgentSkillStatus(pendingMessage || "skills.json 반영 중", "pending");
   setAgentSkillControlsDisabled(true);
   try {
-    const response = await fetch("/api/skills-state", {
+    const response = await apiFetch("/api/skills-state", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -844,7 +878,7 @@ function fillConnectionForm(connection) {
 
 async function updateConnectionConfig(payload) {
   if (nodes.connectionStatus) nodes.connectionStatus.textContent = "연결 설정 저장 중";
-  const response = await fetch("/api/connections", {
+  const response = await apiFetch("/api/connections", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -859,7 +893,7 @@ async function updateConnectionConfig(payload) {
 async function loadConnectionsState() {
   if (!nodes.connectionList) return;
   try {
-    const response = await fetch("/api/connections", { cache: "no-store" });
+    const response = await apiFetch("/api/connections", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     renderConnectionsState(data);
@@ -992,7 +1026,7 @@ function fillAutomationTriggerForm(trigger) {
 
 async function updateAutomationTriggerConfig(payload) {
   if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 저장 중";
-  const response = await fetch("/api/automation-triggers", {
+  const response = await apiFetch("/api/automation-triggers", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -1007,7 +1041,7 @@ async function updateAutomationTriggerConfig(payload) {
 async function loadAutomationTriggersState() {
   if (!nodes.automationTriggerList) return;
   try {
-    const response = await fetch("/api/automation-triggers", { cache: "no-store" });
+    const response = await apiFetch("/api/automation-triggers", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     renderAutomationTriggersState(data);
@@ -1088,19 +1122,88 @@ function renderRagState(rag = {}) {
   const mode = ragModeLabel(rag.embeddingMode || rag.mode);
   const docs = Number(rag.documentCount || 0);
   const chunks = Number(rag.chunkCount || 0);
+  const excluded = Number(rag.excludedDocumentCount || rag.stats?.excludedDocumentCount || 0);
   const last = rag.lastIndexedAt ? formatShortTime(rag.lastIndexedAt) : "미실행";
   if (nodes.ragStatus) nodes.ragStatus.textContent = connected ? mode : "Vault 대기";
-  if (nodes.ragMeta) nodes.ragMeta.textContent = `${docs}문서 · ${chunks}청크 · ${last}`;
+  if (nodes.ragMeta) nodes.ragMeta.textContent = `${docs}문서 · ${chunks}청크${excluded ? ` · 제외 ${excluded}` : ""} · ${last}`;
   if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = rag.dirty ? "갱신 필요" : mode;
   if (nodes.ragIndexStats) {
     nodes.ragIndexStats.innerHTML = [
       ["문서", docs],
       ["청크", chunks],
+      ["제외", excluded],
       ["최근 변경", Number(rag.changedDocumentCount || 0)],
       ["임베딩", mode],
       ["마지막", last]
     ].map(([label, value]) => `<div class="vault-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
   }
+}
+
+function renderApiDiagnostics(rows = []) {
+  if (!nodes.apiDiagnosticList) return;
+  nodes.apiDiagnosticList.innerHTML = rows.map((row) => `
+    <div class="api-diagnostic-row ${escapeHtml(row.tone || "")}">
+      <span>${escapeHtml(row.label)}</span>
+      <strong>${escapeHtml(row.status)}</strong>
+      <small>${escapeHtml(row.detail || "")}</small>
+    </div>
+  `).join("");
+}
+
+function summarizeDiagnostic(pathValue, data = {}) {
+  if (pathValue === "/api/health") return data.ok ? "서버 응답 정상" : "서버 응답 이상";
+  if (pathValue === "/api/rag") {
+    const status = data.status || data;
+    const excluded = Number(status.excludedDocumentCount || data.stats?.excludedDocumentCount || 0);
+    return `${Number(status.documentCount || data.documentCount || 0)}문서 · ${Number(status.chunkCount || data.chunkCount || 0)}청크${excluded ? ` · 제외 ${excluded}` : ""} · ${status.embeddingMode || data.embedding?.mode || data.mode || "unknown"}`;
+  }
+  if (pathValue === "/api/profile") {
+    const profile = data.profile || {};
+    return `${profile.enabled !== false ? "프로필 켜짐" : "프로필 꺼짐"} · 메모리 ${Array.isArray(profile.memory) ? profile.memory.length : 0}개`;
+  }
+  if (pathValue.startsWith("/api/vault-overview")) {
+    return `그래프 ${data.graph?.nodes?.length || 0}노드 · ${data.graph?.edges?.length || 0}연결`;
+  }
+  if (pathValue === "/api/chat-sessions") return `세션 ${Array.isArray(data.sessions) ? data.sessions.length : 0}개`;
+  return "JSON 응답 정상";
+}
+
+async function runApiDiagnostics() {
+  if (!nodes.apiDiagnosticList) return;
+  const checks = [
+    { label: "Health", path: "/api/health" },
+    { label: "RAG", path: "/api/rag" },
+    { label: "프로필", path: "/api/profile" },
+    { label: "Vault 그래프", path: "/api/vault-overview?limit=3" },
+    { label: "대화 세션", path: "/api/chat-sessions" }
+  ];
+  const rows = [
+    { label: "화면 Origin", status: "현재", detail: window.location.origin, tone: "info" },
+    { label: "API Base", status: apiBaseUrl ? "분리" : "동일", detail: displayApiBase(), tone: apiBaseUrl ? "warn" : "ok" }
+  ];
+  renderApiDiagnostics(rows);
+  if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = "점검 중";
+  for (const check of checks) {
+    try {
+      const response = await apiFetch(check.path, { cache: "no-store" });
+      const text = await response.text();
+      let data = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        rows.push({ label: check.label, status: `HTTP ${response.status}`, detail: text.slice(0, 120), tone: "bad" });
+        renderApiDiagnostics(rows);
+        continue;
+      }
+      const ok = response.ok && data.ok !== false;
+      rows.push({ label: check.label, status: ok ? "정상" : `HTTP ${response.status}`, detail: summarizeDiagnostic(check.path, data), tone: ok ? "ok" : "bad" });
+    } catch (error) {
+      rows.push({ label: check.label, status: "실패", detail: error.message, tone: "bad" });
+    }
+    renderApiDiagnostics(rows);
+  }
+  const badCount = rows.filter((row) => row.tone === "bad").length;
+  if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = badCount ? `문제 ${badCount}개` : "정상";
 }
 
 async function handleRagReindex() {
@@ -1109,7 +1212,7 @@ async function handleRagReindex() {
   if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = "인덱싱 중";
   try {
     const embeddings = window.confirm("임베딩 API 키가 있으면 시맨틱 인덱싱 중 API 비용/쿼터가 사용될 수 있습니다. 시맨틱 인덱싱으로 갱신할까요?\n\n취소를 누르면 비용 없는 BM25+키워드 인덱스만 갱신합니다.");
-    const response = await fetch("/api/rag/index", {
+    const response = await apiFetch("/api/rag/index", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ force: true, embeddings })
@@ -1156,7 +1259,7 @@ async function handleRagSearch() {
   if (nodes.ragSearchBtn) nodes.ragSearchBtn.disabled = true;
   nodes.ragSearchResults.innerHTML = `<div class="empty">RAG 검색 중...</div>`;
   try {
-    const response = await fetch(`/api/rag/search?q=${encodeURIComponent(query)}&k=5`, { cache: "no-store" });
+    const response = await apiFetch(`/api/rag/search?q=${encodeURIComponent(query)}&k=5`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     renderRagSearchResults(data);
@@ -1310,7 +1413,7 @@ function updateDashboard(data) {
 
 async function refreshState() {
   try {
-    const response = await fetch("/api/office-state", { cache: "no-store" });
+    const response = await apiFetch("/api/office-state", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     updateDashboard(data);
@@ -1356,7 +1459,7 @@ async function exportVaultReport(relPath, format) {
   if (!relPath || !format) return;
   if (nodes.vaultExportStatus) nodes.vaultExportStatus.textContent = `${vaultExportFormatLabel(format)} 변환 중`;
   try {
-    const response = await fetch("/api/vault-export", {
+    const response = await apiFetch("/api/vault-export", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ relPath, format })
@@ -1387,7 +1490,7 @@ async function loadRecentReports() {
   renderVaultChips(nodes.vaultCategoryCounts, [], "카테고리 확인 중");
   renderVaultChips(nodes.vaultTagCounts, [], "태그 확인 중");
   try {
-    const response = await fetch("/api/vault-overview?limit=14", { cache: "no-store" });
+    const response = await apiFetch("/api/vault-overview?limit=14", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if (nodes.reportCount) nodes.reportCount.textContent = `${data.recentDocs?.length || 0} / ${data.totalMarkdown || 0}`;
@@ -1458,7 +1561,7 @@ function renderPortfolioList(state = {}) {
 async function loadPerformanceLog() {
   if (!nodes.portfolioList && !nodes.portfolioStatus) return null;
   try {
-    const response = await fetch("/api/performance-log?limit=12", { cache: "no-store" });
+    const response = await apiFetch("/api/performance-log?limit=12", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     renderPortfolioList(data);
@@ -1481,7 +1584,7 @@ async function runOfficeTask() {
   nodes.activityLog.innerHTML = "";
   startVisualFlow();
   try {
-    const response = await fetch("/api/run-office-task", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task }) });
+    const response = await apiFetch("/api/run-office-task", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     nodes.reportText.textContent = data.report;
@@ -1569,7 +1672,7 @@ async function loadChatSessions(selectId = "") {
   if (!nodes.chatSessionList) return null;
   try {
     const url = selectId ? `/api/chat-sessions?id=${encodeURIComponent(selectId)}` : "/api/chat-sessions";
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await apiFetch(url, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     chatSessionsState = data;
@@ -1588,7 +1691,7 @@ async function loadChatSessions(selectId = "") {
 }
 
 async function updateChatSessionAction(payload = {}) {
-  const response = await fetch("/api/chat-sessions", {
+  const response = await apiFetch("/api/chat-sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -1716,7 +1819,7 @@ function renderSkillCandidates(state = skillCandidatesState) {
 async function loadSkillCandidates() {
   if (!nodes.skillCandidateList) return null;
   try {
-    const response = await fetch("/api/skill-candidates", { cache: "no-store" });
+    const response = await apiFetch("/api/skill-candidates", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     renderSkillCandidates(data);
@@ -1753,7 +1856,7 @@ async function handleSkillCandidateClick(event) {
       payload.instructions = editor?.querySelector('[data-skill-candidate-field="instructions"]')?.value || "";
       payload.agentIds = [...(editor?.querySelectorAll("[data-skill-candidate-agent]:checked") || [])].map((input) => input.dataset.skillCandidateAgent);
     }
-    const response = await fetch("/api/skill-candidates", {
+    const response = await apiFetch("/api/skill-candidates", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -1807,6 +1910,37 @@ function taskQueueTone(status = "") {
   if (["failed"].includes(status)) return "bad";
   if (["waiting_question", "completed_with_errors", "retrying", "cancelled"].includes(status)) return "warn";
   return "";
+}
+
+function taskQueueDisplayRank(job = {}) {
+  const status = job.status || "";
+  if (status === "waiting_question") return 0;
+  if (job.isActive || ["queued", "running", "retrying", "finalizing"].includes(status)) return 1;
+  if (job.needsAttention || ["failed", "completed_with_errors"].includes(status)) return 2;
+  if (status === "cancelled") return 3;
+  if (status === "completed") return 4;
+  return 5;
+}
+
+function taskQueueTimeValue(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function taskQueueDisplayRows(jobs = []) {
+  return [...jobs]
+    .sort((a, b) => taskQueueDisplayRank(a) - taskQueueDisplayRank(b)
+      || taskQueueTimeValue(b.updatedAt || b.createdAt) - taskQueueTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, 8);
+}
+
+function formatTaskQueueDuration(ms = 0) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const minutes = Math.floor(value / 60000);
+  if (minutes < 1) return "1분 미만";
+  if (minutes < 60) return `${minutes}분`;
+  return `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
 }
 
 function formatQueueTime(value) {
@@ -2081,7 +2215,7 @@ function renderOfficeJobResult(job, originalMessage = "", announceFinal = false)
 async function pollOfficeJob(jobId, originalMessage = "") {
   if (!jobId) return;
   try {
-    const response = await fetch(`/api/orchestration-job?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/orchestration-job?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const job = data.job;
@@ -2116,7 +2250,7 @@ async function answerHumanLoop(jobId, choiceId) {
   buttons.forEach((button) => { button.disabled = true; });
   if (nodes.saveNotice) nodes.saveNotice.textContent = "확인 응답 처리 중";
   try {
-    const response = await fetch("/api/orchestration-job/answer", {
+    const response = await apiFetch("/api/orchestration-job/answer", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: jobId, choiceId })
@@ -2197,7 +2331,7 @@ function renderCodexJobResult(job, announceFinal = false) {
 async function pollCodexJob(jobId) {
   if (!jobId) return;
   try {
-    const response = await fetch(`/api/codex-job?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/codex-job?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const job = data.job;
@@ -2227,6 +2361,7 @@ function startCodexJobPolling(jobId) {
 function renderTaskQueue(state = {}) {
   if (!nodes.taskQueueList) return;
   const jobs = state.jobs || [];
+  const visibleJobs = taskQueueDisplayRows(jobs);
   if (nodes.taskQueueStatus) {
     const running = state.summary?.running || 0;
     const completed = state.summary?.completed || 0;
@@ -2243,19 +2378,21 @@ function renderTaskQueue(state = {}) {
     nodes.taskQueueList.innerHTML = '<div class="office-agent-empty">대기 중인 작업이 없습니다.</div>';
     return;
   }
-  nodes.taskQueueList.innerHTML = jobs.slice(0, 8).map((job) => {
+  nodes.taskQueueList.innerHTML = visibleJobs.map((job) => {
     const active = job.id === activeOfficeJobId || job.id === activeCodexJobId ? " active" : "";
     const tone = taskQueueTone(job.status);
     const running = ["queued", "running", "retrying", "finalizing", "waiting_question"].includes(job.status);
     const retryable = ["failed", "completed_with_errors", "cancelled"].includes(job.status);
+    const restored = job.restored ? " restored" : "";
+    const elapsed = formatTaskQueueDuration(job.durationMs);
     return `
-      <article class="task-queue-item ${tone}${active}">
+      <article class="task-queue-item ${tone}${active}${restored}">
         <button class="task-queue-main" type="button" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">
           <strong>${escapeHtml(job.title || job.id)}</strong>
           <span>${escapeHtml(job.restored ? "기록" : job.type === "codex" ? "Codex" : "직원")}</span>
           <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
           <p>${escapeHtml(job.progress || job.detail || "")}</p>
-          <small>${escapeHtml(formatShortTime(job.updatedAt || job.completedAt || job.createdAt))}</small>
+          <small>${escapeHtml([formatShortTime(job.updatedAt || job.completedAt || job.createdAt), elapsed].filter(Boolean).join(" · "))}</small>
         </button>
         <div class="task-queue-actions">
           ${running ? `<button type="button" data-task-queue-action="cancel" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">취소</button>` : ""}
@@ -2270,7 +2407,7 @@ async function loadTaskQueue(options = {}) {
   if (!nodes.taskQueueList) return null;
   const { resume = false } = options;
   try {
-    const response = await fetch("/api/task-queue?limit=20", { cache: "no-store" });
+    const response = await apiFetch("/api/task-queue?limit=20", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     renderTaskQueue(data);
@@ -2289,7 +2426,7 @@ async function loadTaskQueue(options = {}) {
 }
 
 async function updateTaskQueueAction(payload = {}) {
-  const response = await fetch("/api/task-queue", {
+  const response = await apiFetch("/api/task-queue", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -2536,7 +2673,7 @@ async function submitChat(event) {
     showYomiRoutingPending(message.replace(/^\/업무\s*/i, ""));
   }
   try {
-    const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, sessionId: activeChatSessionId }) });
+    const response = await apiFetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, sessionId: activeChatSessionId }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.memory?.session?.id) activeChatSessionId = data.memory.session.id;
@@ -2638,6 +2775,7 @@ if (nodes.chatSessionList) nodes.chatSessionList.addEventListener("click", handl
 if (nodes.newChatSessionBtn) nodes.newChatSessionBtn.addEventListener("click", startNewChatSession);
 if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click", handleSkillCandidateClick);
 if (nodes.chatQueueBtn) nodes.chatQueueBtn.addEventListener("click", enqueueChatInput);
+if (nodes.apiDiagnosticBtn) nodes.apiDiagnosticBtn.addEventListener("click", runApiDiagnostics);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
@@ -2661,6 +2799,7 @@ loadAutomationTriggersState();
 loadChatSessions();
 loadSkillCandidates();
 loadTaskQueue({ resume: true });
+runApiDiagnostics();
 setInterval(refreshState, 15000);
 setInterval(loadAutomationTriggersState, 10000);
 setInterval(() => loadTaskQueue({ resume: false }), 5000);

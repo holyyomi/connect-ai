@@ -77,9 +77,7 @@
       "file_write",
       "git"
     ],
-    "archivist": [
-      "file_write"
-    ]
+    "archivist": []
   },
   "tools": {
     "planner": {
@@ -291,9 +289,19 @@
       "type": "file_write",
       "provider": "filesystem",
       "mode": "scoped-write",
-      "scope": "Vault/50_Outputs",
+      "scope": "Vault scoped outputs only",
+      "allowedPaths": [
+        "50_Outputs/YOMI Office",
+        "99_Inbox/YOMI_Quarantine"
+      ],
+      "blockedPaths": [
+        ".env",
+        "secrets",
+        "credentials",
+        "original-vault-overwrite"
+      ],
       "requiresConfirmation": true,
-      "description": "명확한 저장 정책이 있을 때 Vault 50_Outputs에 새 Markdown 파일을 씁니다."
+      "description": "검증 통과 산출물은 50_Outputs/YOMI Office에 새 Markdown으로 저장하고, 테스트/명령어형 산출물은 99_Inbox/YOMI_Quarantine에 rag:false로 격리합니다. 기존 파일 덮어쓰기와 원본 Vault 문서 수정은 허용하지 않습니다."
     },
     "git": {
       "label": "Git관리",
