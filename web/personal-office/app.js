@@ -206,6 +206,7 @@ const nodes = {
   apiDiagnosticStatus: document.getElementById("apiDiagnosticStatus"),
   apiDiagnosticList: document.getElementById("apiDiagnosticList"),
   apiDiagnosticBtn: document.getElementById("apiDiagnosticBtn"),
+  researchProbeBtn: document.getElementById("researchProbeBtn"),
   chatThread: document.getElementById("chatThread"),
   chatForm: document.getElementById("chatForm"),
   chatInput: document.getElementById("chatInput"),
@@ -1344,6 +1345,47 @@ async function runApiDiagnostics() {
   const badCount = rows.filter((row) => row.tone === "bad").length;
   const warnCount = rows.filter((row) => row.tone === "warn").length;
   if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = badCount ? `문제 ${badCount}개` : warnCount ? `주의 ${warnCount}개` : "정상";
+}
+
+async function runResearchLiveProbe() {
+  if (!nodes.researchProbeBtn) return;
+  const confirmed = window.confirm("Exa, Firecrawl, Tavily에 최소 라이브 요청을 보내 연결을 확인합니다. 외부 API 쿼터나 비용이 사용될 수 있습니다. 진행할까요?");
+  if (!confirmed) return;
+  nodes.researchProbeBtn.disabled = true;
+  if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = "리서치 라이브 점검 중";
+  renderApiDiagnostics([{ label: "리서치 라이브", status: "진행 중", detail: "외부 API 최소 요청을 실행합니다. 키 값은 표시하지 않습니다.", tone: "warn" }]);
+  try {
+    const response = await apiFetch("/api/research-probes", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providers: ["exa", "firecrawl", "tavily"] })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const summary = data.summary || {};
+    const tone = summary.failed ? "bad" : summary.keyRequired ? "warn" : "ok";
+    const rows = [
+      {
+        label: "리서치 라이브",
+        status: summary.failed ? "문제" : summary.keyRequired ? "키 필요" : "완료",
+        detail: `성공 ${Number(summary.ok || 0)}/${Number(summary.total || 0)} · 실패 ${Number(summary.failed || 0)} · 키 필요 ${Number(summary.keyRequired || 0)}`,
+        tone
+      },
+      ...(data.probes || []).map((probe) => ({
+        label: probe.label || probe.id,
+        status: probe.statusLabel || probe.status || "확인",
+        detail: `${probe.detail || ""}${probe.latencyMs ? ` · ${probe.latencyMs}ms` : ""}`,
+        tone: probe.tone || "warn"
+      }))
+    ];
+    renderApiDiagnostics(rows);
+    if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = tone === "bad" ? "라이브 문제" : tone === "warn" ? "라이브 주의" : "라이브 정상";
+  } catch (error) {
+    renderApiDiagnostics([{ label: "리서치 라이브", status: "실패", detail: error.message, tone: "bad" }]);
+    if (nodes.apiDiagnosticStatus) nodes.apiDiagnosticStatus.textContent = "라이브 실패";
+  } finally {
+    nodes.researchProbeBtn.disabled = false;
+  }
 }
 
 async function handleRagReindex() {
@@ -3539,6 +3581,7 @@ if (nodes.newChatSessionBtn) nodes.newChatSessionBtn.addEventListener("click", s
 if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click", handleSkillCandidateClick);
 if (nodes.chatQueueBtn) nodes.chatQueueBtn.addEventListener("click", enqueueChatInput);
 if (nodes.apiDiagnosticBtn) nodes.apiDiagnosticBtn.addEventListener("click", runApiDiagnostics);
+if (nodes.researchProbeBtn) nodes.researchProbeBtn.addEventListener("click", runResearchLiveProbe);
 if (nodes.portfolioList) nodes.portfolioList.addEventListener("submit", handlePortfolioEconomicsSubmit);
 if (nodes.portfolioList) nodes.portfolioList.addEventListener("click", handlePortfolioEconomicsClick);
 nodes.chatForm.addEventListener("submit", submitChat);

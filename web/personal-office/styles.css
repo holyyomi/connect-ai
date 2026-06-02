@@ -424,6 +424,7 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .rag-quality-actions button + button { border-color: rgba(255,191,77,.22); background: rgba(255,191,77,.07); color: var(--warning); }
 .rag-quality-actions button:disabled { opacity: .55; cursor: wait; }
 .api-diagnostic-card { margin-top: 10px; }
+.api-diagnostic-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
 .api-diagnostic-list { display: grid; gap: 7px; margin-bottom: 10px; }
 .api-diagnostic-row { display: grid; grid-template-columns: minmax(88px,.5fr) minmax(64px,.35fr) minmax(0,1.6fr); gap: 8px; align-items: center; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(255,255,255,.03); padding: 8px; }
 .api-diagnostic-row span { color: var(--dim); font-size: 11px; font-weight: 900; }

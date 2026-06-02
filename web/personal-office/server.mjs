@@ -575,6 +575,100 @@ function connectionsSummary(connections = []) {
   };
 }
 
+const researchProbeDefinitions = [
+  { id: "exa", label: "Exa", envKey: "EXA_API_KEY" },
+  { id: "firecrawl", label: "Firecrawl", envKey: "FIRECRAWL_API_KEY" },
+  { id: "tavily", label: "Tavily", envKey: "TAVILY_API_KEY" }
+];
+
+function researchProbeProviders(input = {}) {
+  const requested = new Set(normalizeStringList(input.providers || input.provider || []));
+  const providers = requested.size
+    ? researchProbeDefinitions.filter((provider) => requested.has(provider.id))
+    : researchProbeDefinitions;
+  return providers.length ? providers : researchProbeDefinitions;
+}
+
+function publicResearchProbe(provider, patch = {}) {
+  const status = String(patch.status || "pending");
+  const tone = ({ ok: "ok", key_required: "warn", skipped: "muted", failed: "bad", pending: "muted" })[status] || "warn";
+  const statusLabel = ({ ok: "정상", key_required: "키 필요", skipped: "대기", failed: "실패", pending: "대기" })[status] || "확인 필요";
+  return {
+    id: provider.id,
+    label: provider.label,
+    status,
+    statusLabel,
+    tone,
+    detail: compactLine(patch.detail || "", 260),
+    latencyMs: Number(patch.latencyMs || 0),
+    resultCount: Number(patch.resultCount || 0)
+  };
+}
+
+async function runResearchProbe(provider = {}, options = {}) {
+  const apiKey = process.env[provider.envKey];
+  if (!apiKey) return publicResearchProbe(provider, { status: "key_required", detail: `${provider.envKey} 환경변수가 필요합니다.` });
+  if (options.dryRun === true) return publicResearchProbe(provider, { status: "skipped", detail: `${provider.envKey} 확인됨 · 라이브 호출 미수행` });
+  const startedAt = Date.now();
+  try {
+    if (provider.id === "exa") {
+      const body = await fetchJson("https://api.exa.ai/search", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({ query: "YOMI Office connectivity probe", numResults: 1, type: "fast" })
+      }, 15000);
+      const count = Array.isArray(body.results) ? body.results.length : 0;
+      const cost = Number(body.costDollars?.total || 0);
+      return publicResearchProbe(provider, { status: "ok", latencyMs: Date.now() - startedAt, resultCount: count, detail: `${count}개 결과${cost ? ` · 응답 비용 $${cost}` : ""}` });
+    }
+    if (provider.id === "firecrawl") {
+      const body = await fetchJson("https://api.firecrawl.dev/v2/scrape", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ url: "https://example.com", formats: ["markdown"], onlyMainContent: true })
+      }, 15000);
+      if (body.success === false) throw new Error(body.error || body.message || "Firecrawl success=false");
+      const markdownLength = String(body.data?.markdown || body.markdown || "").length;
+      return publicResearchProbe(provider, { status: "ok", latencyMs: Date.now() - startedAt, resultCount: markdownLength ? 1 : 0, detail: `example.com scrape 응답 · markdown ${markdownLength}자` });
+    }
+    if (provider.id === "tavily") {
+      const body = await fetchJson("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ query: "YOMI Office connectivity probe", search_depth: "basic", max_results: 1, include_answer: false, include_raw_content: false, include_images: false, include_usage: true })
+      }, 15000);
+      const count = Array.isArray(body.results) ? body.results.length : 0;
+      const credits = Number(body.usage?.credits || 0);
+      return publicResearchProbe(provider, { status: "ok", latencyMs: Date.now() - startedAt, resultCount: count, detail: `${count}개 결과${credits ? ` · 크레딧 ${credits}` : ""}` });
+    }
+    return publicResearchProbe(provider, { status: "failed", detail: "지원하지 않는 리서치 제공자입니다." });
+  } catch (error) {
+    return publicResearchProbe(provider, { status: "failed", latencyMs: Date.now() - startedAt, detail: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function buildResearchProbeState(input = {}) {
+  const probes = await Promise.all(researchProbeProviders(input).map((provider) => runResearchProbe(provider, { dryRun: input.dryRun === true })));
+  const failed = probes.filter((probe) => probe.status === "failed").length;
+  const keyRequired = probes.filter((probe) => probe.status === "key_required").length;
+  const skipped = probes.filter((probe) => probe.status === "skipped").length;
+  return {
+    ok: failed === 0,
+    generatedAt: new Date().toISOString(),
+    mode: input.dryRun === true ? "dry_run" : "live",
+    costNotice: "라이브 모드는 외부 API 쿼터 또는 비용을 사용할 수 있습니다. 키 값은 응답에 포함하지 않습니다.",
+    summary: {
+      total: probes.length,
+      ok: probes.filter((probe) => probe.status === "ok").length,
+      failed,
+      keyRequired,
+      skipped,
+      attention: failed + keyRequired
+    },
+    probes
+  };
+}
+
 async function buildConnectionsState() {
   const config = await readConnectionsConfig();
   const vaultRoot = await findVaultRoot();
@@ -1117,7 +1211,7 @@ async function fetchJson(url, options = {}, timeoutMs = 60000) {
     } catch {
       body = { raw: text.slice(0, 500) };
     }
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error?.message || body.message || body.raw || "embedding request failed"}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error?.message || body.message || body.raw || "request failed"}`);
     return body;
   } finally {
     clearTimeout(timer);
@@ -6817,6 +6911,10 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
+    }
+    if (request.method === "POST" && url.pathname === "/api/research-probes") {
+      const body = await readJsonBody(request);
+      return sendJson(response, 200, await buildResearchProbeState(body));
     }
     if (request.method === "GET" && url.pathname === "/api/automation-rules") return sendJson(response, 200, { ok: true, rules: publicAutomationRules(), defaults: defaultAutomationRules });
     if (request.method === "POST" && url.pathname === "/api/automation-rules") {
