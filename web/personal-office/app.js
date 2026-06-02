@@ -67,6 +67,43 @@ const nodes = {
   officeChainStatus: document.getElementById("officeChainStatus"),
   taskQueueStatus: document.getElementById("taskQueueStatus"),
   taskQueueList: document.getElementById("taskQueueList"),
+  reviewPage: document.getElementById("page-review"),
+  reviewStatus: document.getElementById("reviewStatus"),
+  reviewRefreshBtn: document.getElementById("reviewRefreshBtn"),
+  reviewQueueCount: document.getElementById("reviewQueueCount"),
+  reviewQueueMeta: document.getElementById("reviewQueueMeta"),
+  reviewActiveCount: document.getElementById("reviewActiveCount"),
+  reviewActiveMeta: document.getElementById("reviewActiveMeta"),
+  reviewQualityScore: document.getElementById("reviewQualityScore"),
+  reviewQualityMeta: document.getElementById("reviewQualityMeta"),
+  reviewSkillCount: document.getElementById("reviewSkillCount"),
+  reviewSkillMeta: document.getElementById("reviewSkillMeta"),
+  reviewOpsStatus: document.getElementById("reviewOpsStatus"),
+  reviewTrustLadder: document.getElementById("reviewTrustLadder"),
+  reviewTrustLadderMeta: document.getElementById("reviewTrustLadderMeta"),
+  reviewAutoCandidateCount: document.getElementById("reviewAutoCandidateCount"),
+  reviewAutoCandidateMeta: document.getElementById("reviewAutoCandidateMeta"),
+  reviewRevisionRate: document.getElementById("reviewRevisionRate"),
+  reviewRevisionMeta: document.getElementById("reviewRevisionMeta"),
+  reviewHermesFuel: document.getElementById("reviewHermesFuel"),
+  reviewHermesMeta: document.getElementById("reviewHermesMeta"),
+  reviewOpsRecommendation: document.getElementById("reviewOpsRecommendation"),
+  reviewAttentionStatus: document.getElementById("reviewAttentionStatus"),
+  reviewAttentionList: document.getElementById("reviewAttentionList"),
+  reviewCompletedStatus: document.getElementById("reviewCompletedStatus"),
+  reviewCompletedList: document.getElementById("reviewCompletedList"),
+  reviewSkillStatus: document.getElementById("reviewSkillStatus"),
+  reviewSkillList: document.getElementById("reviewSkillList"),
+  reviewPortfolioStatus: document.getElementById("reviewPortfolioStatus"),
+  reviewPortfolioList: document.getElementById("reviewPortfolioList"),
+  reviewEditPanel: document.getElementById("reviewEditPanel"),
+  reviewEditForm: document.getElementById("reviewEditForm"),
+  reviewEditTarget: document.getElementById("reviewEditTarget"),
+  reviewEditDraft: document.getElementById("reviewEditDraft"),
+  reviewEditFinal: document.getElementById("reviewEditFinal"),
+  reviewEditNote: document.getElementById("reviewEditNote"),
+  reviewEditSaveBtn: document.getElementById("reviewEditSaveBtn"),
+  reviewEditCancelBtn: document.getElementById("reviewEditCancelBtn"),
   officeSummaryStage: document.getElementById("officeSummaryStage"),
   agentList: document.getElementById("agentList"),
   agentSkillStatus: document.getElementById("agentSkillStatus"),
@@ -117,6 +154,9 @@ const nodes = {
   dashboardPerformanceScore: document.getElementById("dashboardPerformanceScore"),
   dashboardPerformanceGrade: document.getElementById("dashboardPerformanceGrade"),
   dashboardPerformanceMeta: document.getElementById("dashboardPerformanceMeta"),
+  dashboardEconomicsValue: document.getElementById("dashboardEconomicsValue"),
+  dashboardEconomicsRoi: document.getElementById("dashboardEconomicsRoi"),
+  dashboardEconomicsMeta: document.getElementById("dashboardEconomicsMeta"),
   dashboardAttention: document.getElementById("dashboardAttention"),
   dashboardAttentionMeta: document.getElementById("dashboardAttentionMeta"),
   dashboardReportCount: document.getElementById("dashboardReportCount"),
@@ -200,6 +240,7 @@ let activeChatSessionId = "";
 let chatSessionsState = { sessions: [] };
 let skillCandidatesState = { candidates: [] };
 let editingSkillCandidateId = "";
+let reviewEditTarget = null;
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
@@ -1422,6 +1463,31 @@ function formatShortTime(value) {
   return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatKrw(value = 0) {
+  const amount = Math.round(Number(value || 0));
+  return `${amount.toLocaleString("ko-KR")}원`;
+}
+
+function formatSavedTime(minutes = 0) {
+  const value = Math.max(0, Math.round(Number(minutes || 0)));
+  if (value >= 60) {
+    const hours = Math.floor(value / 60);
+    const rest = value % 60;
+    return rest ? `${hours}시간 ${rest}분` : `${hours}시간`;
+  }
+  return `${value}분`;
+}
+
+function economicsValue(economics = {}, actualKey = "", estimatedKey = "") {
+  const actual = economics?.[actualKey];
+  if (actual != null && actual !== "") return actual;
+  return economics?.[estimatedKey] || 0;
+}
+
+function economicsInputValue(value) {
+  return value == null || value === "" ? "" : String(Math.round(Number(value || 0)));
+}
+
 function updateDashboardFocus(data) {
   const current = data.workflow?.current || {};
   const currentActive = ["running", "evaluating"].includes(current.status);
@@ -1446,6 +1512,14 @@ function updateDashboardFocus(data) {
     nodes.dashboardPerformanceMeta.textContent = performance.total
       ? `평균 ${performance.avgScore || 0}점 · 포트폴리오 ${performance.portfolioCount || 0}건`
       : "성과기록 대기";
+  }
+  const economics = performance.economics || {};
+  if (nodes.dashboardEconomicsValue) nodes.dashboardEconomicsValue.textContent = performance.total ? formatKrw(economics.estimatedNetKrw || 0) : "0원";
+  if (nodes.dashboardEconomicsRoi) nodes.dashboardEconomicsRoi.textContent = performance.total ? `ROI ${Number(economics.roiPercent || 0)}%` : "ROI 대기";
+  if (nodes.dashboardEconomicsMeta) {
+    nodes.dashboardEconomicsMeta.textContent = performance.total
+      ? `추정 절약 ${formatSavedTime(economics.estimatedSavedMinutes || 0)} · 비용 ${formatKrw(economics.estimatedCostKrw || 0)}`
+      : "작업당 경제성 기록 대기";
   }
 
   const tools = data.skills?.tools || [];
@@ -1627,6 +1701,12 @@ function renderPortfolioList(state = {}) {
     const rubric = Array.isArray(record.rubric) ? record.rubric.slice(0, 6) : [];
     const sources = Array.isArray(record.sources) ? record.sources.slice(0, 4) : [];
     const assetReview = record.assetReview && typeof record.assetReview === "object" ? record.assetReview : null;
+    const economics = record.economics && typeof record.economics === "object" ? record.economics : null;
+    const adjustment = economics?.adjustment || {};
+    const displayNetKrw = economicsValue(economics, "actualNetKrw", "displayNetKrw");
+    const displayCostKrw = economicsValue(economics, "actualCostKrw", "displayCostKrw");
+    const displaySavedMinutes = economicsValue(economics, "actualSavedMinutes", "displaySavedMinutes");
+    const displayRoiPercent = economics?.displayRoiPercent ?? economics?.roiPercent ?? 0;
     return `
       <details class="portfolio-item">
         <summary>
@@ -1639,6 +1719,19 @@ function renderPortfolioList(state = {}) {
           <small>${escapeHtml(record.portfolioRelPath || record.savedRelPath || "Vault 포트폴리오 저장 대기")}</small>
           ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
           ${assetReview ? `<div class="portfolio-rubric"><span>자산화 ${Number(assetReview.score || 0)}점</span><span>저장 ${assetReview.shouldSave ? "통과" : "제외"}</span><span>RAG ${assetReview.ragReady ? "포함" : "검토"}</span></div>` : ""}
+          ${economics ? `<div class="portfolio-rubric economics"><span>${economics.adjusted ? "보정" : "추정"} 순가치 ${escapeHtml(formatKrw(displayNetKrw))}</span><span>비용 ${escapeHtml(formatKrw(displayCostKrw))}</span><span>절약 ${escapeHtml(formatSavedTime(displaySavedMinutes))}</span><span>ROI ${Number(displayRoiPercent || 0)}%</span></div>` : ""}
+          ${economics ? `
+            <form class="portfolio-economics-form" data-economics-form="true" data-record-id="${escapeHtml(record.id || "")}" data-job-id="${escapeHtml(record.jobId || "")}" data-title="${escapeHtml(record.title || "")}">
+              <label>실제 비용(원)<input name="actualCostKrw" type="number" min="0" step="1" value="${escapeHtml(economicsInputValue(adjustment.actualCostKrw))}" placeholder="${escapeHtml(String(economics.estimatedCostKrw || 0))}" /></label>
+              <label>절약 시간(분)<input name="actualSavedMinutes" type="number" min="0" step="1" value="${escapeHtml(economicsInputValue(adjustment.actualSavedMinutes))}" placeholder="${escapeHtml(String(economics.estimatedSavedMinutes || 0))}" /></label>
+              <label>시간가치(원/h)<input name="hourlyValueKrw" type="number" min="0" step="1000" value="${escapeHtml(economicsInputValue(adjustment.hourlyValueKrw ?? economics.hourlyValueKrw))}" /></label>
+              <label class="wide">보정 메모<textarea name="note" rows="2" placeholder="실제 수정 시간, API 비용, 작업 가치 판단 기준">${escapeHtml(adjustment.note || "")}</textarea></label>
+              <div class="portfolio-economics-actions">
+                <button type="submit">ROI 보정 저장</button>
+                <button type="button" data-economics-clear="true" data-record-id="${escapeHtml(record.id || "")}" data-job-id="${escapeHtml(record.jobId || "")}">보정 해제</button>
+              </div>
+            </form>
+          ` : ""}
           ${assetReview?.reason ? `<small>${escapeHtml(assetReview.reason)}</small>` : ""}
           ${rubric.length ? `<div class="portfolio-rubric">${rubric.map((item) => `<span>${escapeHtml(item.label || item.id || "평가")} ${Number(item.score || 0)}점</span>`).join("")}</div>` : ""}
           ${sources.length ? `<div class="portfolio-sources">${sources.map((item) => `<small>${escapeHtml(item.displayPath || item.relPath || item.title || "")}</small>`).join("")}</div>` : ""}
@@ -1660,6 +1753,488 @@ async function loadPerformanceLog() {
     if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "성과기록 로드 실패";
     if (nodes.portfolioList) nodes.portfolioList.innerHTML = `<div class="empty">성과기록 로드 실패: ${escapeHtml(error.message)}</div>`;
     return null;
+  }
+}
+
+async function savePortfolioEconomics(payload = {}) {
+  const response = await apiFetch("/api/performance-economics", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+async function refreshEconomicsViews(state = null) {
+  if (state) renderPortfolioList(state);
+  else await loadPerformanceLog();
+  await refreshState();
+}
+
+async function handlePortfolioEconomicsSubmit(event) {
+  const form = event.target.closest("form[data-economics-form]");
+  if (!form || !nodes.portfolioList?.contains(form)) return;
+  event.preventDefault();
+  const submitButton = form.querySelector("button[type='submit']");
+  if (submitButton) submitButton.disabled = true;
+  if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "ROI 보정 저장 중";
+  const formData = new FormData(form);
+  try {
+    const state = await savePortfolioEconomics({
+      action: "save",
+      recordId: form.dataset.recordId || "",
+      jobId: form.dataset.jobId || "",
+      title: form.dataset.title || "",
+      actualCostKrw: formData.get("actualCostKrw"),
+      actualSavedMinutes: formData.get("actualSavedMinutes"),
+      hourlyValueKrw: formData.get("hourlyValueKrw"),
+      note: formData.get("note")
+    });
+    await refreshEconomicsViews(state);
+    if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "ROI 보정 저장 완료";
+  } catch (error) {
+    if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = `ROI 보정 실패: ${error.message}`;
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
+async function handlePortfolioEconomicsClick(event) {
+  const button = event.target.closest("button[data-economics-clear]");
+  if (!button || !nodes.portfolioList?.contains(button)) return;
+  button.disabled = true;
+  if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "ROI 보정 해제 중";
+  try {
+    const state = await savePortfolioEconomics({
+      action: "clear",
+      recordId: button.dataset.recordId || "",
+      jobId: button.dataset.jobId || ""
+    });
+    await refreshEconomicsViews(state);
+    if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = "ROI 보정 해제 완료";
+  } catch (error) {
+    if (nodes.portfolioStatus) nodes.portfolioStatus.textContent = `ROI 보정 해제 실패: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function reviewEmpty(message) {
+  return `<div class="empty">${escapeHtml(message)}</div>`;
+}
+
+function reviewTrustScore(job = {}, record = null) {
+  let score = 54;
+  const status = String(job.status || "");
+  if (status === "completed") score += 18;
+  if (status === "completed_with_errors") score -= 8;
+  if (["failed", "cancelled"].includes(status)) score -= 20;
+  if (status === "waiting_question") score -= 6;
+  if (job.saved?.ok) score += 10;
+  if (String(job.detail || "").includes("RAG")) score += 8;
+  if (record?.score) score = Math.round((score * 0.45) + (Number(record.score || 0) * 0.55));
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function reviewTrustClass(score) {
+  if (score >= 82) return "ok";
+  if (score < 62) return "warn";
+  return "info";
+}
+
+function reviewDecisionStats(decisionRows = []) {
+  const rows = Array.isArray(decisionRows) ? decisionRows : [];
+  const approved = rows.filter((decision) => decision.status === "approved").length;
+  const rejected = rows.filter((decision) => decision.status === "rejected").length;
+  const needsRevision = rows.filter((decision) => decision.status === "needs_revision").length;
+  const pending = rows.filter((decision) => !decision.status || decision.status === "pending").length;
+  const edited = rows.filter((decision) => decision.edit?.diff?.changed).length;
+  const resolved = approved + rejected + needsRevision;
+  const revisionLike = rejected + needsRevision;
+  return {
+    total: rows.length,
+    approved,
+    rejected,
+    needsRevision,
+    pending,
+    edited,
+    resolved,
+    revisionLike,
+    approvalRate: resolved ? Math.round((approved / resolved) * 100) : null,
+    revisionRate: resolved ? Math.round((revisionLike / resolved) * 100) : null
+  };
+}
+
+function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recordsByJobId = new Map(), decisionsByKey = new Map()) {
+  const stats = reviewDecisionStats(decisionRows);
+  const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status));
+  const trustRows = completedJobs.map((job) => {
+    const record = recordsByJobId.get(job.id);
+    const decision = decisionsByKey.get(`${job.type || "office"}:${job.id || ""}`);
+    return { job, record, decision, trust: reviewTrustScore(job, record) };
+  });
+  const avgTrust = trustRows.length ? Math.round(trustRows.reduce((sum, item) => sum + item.trust, 0) / trustRows.length) : 0;
+  const avgPerformance = records.length ? Math.round(records.reduce((sum, record) => sum + Number(record.score || 0), 0) / records.length) : 0;
+  const autoCandidates = trustRows.filter((item) => {
+    const blocked = ["rejected", "needs_revision"].includes(item.decision?.status || "");
+    const approvedOrUnreviewed = !item.decision || item.decision.status === "approved" || item.decision.status === "pending";
+    const highPerformance = item.record?.passed || Number(item.record?.score || 0) >= 82;
+    return item.trust >= 86 && highPerformance && approvedOrUnreviewed && !blocked;
+  });
+  let ladder = "수동";
+  let ladderMeta = "검수 기록 대기";
+  let recommendation = "먼저 5건 이상을 승인/반려/수정필요로 남겨 기준 데이터를 만드세요.";
+  const revisionRate = stats.revisionRate ?? 0;
+  if (stats.resolved >= 15 && stats.approved >= 10 && revisionRate <= 5 && avgPerformance >= 90 && autoCandidates.length >= 5) {
+    ladder = "자동 후보";
+    ladderMeta = `평균 ${avgPerformance}점 · 수정률 ${revisionRate}%`;
+    recommendation = "완전 자동 실행은 아직 게이트를 유지하고, 동일 워크플로 1개만 예약 자동화 후보로 올리세요.";
+  } else if (stats.resolved >= 8 && stats.approved >= 5 && revisionRate <= 15 && avgPerformance >= 82 && autoCandidates.length >= 2) {
+    ladder = "조건부 자동";
+    ladderMeta = `승인 ${stats.approved}건 · 후보 ${autoCandidates.length}건`;
+    recommendation = "고신뢰 작업은 일괄 승인 후보로 묶고, 저신뢰 작업만 요미 검수로 에스컬레이션하세요.";
+  } else if (stats.resolved >= 2 || records.length) {
+    ladder = "감독";
+    ladderMeta = stats.resolved ? `검수 ${stats.resolved}건 · 수정률 ${revisionRate}%` : `성과기록 ${records.length}건`;
+    recommendation = revisionRate >= 30
+      ? "수정률이 높습니다. 직원 프롬프트나 완료 기준을 먼저 보강하고 자동화 승급은 막아두세요."
+      : "검수 기록을 계속 쌓으면서 반복 성공 패턴만 스킬 후보로 승격하세요.";
+  }
+  if (stats.edited < 3) {
+    recommendation = stats.resolved
+      ? "헤르메스 개선에는 편집 diff가 더 필요합니다. 승인보다 수정기록을 최소 3건 먼저 모으세요."
+      : recommendation;
+  }
+  return {
+    ladder,
+    ladderMeta,
+    avgTrust,
+    avgPerformance,
+    autoCandidateCount: autoCandidates.length,
+    autoCandidateMeta: autoCandidates.length
+      ? `평균 신뢰 ${avgTrust || 0}점 · 조건 충족`
+      : completedJobs.length ? "고신뢰 완료 작업 없음" : "완료 작업 대기",
+    revisionRate: stats.revisionRate == null ? 0 : stats.revisionRate,
+    revisionMeta: stats.resolved
+      ? `승인 ${stats.approved} · 수정 ${stats.needsRevision} · 반려 ${stats.rejected}`
+      : "승인/반려 기록 대기",
+    hermesFuel: stats.edited,
+    hermesMeta: stats.edited ? `편집 diff ${stats.edited}개 저장됨` : "초안-최종본 diff 대기",
+    opsStatus: `검수 ${stats.resolved}건 · 성과 ${records.length}건`,
+    recommendation
+  };
+}
+
+function renderReviewOpsDashboard(summary = {}) {
+  if (nodes.reviewOpsStatus) nodes.reviewOpsStatus.textContent = summary.opsStatus || "신뢰도 계산 대기";
+  if (nodes.reviewTrustLadder) nodes.reviewTrustLadder.textContent = summary.ladder || "수동";
+  if (nodes.reviewTrustLadderMeta) nodes.reviewTrustLadderMeta.textContent = summary.ladderMeta || "검수 기록 대기";
+  if (nodes.reviewAutoCandidateCount) nodes.reviewAutoCandidateCount.textContent = `${Number(summary.autoCandidateCount || 0)}건`;
+  if (nodes.reviewAutoCandidateMeta) nodes.reviewAutoCandidateMeta.textContent = summary.autoCandidateMeta || "승급 후보 없음";
+  if (nodes.reviewRevisionRate) nodes.reviewRevisionRate.textContent = `${Number(summary.revisionRate || 0)}%`;
+  if (nodes.reviewRevisionMeta) nodes.reviewRevisionMeta.textContent = summary.revisionMeta || "승인/반려 기록 대기";
+  if (nodes.reviewHermesFuel) nodes.reviewHermesFuel.textContent = `${Number(summary.hermesFuel || 0)}개`;
+  if (nodes.reviewHermesMeta) nodes.reviewHermesMeta.textContent = summary.hermesMeta || "편집 diff 대기";
+  if (nodes.reviewOpsRecommendation) nodes.reviewOpsRecommendation.textContent = summary.recommendation || "검수 기록이 쌓이면 다음 자동화 승급 기준을 제안합니다.";
+}
+
+function reviewDecisionLabel(decision = null) {
+  if (!decision?.status || decision.status === "pending") return "";
+  return decision.statusLabel || ({ approved: "승인", rejected: "반려", needs_revision: "수정 필요" })[decision.status] || decision.status;
+}
+
+function reviewEditSummary(decision = null) {
+  const diff = decision?.edit?.diff;
+  if (!diff) return "";
+  return diff.summary || (diff.changed ? "수정 기록 있음" : "수정 기록: 변경 없음");
+}
+
+function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = new Map()) {
+  const record = recordsByJobId.get(job.id);
+  const decision = decisionsByKey.get(`${job.type || "office"}:${job.id || ""}`);
+  const decisionLabel = reviewDecisionLabel(decision);
+  const editSummary = reviewEditSummary(decision);
+  const trust = reviewTrustScore(job, record);
+  const statusLabel = job.statusLabel || officeJobStatusLabel(job.status);
+  const elapsed = formatTaskQueueDuration(job.durationMs);
+  const typeLabel = job.type === "codex" ? "Codex" : "직원 실행";
+  const progress = job.lastLog || job.progress || job.detail || "";
+  const savedText = job.saved?.ok ? `Vault ${job.saved.relPath || "저장됨"}` : job.saved?.reason || "";
+  return `
+    <article class="review-item ${escapeHtml(taskQueueTone(job.status))}">
+      <div class="review-item-head">
+        <strong>${escapeHtml(job.title || job.id || "작업")}</strong>
+        <b class="review-trust ${reviewTrustClass(trust)}">${trust}점</b>
+      </div>
+      <div class="review-item-meta">
+        <span>${escapeHtml(statusLabel)}</span>
+        <span>${escapeHtml(typeLabel)}</span>
+        ${elapsed ? `<span>${escapeHtml(elapsed)}</span>` : ""}
+        ${record?.grade ? `<span>${escapeHtml(record.grade)}</span>` : ""}
+      </div>
+      ${progress ? `<p>${escapeHtml(progress)}</p>` : ""}
+      ${savedText ? `<small>${escapeHtml(savedText)}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
+      ${editSummary ? `<small class="review-edit">편집 diff: ${escapeHtml(editSummary)}</small>` : ""}
+      <div class="review-actions">
+        <button type="button" data-review-job-action="detail" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}">상세</button>
+        <button type="button" data-review-job-action="approve" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">승인</button>
+        <button type="button" data-review-job-action="reject" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">반려</button>
+        <button type="button" data-review-job-action="revision" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">수정필요</button>
+        <button type="button" data-review-job-action="edit-diff" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}" data-job-draft="${escapeHtml(progress || job.title || "")}">수정기록</button>
+      </div>
+    </article>
+  `;
+}
+
+function reviewSkillCard(candidate = {}) {
+  return `
+    <article class="review-item skill">
+      <div class="review-item-head">
+        <strong>${escapeHtml(candidate.title || candidate.id || "스킬 후보")}</strong>
+        <b class="review-trust info">${Number(candidate.confidence || 0)}점</b>
+      </div>
+      <div class="review-item-meta">
+        <span>${escapeHtml(skillCandidateKindLabel(candidate.kind))}</span>
+        <span>${escapeHtml(candidate.statusLabel || "검토 대기")}</span>
+        ${candidate.createdAt ? `<span>${escapeHtml(formatShortTime(candidate.createdAt))}</span>` : ""}
+      </div>
+      ${candidate.description ? `<p>${escapeHtml(candidate.description)}</p>` : ""}
+      ${candidate.evidencePreview ? `<small>${escapeHtml(candidate.evidencePreview)}</small>` : ""}
+      <div class="review-actions">
+        <button type="button" data-review-open="chat">대화 패널</button>
+        <button type="button" disabled title="현재 스킬 적용은 대화 탭의 후보 목록에서 처리합니다.">적용 준비</button>
+      </div>
+    </article>
+  `;
+}
+
+function reviewPortfolioCard(record = {}) {
+  const assetReview = record.assetReview && typeof record.assetReview === "object" ? record.assetReview : null;
+  return `
+    <article class="review-item portfolio">
+      <div class="review-item-head">
+        <strong>${escapeHtml(record.title || "포트폴리오 후보")}</strong>
+        <b class="review-trust ${reviewTrustClass(record.score || 0)}">${Number(record.score || 0)}점</b>
+      </div>
+      <div class="review-item-meta">
+        <span>${escapeHtml(record.grade || "평가")}</span>
+        <span>${record.passed ? "통과" : "보완"}</span>
+        ${record.workType ? `<span>${escapeHtml(record.workType)}</span>` : ""}
+      </div>
+      ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
+      ${assetReview?.reason ? `<small>${escapeHtml(assetReview.reason)}</small>` : ""}
+      <div class="review-actions">
+        <button type="button" data-review-open="vault">저장소</button>
+        <button type="button" disabled title="다음 단계에서 포트폴리오 승인 상태와 연결됩니다.">자산 승인 준비</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decisions = {} } = {}) {
+  if (!nodes.reviewStatus) return;
+  const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
+  const records = Array.isArray(performance.records) ? performance.records : [];
+  const candidates = Array.isArray(skills.candidates) ? skills.candidates : [];
+  const decisionRows = Array.isArray(decisions.decisions) ? decisions.decisions : [];
+  const recordsByJobId = new Map(records.filter((record) => record.jobId).map((record) => [record.jobId, record]));
+  const decisionsByKey = new Map(decisionRows.filter((decision) => decision.key).map((decision) => [decision.key, decision]));
+  const attentionJobs = jobs.filter((job) => job.needsAttention || ["waiting_question", "failed", "completed_with_errors", "cancelled"].includes(job.status)).slice(0, 8);
+  const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status)).slice(0, 8);
+  const pendingSkills = candidates.filter((candidate) => candidate.status === "pending").slice(0, 8);
+  const portfolioRecords = records.filter((record) => record.portfolioCandidate || record.portfolioRelPath).slice(0, 8);
+  const queueSummary = queue.summary || {};
+  const performanceSummary = performance.summary || {};
+  const skillsSummary = skills.summary || {};
+  renderReviewOpsDashboard(buildReviewOpsSummary(jobs, records, decisionRows, recordsByJobId, decisionsByKey));
+
+  if (nodes.reviewQueueCount) nodes.reviewQueueCount.textContent = `${Number(queueSummary.attention || attentionJobs.length || 0)}건`;
+  if (nodes.reviewQueueMeta) nodes.reviewQueueMeta.textContent = attentionJobs.length ? "확인 필요 작업 있음" : "대기 없음";
+  if (nodes.reviewActiveCount) nodes.reviewActiveCount.textContent = `${Number(queueSummary.active || queueSummary.running || 0)}건`;
+  if (nodes.reviewActiveMeta) nodes.reviewActiveMeta.textContent = queueSummary.latestUpdatedAt ? `최근 ${formatShortTime(queueSummary.latestUpdatedAt)}` : "실행 대기";
+  if (nodes.reviewQualityScore) nodes.reviewQualityScore.textContent = performanceSummary.lastScore ? `${performanceSummary.lastScore}점` : `${performanceSummary.avgScore || 0}점`;
+  if (nodes.reviewQualityMeta) nodes.reviewQualityMeta.textContent = performanceSummary.total ? `평균 ${performanceSummary.avgScore || 0}점 · 통과 ${performanceSummary.passedCount || 0}/${performanceSummary.total}` : "성과기록 대기";
+  if (nodes.reviewSkillCount) nodes.reviewSkillCount.textContent = `${Number(skillsSummary.pending || pendingSkills.length || 0)}개`;
+  if (nodes.reviewSkillMeta) nodes.reviewSkillMeta.textContent = skillsSummary.approved ? `적용 ${skillsSummary.approved}개` : "검토 대기 없음";
+
+  if (nodes.reviewAttentionStatus) nodes.reviewAttentionStatus.textContent = attentionJobs.length ? `${attentionJobs.length}건` : "정상";
+  if (nodes.reviewAttentionList) nodes.reviewAttentionList.innerHTML = attentionJobs.length ? attentionJobs.map((job) => reviewJobCard(job, recordsByJobId, decisionsByKey)).join("") : reviewEmpty("확인 필요한 작업이 없습니다.");
+  if (nodes.reviewCompletedStatus) nodes.reviewCompletedStatus.textContent = completedJobs.length ? `${completedJobs.length}건` : "대기";
+  if (nodes.reviewCompletedList) nodes.reviewCompletedList.innerHTML = completedJobs.length ? completedJobs.map((job) => reviewJobCard(job, recordsByJobId, decisionsByKey)).join("") : reviewEmpty("완료된 작업 기록이 없습니다.");
+  if (nodes.reviewSkillStatus) nodes.reviewSkillStatus.textContent = pendingSkills.length ? `${pendingSkills.length}개` : "대기";
+  if (nodes.reviewSkillList) nodes.reviewSkillList.innerHTML = pendingSkills.length ? pendingSkills.map(reviewSkillCard).join("") : reviewEmpty("검토할 스킬 후보가 없습니다.");
+  if (nodes.reviewPortfolioStatus) nodes.reviewPortfolioStatus.textContent = portfolioRecords.length ? `${portfolioRecords.length}건` : "대기";
+  if (nodes.reviewPortfolioList) nodes.reviewPortfolioList.innerHTML = portfolioRecords.length ? portfolioRecords.map(reviewPortfolioCard).join("") : reviewEmpty("포트폴리오 후보가 없습니다.");
+}
+
+async function fetchReviewApiState(pathValue, label) {
+  const response = await apiFetch(pathValue, { cache: "no-store" });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${label}: HTTP ${response.status}${text ? ` · ${text.slice(0, 80)}` : ""}`);
+  }
+  const data = await response.json();
+  if (data.ok === false) throw new Error(`${label}: ${data.error || `HTTP ${response.status}`}`);
+  return data;
+}
+
+async function loadReviewInbox() {
+  if (!nodes.reviewStatus) return null;
+  nodes.reviewStatus.textContent = "검수함 불러오는 중";
+  const [queue, performance, skills, decisions] = await Promise.all([
+    fetchReviewApiState("/api/task-queue?limit=30", "작업 큐").catch((error) => ({ ok: false, error: error.message, jobs: [], summary: {} })),
+    fetchReviewApiState("/api/performance-log?limit=20", "성과기록").catch((error) => ({ ok: false, error: error.message, records: [], summary: {} })),
+    fetchReviewApiState("/api/skill-candidates", "스킬 후보").catch((error) => ({ ok: false, error: error.message, candidates: [], summary: {} })),
+    fetchReviewApiState("/api/review-decisions", "검수 결정").catch((error) => ({ ok: false, error: error.message, decisions: [], summary: {} }))
+  ]);
+  renderReviewInbox({ queue, performance, skills, decisions });
+  const errors = [queue, performance, skills, decisions].filter((item) => item.ok === false && item.error).map((item) => item.error);
+  nodes.reviewStatus.textContent = errors.length ? `일부 로드 실패: ${errors.join(" · ")}` : `업데이트 ${nowTime()}`;
+  return { queue, performance, skills, decisions };
+}
+
+function showReviewJobDetail(job = {}) {
+  const logs = Array.isArray(job.logs) ? job.logs.slice(-6).map((log) => `- ${formatShortTime(log.createdAt)} · ${log.actor || "system"} · ${log.message || ""}`) : [];
+  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "검수 상세";
+  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${job.type === "codex" ? "Codex" : "직원 실행"} · ${job.statusLabel || officeJobStatusLabel(job.status)}`;
+  if (nodes.chatResultPreview) {
+    nodes.chatResultPreview.textContent = [
+      "# 검수함 작업 상세",
+      "",
+      `- 작업 ID: ${job.id || ""}`,
+      `- 유형: ${job.type === "codex" ? "Codex" : "직원 실행"}`,
+      `- 상태: ${job.statusLabel || officeJobStatusLabel(job.status)}`,
+      `- 제목: ${job.title || ""}`,
+      job.detail ? `- 세부: ${job.detail}` : "",
+      job.saved?.ok ? `- 저장: ${job.saved.relPath || "Vault 저장됨"}` : job.saved?.reason ? `- 저장: ${job.saved.reason}` : "",
+      "",
+      "## 진행",
+      job.progress || job.lastLog || "진행 정보 없음",
+      "",
+      "## 최근 로그",
+      logs.length ? logs.join("\n") : "로그 없음"
+    ].filter(Boolean).join("\n");
+  }
+  switchPage("chat");
+}
+
+async function saveReviewDecision(payload = {}) {
+  const response = await apiFetch("/api/review-decisions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function closeReviewEditPanel() {
+  reviewEditTarget = null;
+  if (nodes.reviewEditPanel) nodes.reviewEditPanel.hidden = true;
+  if (nodes.reviewEditTarget) nodes.reviewEditTarget.textContent = "선택 대기";
+  if (nodes.reviewEditDraft) nodes.reviewEditDraft.value = "";
+  if (nodes.reviewEditFinal) nodes.reviewEditFinal.value = "";
+  if (nodes.reviewEditNote) nodes.reviewEditNote.value = "";
+}
+
+function openReviewEditPanel(button) {
+  if (!nodes.reviewEditPanel || !nodes.reviewEditDraft || !nodes.reviewEditFinal) return false;
+  const type = button.dataset.jobType || "office";
+  const id = button.dataset.jobId || "";
+  const targetTitle = button.dataset.jobTitle || id || "작업";
+  const draftText = button.dataset.jobDraft || targetTitle || "";
+  reviewEditTarget = { type, id, targetTitle };
+  if (nodes.reviewEditTarget) nodes.reviewEditTarget.textContent = compactReply(targetTitle, 44);
+  nodes.reviewEditDraft.value = draftText;
+  nodes.reviewEditFinal.value = draftText;
+  if (nodes.reviewEditNote) nodes.reviewEditNote.value = "";
+  nodes.reviewEditPanel.hidden = false;
+  nodes.reviewEditPanel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  window.setTimeout(() => nodes.reviewEditFinal?.focus(), 80);
+  if (nodes.reviewStatus) nodes.reviewStatus.textContent = "수정기록 입력 중";
+  return true;
+}
+
+async function submitReviewEditPanel(event) {
+  event?.preventDefault();
+  if (!reviewEditTarget?.id) {
+    if (nodes.reviewStatus) nodes.reviewStatus.textContent = "수정기록을 저장할 작업이 선택되지 않았습니다.";
+    return false;
+  }
+  const draftText = nodes.reviewEditDraft?.value || "";
+  const finalText = nodes.reviewEditFinal?.value || "";
+  const note = nodes.reviewEditNote?.value || "";
+  if (nodes.reviewStatus) nodes.reviewStatus.textContent = "수정 diff 저장 중";
+  if (nodes.reviewEditSaveBtn) nodes.reviewEditSaveBtn.disabled = true;
+  try {
+    await saveReviewDecision({
+      action: "save_edit",
+      type: reviewEditTarget.type,
+      id: reviewEditTarget.id,
+      targetTitle: reviewEditTarget.targetTitle,
+      draftText,
+      finalText,
+      note
+    });
+    closeReviewEditPanel();
+    await loadReviewInbox();
+    return true;
+  } catch (error) {
+    if (nodes.reviewStatus) nodes.reviewStatus.textContent = `수정 diff 저장 실패: ${error.message}`;
+    return false;
+  } finally {
+    if (nodes.reviewEditSaveBtn) nodes.reviewEditSaveBtn.disabled = false;
+  }
+}
+
+async function handleReviewClick(event) {
+  const openButton = event.target.closest("button[data-review-open]");
+  if (openButton && nodes.reviewPage?.contains(openButton)) {
+    const target = openButton.dataset.reviewOpen === "vault" ? "vault" : "chat";
+    switchPage(target);
+    return;
+  }
+  const detailButton = event.target.closest("button[data-review-job-action]");
+  if (!detailButton || !nodes.reviewPage?.contains(detailButton)) return;
+  detailButton.disabled = true;
+  try {
+    const action = detailButton.dataset.reviewJobAction || "";
+    if (action === "edit-diff") {
+      openReviewEditPanel(detailButton);
+      return;
+    }
+    if (["approve", "reject", "revision"].includes(action)) {
+      const status = action === "approve" ? "approved" : action === "reject" ? "rejected" : "needs_revision";
+      const needsNote = action !== "approve";
+      const note = needsNote ? window.prompt(action === "reject" ? "반려 이유를 남겨주세요." : "수정이 필요한 부분을 남겨주세요.", "") : "";
+      if (needsNote && note === null) return;
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "검수 결정 저장 중";
+      await saveReviewDecision({
+        action,
+        status,
+        type: detailButton.dataset.jobType || "office",
+        id: detailButton.dataset.jobId || "",
+        targetTitle: detailButton.dataset.jobTitle || "",
+        note: note || ""
+      });
+      await loadReviewInbox();
+      return;
+    }
+    const detail = await updateTaskQueueAction({
+      action: "detail",
+      id: detailButton.dataset.jobId || "",
+      type: detailButton.dataset.jobType || ""
+    });
+    if (detail?.job) showReviewJobDetail(detail.job);
+    await loadReviewInbox();
+  } catch (error) {
+    if (nodes.reviewStatus) nodes.reviewStatus.textContent = `상세 로드 실패: ${error.message}`;
+  } finally {
+    detailButton.disabled = false;
   }
 }
 
@@ -2862,12 +3437,18 @@ if (nodes.automationTriggerForm) nodes.automationTriggerForm.addEventListener("s
 if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventListener("click", resetAutomationTriggerForm);
 if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);
 if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
+if (nodes.reviewPage) nodes.reviewPage.addEventListener("click", handleReviewClick);
+if (nodes.reviewRefreshBtn) nodes.reviewRefreshBtn.addEventListener("click", loadReviewInbox);
+if (nodes.reviewEditForm) nodes.reviewEditForm.addEventListener("submit", submitReviewEditPanel);
+if (nodes.reviewEditCancelBtn) nodes.reviewEditCancelBtn.addEventListener("click", closeReviewEditPanel);
 if (nodes.humanLoopPanel) nodes.humanLoopPanel.addEventListener("click", handleHumanLoopClick);
 if (nodes.chatSessionList) nodes.chatSessionList.addEventListener("click", handleChatSessionClick);
 if (nodes.newChatSessionBtn) nodes.newChatSessionBtn.addEventListener("click", startNewChatSession);
 if (nodes.skillCandidateList) nodes.skillCandidateList.addEventListener("click", handleSkillCandidateClick);
 if (nodes.chatQueueBtn) nodes.chatQueueBtn.addEventListener("click", enqueueChatInput);
 if (nodes.apiDiagnosticBtn) nodes.apiDiagnosticBtn.addEventListener("click", runApiDiagnostics);
+if (nodes.portfolioList) nodes.portfolioList.addEventListener("submit", handlePortfolioEconomicsSubmit);
+if (nodes.portfolioList) nodes.portfolioList.addEventListener("click", handlePortfolioEconomicsClick);
 nodes.chatForm.addEventListener("submit", submitChat);
 nodes.chatInput.addEventListener("keydown", handleChatKeydown);
 nodes.chatInput.addEventListener("input", resizeChatInput);
@@ -2891,8 +3472,10 @@ loadAutomationTriggersState();
 loadChatSessions();
 loadSkillCandidates();
 loadTaskQueue({ resume: true });
+loadReviewInbox();
 loadRagExclusions();
 runApiDiagnostics();
 setInterval(refreshState, 15000);
 setInterval(loadAutomationTriggersState, 10000);
 setInterval(() => loadTaskQueue({ resume: false }), 5000);
+setInterval(loadReviewInbox, 8000);

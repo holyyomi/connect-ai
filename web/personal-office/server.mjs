@@ -21,6 +21,8 @@ const skillCandidatesPath = path.join(runtimeRoot, "skill-candidates.json");
 const ragIndexPath = path.join(runtimeRoot, "rag-index.json");
 const taskQueueHistoryPath = path.join(runtimeRoot, "task-queue.json");
 const performanceLogPath = path.join(runtimeRoot, "performance-log.json");
+const reviewDecisionsPath = path.join(runtimeRoot, "review-decisions.json");
+const economicsAdjustmentsPath = path.join(runtimeRoot, "economics-adjustments.json");
 
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) return;
@@ -5002,6 +5004,13 @@ function performanceSummary(records = []) {
   const portfolioCount = list.filter((record) => record.portfolioCandidate || record.portfolioRelPath).length;
   const passedCount = list.filter((record) => record.passed).length;
   const recent = list.slice(0, 5);
+  const adjustmentMaps = economicsAdjustmentMaps();
+  const economicsRows = list.map((record) => applyPerformanceEconomicsAdjustment(record, adjustmentForPerformanceRecord(record, adjustmentMaps)));
+  const totalEstimatedCostKrw = economicsRows.reduce((sum, item) => sum + item.displayCostKrw, 0);
+  const totalEstimatedValueKrw = economicsRows.reduce((sum, item) => sum + item.displayValueKrw, 0);
+  const totalEstimatedNetKrw = totalEstimatedValueKrw - totalEstimatedCostKrw;
+  const totalSavedMinutes = economicsRows.reduce((sum, item) => sum + item.displaySavedMinutes, 0);
+  const profitableCount = economicsRows.filter((item) => item.profitable).length;
   return {
     total,
     avgScore,
@@ -5009,7 +5018,180 @@ function performanceSummary(records = []) {
     passedCount,
     lastScore: recent[0]?.score || 0,
     lastGrade: recent[0]?.grade || "",
-    recent
+    recent,
+    economics: {
+      basis: "estimated_cli_proxy",
+      hourlyValueKrw: economicsHourlyValueKrw(),
+      estimatedCostKrw: totalEstimatedCostKrw,
+      estimatedValueKrw: totalEstimatedValueKrw,
+      estimatedNetKrw: totalEstimatedNetKrw,
+      estimatedSavedMinutes: totalSavedMinutes,
+      profitableCount,
+      adjustedCount: economicsRows.filter((item) => item.adjusted).length,
+      roiPercent: totalEstimatedCostKrw ? Math.round((totalEstimatedNetKrw / totalEstimatedCostKrw) * 100) : 0,
+      avgCostKrw: total ? Math.round(totalEstimatedCostKrw / total) : 0,
+      avgSavedMinutes: total ? Math.round(totalSavedMinutes / total) : 0
+    }
+  };
+}
+
+function economicsHourlyValueKrw() {
+  const value = Number(process.env.YOMI_AI_HOURLY_VALUE_KRW || 30000);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 30000;
+}
+
+function clampEconomicsNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, number) : fallback;
+}
+
+function estimatePerformanceEconomics(record = {}) {
+  const normalized = normalizePerformanceRecord(record);
+  const metrics = normalized.metrics || {};
+  const reportLength = clampEconomicsNumber(metrics.reportLength);
+  const sourceCount = clampEconomicsNumber(metrics.sourceCount);
+  const subtaskCount = clampEconomicsNumber(metrics.subtaskCount);
+  const reflectionCount = clampEconomicsNumber(metrics.reflectionCount);
+  const failedCount = clampEconomicsNumber(metrics.failedCount);
+  const completedCount = clampEconomicsNumber(metrics.completedCount);
+  const saved = Boolean(metrics.saved);
+  const ragReady = Boolean(metrics.ragReady);
+  const estimatedCostKrw = Math.round(
+    35
+    + Math.max(1, subtaskCount || completedCount || 1) * 75
+    + sourceCount * 12
+    + Math.ceil(reportLength / 1000) * 18
+    + reflectionCount * 22
+    + failedCount * 35
+  );
+  let savedMinutes = 8
+    + Math.max(1, subtaskCount || completedCount || 1) * 9
+    + sourceCount * 4
+    + Math.min(70, Math.round(reportLength / 700) * 7)
+    + (saved ? 6 : 0)
+    + (ragReady ? 4 : 0);
+  if (!normalized.passed) savedMinutes *= 0.72;
+  if (["failed", "cancelled"].includes(normalized.status)) savedMinutes *= 0.35;
+  if (normalized.status === "completed_with_errors") savedMinutes *= 0.6;
+  savedMinutes = Math.max(0, Math.round(savedMinutes));
+  const estimatedValueKrw = Math.round((savedMinutes / 60) * economicsHourlyValueKrw());
+  const estimatedNetKrw = estimatedValueKrw - estimatedCostKrw;
+  return {
+    basis: "estimated_cli_proxy",
+    hourlyValueKrw: economicsHourlyValueKrw(),
+    estimatedCostKrw,
+    estimatedValueKrw,
+    estimatedNetKrw,
+    estimatedSavedMinutes: savedMinutes,
+    profitable: estimatedNetKrw > 0,
+    roiPercent: estimatedCostKrw ? Math.round((estimatedNetKrw / estimatedCostKrw) * 100) : 0
+  };
+}
+
+function defaultEconomicsAdjustmentsState() {
+  return { adjustments: [] };
+}
+
+function economicsAdjustmentKey(jobId = "", recordId = "") {
+  const job = String(jobId || "").trim();
+  const record = String(recordId || "").trim();
+  return job ? `job:${job}` : `record:${record}`;
+}
+
+function actualEconomicsNumber(value) {
+  if (value === "" || value == null) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+}
+
+function normalizeEconomicsAdjustment(input = {}) {
+  const jobId = String(input.jobId || "").trim();
+  const recordId = String(input.recordId || input.id || "").trim();
+  const key = String(input.key || economicsAdjustmentKey(jobId, recordId));
+  const createdAt = String(input.createdAt || new Date().toISOString());
+  const updatedAt = String(input.updatedAt || createdAt);
+  const actualHourlyValueKrw = actualEconomicsNumber(input.hourlyValueKrw);
+  const hourlyValueKrw = actualHourlyValueKrw == null ? economicsHourlyValueKrw() : actualHourlyValueKrw;
+  return {
+    key,
+    jobId,
+    recordId,
+    title: compactLine(input.title || input.targetTitle || "", 120),
+    actualCostKrw: actualEconomicsNumber(input.actualCostKrw),
+    actualSavedMinutes: actualEconomicsNumber(input.actualSavedMinutes),
+    hourlyValueKrw,
+    note: String(input.note || "").trim().slice(0, 1000),
+    createdAt,
+    updatedAt
+  };
+}
+
+function normalizeEconomicsAdjustmentsState(input = {}) {
+  const adjustments = Array.isArray(input.adjustments) ? input.adjustments : [];
+  return {
+    adjustments: adjustments
+      .map(normalizeEconomicsAdjustment)
+      .filter((item) => item.jobId || item.recordId)
+  };
+}
+
+function readEconomicsAdjustmentsSync() {
+  try {
+    if (!existsSync(economicsAdjustmentsPath)) return defaultEconomicsAdjustmentsState();
+    return normalizeEconomicsAdjustmentsState(JSON.parse(readFileSync(economicsAdjustmentsPath, "utf8")));
+  } catch {
+    return defaultEconomicsAdjustmentsState();
+  }
+}
+
+function writeEconomicsAdjustmentsSync(state = {}) {
+  mkdirSync(runtimeRoot, { recursive: true });
+  const normalized = normalizeEconomicsAdjustmentsState(state);
+  normalized.adjustments = normalized.adjustments
+    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, 300);
+  writeFileSync(economicsAdjustmentsPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return normalized;
+}
+
+function economicsAdjustmentMaps(state = readEconomicsAdjustmentsSync()) {
+  const adjustments = Array.isArray(state.adjustments) ? state.adjustments : [];
+  return {
+    byJobId: new Map(adjustments.filter((item) => item.jobId).map((item) => [item.jobId, item])),
+    byRecordId: new Map(adjustments.filter((item) => item.recordId).map((item) => [item.recordId, item]))
+  };
+}
+
+function adjustmentForPerformanceRecord(record = {}, maps = economicsAdjustmentMaps()) {
+  return maps.byJobId.get(record.jobId) || maps.byRecordId.get(record.id) || null;
+}
+
+function applyPerformanceEconomicsAdjustment(record = {}, adjustment = null) {
+  const estimated = estimatePerformanceEconomics(record);
+  const normalizedAdjustment = adjustment ? normalizeEconomicsAdjustment(adjustment) : null;
+  const actualCostKrw = normalizedAdjustment?.actualCostKrw ?? null;
+  const actualSavedMinutes = normalizedAdjustment?.actualSavedMinutes ?? null;
+  const hourlyValueKrw = normalizedAdjustment?.hourlyValueKrw ?? estimated.hourlyValueKrw;
+  const displayCostKrw = actualCostKrw ?? estimated.estimatedCostKrw;
+  const displaySavedMinutes = actualSavedMinutes ?? estimated.estimatedSavedMinutes;
+  const displayValueKrw = Math.round((displaySavedMinutes / 60) * hourlyValueKrw);
+  const displayNetKrw = displayValueKrw - displayCostKrw;
+  return {
+    ...estimated,
+    estimatedHourlyValueKrw: estimated.hourlyValueKrw,
+    hourlyValueKrw,
+    displayHourlyValueKrw: hourlyValueKrw,
+    basis: normalizedAdjustment ? "manual_adjusted" : estimated.basis,
+    adjusted: Boolean(normalizedAdjustment),
+    adjustment: normalizedAdjustment,
+    actualCostKrw,
+    actualSavedMinutes,
+    displayCostKrw,
+    displayValueKrw,
+    displayNetKrw,
+    displaySavedMinutes,
+    displayRoiPercent: displayCostKrw ? Math.round((displayNetKrw / displayCostKrw) * 100) : 0,
+    profitable: displayNetKrw > 0
   };
 }
 
@@ -5232,12 +5414,239 @@ async function recordJobPerformance(job) {
 
 function buildPerformanceLogState(limit = 20) {
   const records = readPerformanceLogSync().records;
+  const adjustmentMaps = economicsAdjustmentMaps();
+  const enrichedRecords = records.map((record) => ({
+    ...record,
+    economics: applyPerformanceEconomicsAdjustment(record, adjustmentForPerformanceRecord(record, adjustmentMaps))
+  }));
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     summary: performanceSummary(records),
-    records: records.slice(0, Math.max(1, Math.min(80, Number(limit) || 20)))
+    records: enrichedRecords.slice(0, Math.max(1, Math.min(80, Number(limit) || 20)))
   };
+}
+
+function updatePerformanceEconomics(input = {}) {
+  const action = String(input.action || "save").trim().toLowerCase();
+  const jobId = String(input.jobId || "").trim();
+  const recordId = String(input.recordId || input.id || "").trim();
+  if (!jobId && !recordId) throw new Error("성과기록 ID 또는 작업 ID가 필요합니다");
+  const state = readEconomicsAdjustmentsSync();
+  const key = economicsAdjustmentKey(jobId, recordId);
+  if (action === "clear") {
+    state.adjustments = state.adjustments.filter((item) => item.key !== key && !(jobId && item.jobId === jobId) && !(recordId && item.recordId === recordId));
+    writeEconomicsAdjustmentsSync(state);
+    return buildPerformanceLogState(input.limit);
+  }
+  const existing = state.adjustments.find((item) => item.key === key || (jobId && item.jobId === jobId) || (recordId && item.recordId === recordId));
+  const now = new Date().toISOString();
+  const adjustment = normalizeEconomicsAdjustment({
+    ...existing,
+    ...input,
+    jobId: jobId || existing?.jobId || "",
+    recordId: recordId || existing?.recordId || "",
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  });
+  state.adjustments = [adjustment, ...state.adjustments.filter((item) => item.key !== adjustment.key && !(adjustment.jobId && item.jobId === adjustment.jobId) && !(adjustment.recordId && item.recordId === adjustment.recordId))];
+  writeEconomicsAdjustmentsSync(state);
+  return buildPerformanceLogState(input.limit);
+}
+
+function defaultReviewDecisionsState() {
+  return { decisions: [] };
+}
+
+function reviewDecisionKey(type, id) {
+  return `${String(type || "office").trim().toLowerCase()}:${String(id || "").trim()}`;
+}
+
+function reviewDecisionStatusLabel(status = "") {
+  return {
+    approved: "승인",
+    rejected: "반려",
+    needs_revision: "수정 필요",
+    pending: "검수 대기"
+  }[status] || "검수 대기";
+}
+
+function reviewTextValue(value = "", maxLength = 40000) {
+  return String(value || "").replace(/\r\n/g, "\n").slice(0, maxLength);
+}
+
+function commonPrefixLength(a = "", b = "") {
+  const limit = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < limit && a[index] === b[index]) index += 1;
+  return index;
+}
+
+function commonSuffixLength(a = "", b = "", prefix = 0) {
+  const max = Math.min(a.length, b.length) - prefix;
+  let index = 0;
+  while (index < max && a[a.length - 1 - index] === b[b.length - 1 - index]) index += 1;
+  return index;
+}
+
+function changedTextPreview(value = "") {
+  return compactLine(String(value || "").replace(/\s+/g, " "), 260);
+}
+
+function buildReviewEditDiff(draftText = "", finalText = "") {
+  const draft = reviewTextValue(draftText);
+  const final = reviewTextValue(finalText);
+  const prefix = commonPrefixLength(draft, final);
+  const suffix = commonSuffixLength(draft, final, prefix);
+  const removed = draft.slice(prefix, Math.max(prefix, draft.length - suffix));
+  const added = final.slice(prefix, Math.max(prefix, final.length - suffix));
+  const draftLines = draft.split("\n");
+  const finalLines = final.split("\n");
+  let linePrefix = 0;
+  const lineLimit = Math.min(draftLines.length, finalLines.length);
+  while (linePrefix < lineLimit && draftLines[linePrefix] === finalLines[linePrefix]) linePrefix += 1;
+  let lineSuffix = 0;
+  const lineMax = Math.min(draftLines.length, finalLines.length) - linePrefix;
+  while (lineSuffix < lineMax && draftLines[draftLines.length - 1 - lineSuffix] === finalLines[finalLines.length - 1 - lineSuffix]) lineSuffix += 1;
+  const removedLines = Math.max(0, draftLines.length - linePrefix - lineSuffix);
+  const addedLines = Math.max(0, finalLines.length - linePrefix - lineSuffix);
+  const changedChars = Math.max(0, removed.length + added.length);
+  const summary = changedChars
+    ? `${removedLines}줄 제거 · ${addedLines}줄 추가 · ${changedChars}자 변경`
+    : "변경 없음";
+  return {
+    summary,
+    changed: changedChars > 0,
+    draftLength: draft.length,
+    finalLength: final.length,
+    changedChars,
+    removedLines,
+    addedLines,
+    removedPreview: changedTextPreview(removed),
+    addedPreview: changedTextPreview(added)
+  };
+}
+
+function normalizeReviewEdit(input = {}) {
+  const draftText = reviewTextValue(input.draftText ?? input.draft ?? "");
+  const finalText = reviewTextValue(input.finalText ?? input.final ?? "");
+  if (!draftText && !finalText) return null;
+  const diff = buildReviewEditDiff(draftText, finalText);
+  return {
+    draftText,
+    finalText,
+    diff,
+    note: String(input.note || "").trim().slice(0, 1200),
+    createdAt: String(input.createdAt || new Date().toISOString()),
+    updatedAt: String(input.updatedAt || input.createdAt || new Date().toISOString())
+  };
+}
+
+function normalizeReviewDecision(input = {}) {
+  const rawType = String(input.type || input.targetType || "office").trim().toLowerCase();
+  const type = ["office", "codex", "portfolio", "skill"].includes(rawType) ? rawType : "office";
+  const id = String(input.id || input.targetId || "").trim();
+  const rawStatus = String(input.status || "").trim().toLowerCase();
+  const status = ["approved", "rejected", "needs_revision", "pending"].includes(rawStatus) ? rawStatus : "pending";
+  const createdAt = String(input.createdAt || new Date().toISOString());
+  const updatedAt = String(input.updatedAt || createdAt);
+  const editSource = input.edit && typeof input.edit === "object"
+    ? { ...input.edit, draftText: input.draftText ?? input.edit.draftText, finalText: input.finalText ?? input.edit.finalText }
+    : { draftText: input.draftText, finalText: input.finalText };
+  const edit = normalizeReviewEdit(editSource);
+  return {
+    key: reviewDecisionKey(type, id),
+    type,
+    id,
+    targetTitle: compactLine(input.targetTitle || input.title || "", 120),
+    status,
+    statusLabel: reviewDecisionStatusLabel(status),
+    note: String(input.note || "").trim().slice(0, 1200),
+    createdAt,
+    updatedAt,
+    decidedAt: String(input.decidedAt || (status === "pending" ? "" : updatedAt)),
+    edit
+  };
+}
+
+function normalizeReviewDecisionsState(input = {}) {
+  const decisions = Array.isArray(input.decisions) ? input.decisions : [];
+  return { decisions: decisions.map(normalizeReviewDecision).filter((decision) => decision.id) };
+}
+
+async function readReviewDecisionsState() {
+  if (!(await exists(reviewDecisionsPath))) return defaultReviewDecisionsState();
+  return normalizeReviewDecisionsState(await readJson(reviewDecisionsPath, defaultReviewDecisionsState()));
+}
+
+async function writeReviewDecisionsState(state) {
+  const normalized = normalizeReviewDecisionsState(state);
+  normalized.decisions = normalized.decisions
+    .sort((a, b) => jobTimeValue(b.updatedAt || b.createdAt) - jobTimeValue(a.updatedAt || a.createdAt))
+    .slice(0, 300);
+  await writeJsonFile(reviewDecisionsPath, normalized);
+  return normalized;
+}
+
+function reviewDecisionSummary(decisions = []) {
+  return {
+    total: decisions.length,
+    approved: decisions.filter((decision) => decision.status === "approved").length,
+    rejected: decisions.filter((decision) => decision.status === "rejected").length,
+    needsRevision: decisions.filter((decision) => decision.status === "needs_revision").length,
+    pending: decisions.filter((decision) => decision.status === "pending").length,
+    edited: decisions.filter((decision) => decision.edit?.diff?.changed).length
+  };
+}
+
+async function buildReviewDecisionsState() {
+  const state = await readReviewDecisionsState();
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: reviewDecisionSummary(state.decisions),
+    decisions: state.decisions
+  };
+}
+
+async function updateReviewDecision(input = {}) {
+  const action = String(input.action || "decide").trim().toLowerCase();
+  const targetType = String(input.type || input.targetType || "").trim().toLowerCase();
+  const targetId = String(input.id || input.targetId || "").trim();
+  if (!targetId) throw new Error("검수 대상 ID가 필요합니다");
+  const state = await readReviewDecisionsState();
+  const key = reviewDecisionKey(targetType || "office", targetId);
+  if (action === "clear") {
+    state.decisions = state.decisions.filter((decision) => decision.key !== key);
+    await writeReviewDecisionsState(state);
+    return await buildReviewDecisionsState();
+  }
+  const existing = state.decisions.find((decision) => decision.key === key);
+  const statusByAction = {
+    approve: "approved",
+    approved: "approved",
+    reject: "rejected",
+    rejected: "rejected",
+    revision: "needs_revision",
+    needs_revision: "needs_revision",
+    save_edit: existing?.status || "needs_revision"
+  };
+  const status = statusByAction[action] || String(input.status || "pending").trim().toLowerCase();
+  if (!["approved", "rejected", "needs_revision", "pending"].includes(status)) throw new Error("알 수 없는 검수 상태입니다");
+  const now = new Date().toISOString();
+  const decision = normalizeReviewDecision({
+    ...existing,
+    ...input,
+    type: targetType || existing?.type || "office",
+    id: targetId,
+    status,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    decidedAt: status === "pending" ? "" : now
+  });
+  state.decisions = [decision, ...state.decisions.filter((item) => item.key !== key)];
+  await writeReviewDecisionsState(state);
+  return await buildReviewDecisionsState();
 }
 
 function workflowCandidateAgentIds(job) {
@@ -6246,6 +6655,23 @@ const server = createServer(async (request, response) => {
       }
     }
     if (request.method === "GET" && url.pathname === "/api/performance-log") return sendJson(response, 200, buildPerformanceLogState(Math.max(1, Math.min(80, Number(url.searchParams.get("limit") || 20)))));
+    if (request.method === "POST" && url.pathname === "/api/performance-economics") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, updatePerformanceEconomics(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/review-decisions") return sendJson(response, 200, await buildReviewDecisionsState());
+    if (request.method === "POST" && url.pathname === "/api/review-decisions") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateReviewDecision(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/skills-state") return sendJson(response, 200, await buildSkillsState());
     if (request.method === "POST" && url.pathname === "/api/skills-state") {
       const body = await readJsonBody(request);
