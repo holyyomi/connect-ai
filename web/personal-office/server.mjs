@@ -2572,6 +2572,15 @@ function writePromptToChild(child, prompt, result) {
   }
 }
 
+function terminateChildProcess(child) {
+  if (!child || child.killed) return;
+  if (process.platform === "win32" && child.pid) {
+    const result = spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    if (result.status === 0) return;
+  }
+  try { child.kill(); } catch { /* ignore */ }
+}
+
 function compactCliFailureDetail(text, maxLength = 320) {
   const raw = stripAnsi(text || "");
   if (!raw) return "";
@@ -2601,9 +2610,11 @@ function codexFailureMessage(result, label = "Codex CLI 호출") {
 
 function claudeFailureMessage(result, label = "Claude Code CLI 호출") {
   const stderr = stripAnsi(result?.stderr || "");
+  const stdout = stripAnsi(result?.output || "");
   const error = stripAnsi(result?.error || "");
-  const rawDetail = stderr || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  const rawDetail = stderr || stdout || error || `종료 코드 ${result?.exitCode ?? "unknown"}`;
   const detail = compactCliFailureDetail(rawDetail) || `종료 코드 ${result?.exitCode ?? "unknown"}`;
+  if (/model/i.test(rawDetail) && /invalid|unknown|not found|not exist|not supported|unsupported|access/i.test(rawDetail)) return `${label} 실패: Claude 모델 설정을 확인해야 합니다. (${detail})`;
   if (/auth|login|sign.?in|unauthori[sz]ed|credential|api.?key/i.test(rawDetail)) return `${label} 실패: Claude Code 인증 상태를 확인해야 합니다. (${detail})`;
   if (/timeout/i.test(detail)) return `${label} 실패: 응답 시간이 초과됐습니다. 요청을 더 작게 나눠 다시 시도하세요.`;
   if (/permission|denied|access/i.test(rawDetail)) return `${label} 실패: Claude Code 권한 제한에 걸렸습니다. (${detail})`;
@@ -2631,7 +2642,7 @@ async function runCodexPrompt(prompt, options = {}) {
     writePromptToChild(child, prompt, result);
     const timer = setTimeout(() => {
       result.error = `timeout after ${timeoutMs}ms`;
-      child.kill();
+      terminateChildProcess(child);
     }, timeoutMs);
     child.stdout.on("data", (chunk) => { result.output = (result.output + chunk.toString()).slice(-maxCodexOutputBytes); });
     child.stderr.on("data", (chunk) => { result.stderr = (result.stderr + chunk.toString()).slice(-maxCodexOutputBytes); });
@@ -2661,7 +2672,7 @@ async function runCodexPrompt(prompt, options = {}) {
   });
 }
 
-async function runClaudePrompt(prompt, options = {}) {
+async function runClaudePromptOnce(prompt, options = {}) {
   const commandSpec = claudeCommandSpec();
   const timeoutMs = Number(options.timeoutMs || claudePromptTimeoutMs);
   const args = [
@@ -2676,12 +2687,12 @@ async function runClaudePrompt(prompt, options = {}) {
     "--max-budget-usd",
     claudeMaxBudgetUsd
   ];
-  const model = String(process.env.YOMI_AI_CLAUDE_MODEL || "").trim();
+  const model = options.omitModel ? "" : String(process.env.YOMI_AI_CLAUDE_MODEL || "").trim();
   if (model) args.push("--model", model);
   return await new Promise((resolve) => {
     const result = {
       ok: false,
-      commandLabel: `${commandSpec.label} --print --input-format text --permission-mode plan <stdin>`,
+      commandLabel: `${commandSpec.label} --print --input-format text --permission-mode plan${model ? " --model <configured>" : ""} <stdin>`,
       output: "",
       stderr: "",
       exitCode: null,
@@ -2691,7 +2702,7 @@ async function runClaudePrompt(prompt, options = {}) {
     writePromptToChild(child, prompt, result);
     const timer = setTimeout(() => {
       result.error = `timeout after ${timeoutMs}ms`;
-      child.kill();
+      terminateChildProcess(child);
     }, timeoutMs);
     child.stdout.on("data", (chunk) => { result.output = (result.output + chunk.toString()).slice(-maxCodexOutputBytes); });
     child.stderr.on("data", (chunk) => { result.stderr = (result.stderr + chunk.toString()).slice(-maxCodexOutputBytes); });
@@ -2711,6 +2722,20 @@ async function runClaudePrompt(prompt, options = {}) {
       resolve(result);
     });
   });
+}
+
+async function runClaudePrompt(prompt, options = {}) {
+  const result = await runClaudePromptOnce(prompt, options);
+  const configuredModel = String(process.env.YOMI_AI_CLAUDE_MODEL || "").trim();
+  const detail = `${result.stderr || ""}\n${result.output || ""}\n${result.error || ""}`;
+  const modelLooksBad = configuredModel && !result.ok && /model/i.test(detail) && /invalid|unknown|not found|not exist|not supported|unsupported|access/i.test(detail);
+  if (!modelLooksBad || options.omitModel) return result;
+  const fallback = await runClaudePromptOnce(prompt, { ...options, omitModel: true });
+  return {
+    ...fallback,
+    modelFallbackFrom: configuredModel,
+    commandLabel: `${fallback.commandLabel} · model fallback`
+  };
 }
 
 function parseJsonObject(text) {
@@ -3628,8 +3653,8 @@ async function runCodexText(prompt, label) {
   return { text: result.output, commandLabel: result.commandLabel };
 }
 
-async function runClaudeText(prompt, label) {
-  const result = await runClaudePrompt(prompt);
+async function runClaudeText(prompt, label, options = {}) {
+  const result = await runClaudePrompt(prompt, options);
   if (!result.ok) throw new Error(claudeFailureMessage(result, label));
   if (!result.output) throw new Error(`${label} 실패: Claude Code CLI가 빈 응답을 반환했습니다.`);
   return { text: result.output, commandLabel: result.commandLabel };
@@ -6260,7 +6285,8 @@ async function generateClaudeConversation(message) {
     "",
     `사용자 요청: ${message}`
   ].join("\n");
-  const generated = await runClaudeText(prompt, "Claude 직접 호출");
+  const directTimeoutMs = Math.min(60_000, Math.max(20_000, claudePromptTimeoutMs));
+  const generated = await runClaudeText(prompt, "Claude 직접 호출", { timeoutMs: directTimeoutMs });
   return { ...generated, context: publicContextSummary(context) };
 }
 
