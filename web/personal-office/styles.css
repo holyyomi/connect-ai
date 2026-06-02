@@ -365,6 +365,13 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .rag-search-result strong { color: var(--bright); font-size: 12px; }
 .rag-search-result span, .rag-search-result small { margin-top: 4px; color: var(--dim); font-size: 10px; line-height: 1.4; }
 .rag-search-result p { margin: 6px 0 0; color: var(--text); font-size: 11px; line-height: 1.5; }
+.rag-quality-panel { display: grid; gap: 8px; margin: 10px 0; border: 1px solid rgba(255,191,77,.13); border-radius: 8px; background: rgba(255,191,77,.035); padding: 9px; }
+.rag-quality-list { display: grid; gap: 7px; max-height: 220px; overflow: auto; }
+.rag-quality-item { border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(0,0,0,.18); padding: 8px; }
+.rag-quality-item strong, .rag-quality-item span, .rag-quality-item small { display: block; overflow-wrap: anywhere; }
+.rag-quality-item strong { color: var(--bright); font-size: 12px; }
+.rag-quality-item span { margin-top: 4px; color: var(--warning); font-size: 10px; font-weight: 900; }
+.rag-quality-item small { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.35; }
 .api-diagnostic-card { margin-top: 10px; }
 .api-diagnostic-list { display: grid; gap: 7px; margin-bottom: 10px; }
 .api-diagnostic-row { display: grid; grid-template-columns: minmax(88px,.5fr) minmax(64px,.35fr) minmax(0,1.6fr); gap: 8px; align-items: center; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(255,255,255,.03); padding: 8px; }

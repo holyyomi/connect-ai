@@ -1406,6 +1406,49 @@ async function buildRagApiState() {
   };
 }
 
+async function buildRagExclusionsState(limit = 30) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) {
+    return { ok: true, connected: false, path: "", totalMarkdown: 0, includedCount: 0, excludedCount: 0, exclusions: [] };
+  }
+  const files = (await collectMarkdownFiles(vaultRoot, vaultRoot))
+    .filter((file) => !isSensitiveVaultPath(file.relPath))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const exclusions = [];
+  let includedCount = 0;
+  for (const file of files) {
+    let content = "";
+    try {
+      content = await readFile(file.fullPath, "utf8");
+    } catch {
+      continue;
+    }
+    const gate = ragQualityGate(file.relPath, content);
+    if (gate.include) {
+      includedCount += 1;
+      continue;
+    }
+    exclusions.push({
+      title: gate.title || reportTitleFromPath(file.relPath),
+      relPath: file.relPath,
+      displayPath: displayReportPath(file.relPath),
+      quality: gate.quality || "excluded",
+      reason: gate.reason || "excluded",
+      updatedAt: new Date(file.mtimeMs).toISOString()
+    });
+  }
+  return {
+    ok: true,
+    connected: true,
+    generatedAt: new Date().toISOString(),
+    path: vaultRoot,
+    totalMarkdown: files.length,
+    includedCount,
+    excludedCount: exclusions.length,
+    exclusions: exclusions.slice(0, Math.max(1, Math.min(100, Number(limit) || 30)))
+  };
+}
+
 function normalizeStyleProfile(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const list = (key) => {
@@ -5807,6 +5850,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/recent-reports") return sendJson(response, 200, await listRecentReports(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
     if (request.method === "GET" && url.pathname === "/api/vault-overview") return sendJson(response, 200, await buildVaultOverview(Math.max(1, Math.min(30, Number(url.searchParams.get("limit") || 12)))));
+    if (request.method === "GET" && url.pathname === "/api/rag/exclusions") return sendJson(response, 200, await buildRagExclusionsState(Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 30)))));
     if (request.method === "GET" && url.pathname === "/api/rag") return sendJson(response, 200, await buildRagApiState());
     if (request.method === "POST" && url.pathname === "/api/rag") {
       const body = await readJsonBody(request);

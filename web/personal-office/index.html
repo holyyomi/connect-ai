@@ -241,6 +241,11 @@
         <section class="work-card rag-index-card">
           <div class="card-head"><strong>RAG 인덱스</strong><span id="ragIndexSummary">대기</span></div>
           <div id="ragIndexStats" class="rag-index-stats"></div>
+          <div class="rag-quality-panel">
+            <div class="card-head"><strong>RAG 제외 대상</strong><span id="ragQualityStatus">확인 중</span></div>
+            <div id="ragQualityList" class="rag-quality-list"></div>
+            <button id="ragQualityRefreshBtn" class="mini-action" type="button">제외 대상 새로고침</button>
+          </div>
           <div class="rag-search-test">
             <div class="rag-search-row">
               <input id="ragSearchInput" type="search" placeholder="Vault 검색 테스트" aria-label="RAG 검색 테스트" autocomplete="off" />

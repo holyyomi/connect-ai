@@ -103,6 +103,9 @@ const nodes = {
   ragSearchBtn: document.getElementById("ragSearchBtn"),
   ragSearchResults: document.getElementById("ragSearchResults"),
   ragReindexBtn: document.getElementById("ragReindexBtn"),
+  ragQualityStatus: document.getElementById("ragQualityStatus"),
+  ragQualityList: document.getElementById("ragQualityList"),
+  ragQualityRefreshBtn: document.getElementById("ragQualityRefreshBtn"),
   vaultStatus: document.getElementById("vaultStatus"),
   vaultPath: document.getElementById("vaultPath"),
   reportCount: document.getElementById("reportCount"),
@@ -1139,6 +1142,53 @@ function renderRagState(rag = {}) {
   }
 }
 
+function ragExclusionReasonLabel(reason = "") {
+  return ({
+    "frontmatter rag/index false": "frontmatter에서 RAG 제외",
+    "auto-generated command/test title": "명령어형/테스트성 자동 저장",
+    "encoding-noisy title": "깨진 제목/인코딩 의심",
+    "tagged as non-rag": "no-rag 태그",
+    "quality quarantine": "격리 품질",
+    "quality test": "테스트 품질"
+  })[reason] || reason || "제외";
+}
+
+function renderRagExclusionsState(state = {}) {
+  if (!nodes.ragQualityList) return;
+  const rows = Array.isArray(state.exclusions) ? state.exclusions : [];
+  const excludedCount = Number(state.excludedCount || rows.length || 0);
+  if (nodes.ragQualityStatus) {
+    nodes.ragQualityStatus.textContent = excludedCount ? `${excludedCount}개 제외` : "제외 없음";
+  }
+  if (!rows.length) {
+    nodes.ragQualityList.innerHTML = '<div class="empty">RAG에서 제외된 문서가 없습니다.</div>';
+    return;
+  }
+  nodes.ragQualityList.innerHTML = rows.slice(0, 12).map((item) => `
+    <article class="rag-quality-item">
+      <strong>${escapeHtml(item.title || "문서")}</strong>
+      <span>${escapeHtml(ragExclusionReasonLabel(item.reason))} · ${escapeHtml(item.quality || "excluded")}</span>
+      <small>${escapeHtml(item.displayPath || item.relPath || "")}</small>
+    </article>
+  `).join("");
+}
+
+async function loadRagExclusions() {
+  if (!nodes.ragQualityList) return null;
+  try {
+    if (nodes.ragQualityStatus) nodes.ragQualityStatus.textContent = "확인 중";
+    const response = await apiFetch("/api/rag/exclusions?limit=30", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderRagExclusionsState(data);
+    return data;
+  } catch (error) {
+    if (nodes.ragQualityStatus) nodes.ragQualityStatus.textContent = "로드 실패";
+    nodes.ragQualityList.innerHTML = `<div class="empty">RAG 제외 대상 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
 function renderApiDiagnostics(rows = []) {
   if (!nodes.apiDiagnosticList) return;
   nodes.apiDiagnosticList.innerHTML = rows.map((row) => `
@@ -1220,6 +1270,7 @@ async function handleRagReindex() {
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     renderRagState(data.status || {});
+    await loadRagExclusions();
     await refreshState();
   } catch (error) {
     if (nodes.ragIndexSummary) nodes.ragIndexSummary.textContent = `실패: ${error.message}`;
@@ -2760,6 +2811,7 @@ if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleC
 if (nodes.profileForm) nodes.profileForm.addEventListener("submit", saveProfileState);
 if (nodes.profileReloadBtn) nodes.profileReloadBtn.addEventListener("click", loadProfileState);
 if (nodes.ragReindexBtn) nodes.ragReindexBtn.addEventListener("click", handleRagReindex);
+if (nodes.ragQualityRefreshBtn) nodes.ragQualityRefreshBtn.addEventListener("click", loadRagExclusions);
 if (nodes.ragSearchBtn) nodes.ragSearchBtn.addEventListener("click", handleRagSearch);
 if (nodes.ragSearchInput) nodes.ragSearchInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing) return;
@@ -2799,6 +2851,7 @@ loadAutomationTriggersState();
 loadChatSessions();
 loadSkillCandidates();
 loadTaskQueue({ resume: true });
+loadRagExclusions();
 runApiDiagnostics();
 setInterval(refreshState, 15000);
 setInterval(loadAutomationTriggersState, 10000);
