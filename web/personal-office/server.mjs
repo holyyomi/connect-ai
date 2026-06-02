@@ -6618,6 +6618,45 @@ function renderAutomationMessage(trigger, context = {}) {
     .trim();
 }
 
+async function buildAutomationTriggerPreview(trigger, context = {}) {
+  if (!trigger?.id) throw new Error("트리거 ID가 없습니다");
+  const event = context.event || (context.manual ? "manual" : trigger.type === "schedule" ? "schedule" : "change");
+  const message = renderAutomationMessage(trigger, { ...context, event });
+  if (!message) throw new Error("실행할 메시지가 없습니다");
+  const preview = {
+    id: trigger.id,
+    title: trigger.title || trigger.id,
+    type: trigger.type,
+    enabled: trigger.enabled === true,
+    event,
+    manual: context.manual === true,
+    message,
+    schedule: trigger.type === "schedule" ? {
+      kind: trigger.schedule?.kind || "daily",
+      time: trigger.schedule?.time || "09:00",
+      everyMinutes: Number(trigger.schedule?.everyMinutes || 0)
+    } : null,
+    watch: trigger.type === "folder_watch" ? {
+      folder: trigger.watch?.folder || "00_Inbox",
+      patterns: Array.isArray(trigger.watch?.patterns) ? trigger.watch.patterns : ["*.md"],
+      debounceSeconds: Number(trigger.watch?.debounceSeconds || 20)
+    } : null,
+    nextRunAt: trigger.nextRunAt || "",
+    lastRunAt: trigger.lastRunAt || "",
+    wouldRun: trigger.enabled === true || context.manual === true,
+    dryRun: true
+  };
+  if (trigger.type === "folder_watch") {
+    const resolved = await resolveTriggerWatchFolder(trigger);
+    preview.watchResolved = {
+      ok: resolved.ok === true,
+      folder: resolved.folder || preview.watch.folder,
+      reason: resolved.reason || ""
+    };
+  }
+  return preview;
+}
+
 async function executeAutomationTrigger(trigger, context = {}) {
   if (!trigger?.id) throw new Error("트리거 ID가 없습니다");
   if (!trigger.enabled && !context.manual) return { ok: false, skipped: true, reason: "비활성 트리거" };
@@ -6707,6 +6746,7 @@ async function buildAutomationTriggersState() {
 async function updateAutomationTriggersConfig(input = {}) {
   const config = await readAutomationTriggersConfig();
   const action = String(input.action || "save");
+  let actionResult = null;
   if (action === "list") {
     return await buildAutomationTriggersState();
   }
@@ -6734,16 +6774,28 @@ async function updateAutomationTriggersConfig(input = {}) {
     const id = String(input.id || "");
     config.triggers = config.triggers.filter((item) => item.id !== id);
     await writeAutomationTriggersConfig(config);
+  } else if (action === "preview") {
+    const id = String(input.id || "");
+    const trigger = config.triggers.find((item) => item.id === id);
+    if (!trigger) throw new Error("자동화 트리거를 찾을 수 없습니다");
+    actionResult = {
+      preview: await buildAutomationTriggerPreview(trigger, {
+        manual: true,
+        event: "manual",
+        file: input.file || ""
+      })
+    };
   } else if (action === "run") {
     const id = String(input.id || "");
     const trigger = config.triggers.find((item) => item.id === id);
     if (!trigger) throw new Error("자동화 트리거를 찾을 수 없습니다");
-    await executeAutomationTrigger(trigger, { manual: true, event: "manual" });
+    actionResult = { runResult: await executeAutomationTrigger(trigger, { manual: true, event: "manual" }) };
     await writeAutomationTriggersConfig(config);
   } else {
     throw new Error("Unknown automation trigger action");
   }
-  return await buildAutomationTriggersState();
+  const state = await buildAutomationTriggersState();
+  return actionResult ? { ...state, ...actionResult } : state;
 }
 
 function scheduleFolderTrigger(triggerId, fileName, eventType, debounceSeconds = 20) {

@@ -1010,6 +1010,7 @@ function renderAutomationTriggerCard(trigger) {
       </div>
       <div class="connection-row-actions">
         <button type="button" data-trigger-action="toggle" data-trigger-id="${escapeHtml(trigger.id)}" data-enabled="${trigger.enabled ? "false" : "true"}">${trigger.enabled ? "끄기" : "켜기"}</button>
+        <button type="button" data-trigger-action="preview" data-trigger-id="${escapeHtml(trigger.id)}">미리보기</button>
         <button type="button" data-trigger-action="run" data-trigger-id="${escapeHtml(trigger.id)}">수동 실행</button>
         <button type="button" data-trigger-action="edit" data-trigger-id="${escapeHtml(trigger.id)}">수정</button>
         <button type="button" data-trigger-action="delete" data-trigger-id="${escapeHtml(trigger.id)}">삭제</button>
@@ -1042,6 +1043,41 @@ function renderAutomationTriggersState(state = automationTriggersState) {
     : '<div class="empty">등록된 자동화 트리거가 없습니다.</div>';
 }
 
+function renderAutomationTriggerPreview(preview = {}) {
+  const typeLabel = preview.type === "folder_watch" ? "폴더 감시" : "예약";
+  const scheduleText = preview.schedule
+    ? preview.schedule.kind === "interval"
+      ? `${preview.schedule.everyMinutes || 0}분 간격`
+      : `매일 ${preview.schedule.time || "09:00"}`
+    : "";
+  const watchText = preview.watch
+    ? [
+      preview.watch.folder || "00_Inbox",
+      (preview.watch.patterns || []).join(", "),
+      preview.watchResolved ? (preview.watchResolved.ok ? "폴더 확인됨" : `확인 필요: ${preview.watchResolved.reason || "폴더 상태 불명"}`) : ""
+    ].filter(Boolean).join(" · ")
+    : "";
+  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "자동화 미리보기";
+  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${preview.title || preview.id || "트리거"} · 실제 실행 안 함`;
+  if (nodes.chatResultPreview) {
+    nodes.chatResultPreview.textContent = [
+      "# 자동화 트리거 미리보기",
+      "",
+      `- 트리거: ${preview.title || preview.id || "이름 없음"}`,
+      `- 유형: ${typeLabel}`,
+      `- 상태: ${preview.enabled ? "활성" : "비활성"}`,
+      `- 이벤트: ${preview.event || "manual"}`,
+      "- 실제 실행: 하지 않음",
+      scheduleText ? `- 예약: ${scheduleText}` : "",
+      watchText ? `- 감시: ${watchText}` : "",
+      "",
+      "## 실행 메시지",
+      preview.message || "(비어 있음)"
+    ].filter(Boolean).join("\n");
+  }
+  if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "미리보기 완료";
+}
+
 function resetAutomationTriggerForm() {
   if (!nodes.automationTriggerForm) return;
   nodes.automationTriggerId.value = "";
@@ -1070,7 +1106,13 @@ function fillAutomationTriggerForm(trigger) {
 }
 
 async function updateAutomationTriggerConfig(payload) {
-  if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 저장 중";
+  if (nodes.automationTriggerStatus) {
+    nodes.automationTriggerStatus.textContent = payload.action === "preview"
+      ? "자동화 미리보기 중"
+      : payload.action === "run"
+        ? "수동 실행 중"
+        : "자동화 설정 저장 중";
+  }
   const response = await apiFetch("/api/automation-triggers", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1079,7 +1121,8 @@ async function updateAutomationTriggerConfig(payload) {
   const data = await response.json();
   if (!response.ok || data.ok === false) throw new Error(data.error || "자동화 설정 저장 실패");
   renderAutomationTriggersState(data);
-  if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 반영됨";
+  if (data.preview) renderAutomationTriggerPreview(data.preview);
+  else if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "자동화 설정 반영됨";
   return data;
 }
 
@@ -1128,14 +1171,23 @@ async function handleAutomationTriggerClick(event) {
   const id = button.dataset.triggerId || "";
   const trigger = (automationTriggersState.triggers || []).find((item) => item.id === id);
   if (action === "edit") return fillAutomationTriggerForm(trigger);
+  if (action === "run") {
+    const title = trigger?.title || id || "자동화 트리거";
+    const confirmed = window.confirm(`"${title}" 트리거를 실제로 수동 실행합니다.\n\n이 작업은 채팅 라우터를 호출하고 작업 큐나 Vault 기록을 변경할 수 있습니다.`);
+    if (!confirmed) {
+      if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "수동 실행 취소됨";
+      return;
+    }
+  }
   button.disabled = true;
   try {
     if (action === "toggle") await updateAutomationTriggerConfig({ action: "toggle", id, enabled: button.dataset.enabled === "true" });
     if (action === "delete") await updateAutomationTriggerConfig({ action: "delete", id });
+    if (action === "preview") await updateAutomationTriggerConfig({ action: "preview", id });
     if (action === "run") {
       await updateAutomationTriggerConfig({ action: "run", id });
       await loadTaskQueue({ resume: false });
-      if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "수동 실행을 큐에 등록했습니다.";
+      if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "수동 실행을 시작했습니다.";
     }
   } catch (error) {
     if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = `실행 실패: ${error.message}`;
