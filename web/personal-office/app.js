@@ -2245,6 +2245,12 @@ function automationReviewItems(automation = {}) {
         event: entry.event || "",
         file: entry.file || "",
         jobId: entry.jobId || "",
+        jobStatus: entry.jobStatus || "",
+        jobStatusLabel: entry.jobStatusLabel || "",
+        jobCompletedAt: entry.jobCompletedAt || "",
+        jobSavedOk: entry.jobSavedOk === true,
+        jobSavedRelPath: entry.jobSavedRelPath || "",
+        jobSavedReason: entry.jobSavedReason || "",
         modeLabel: entry.modeLabel || "",
         intent: entry.intent || "",
         error: entry.error || "",
@@ -2273,8 +2279,8 @@ function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
   const trust = item.ok ? 88 : item.retryScheduledAt ? 58 : 42;
   const typeLabel = item.triggerType === "folder_watch" ? "폴더 감시" : "예약";
   const resultText = item.ok
-    ? [item.modeLabel || item.intent || "실행 완료", item.jobId ? `작업 ${item.jobId}` : "", formatAutomationDuration(item.durationMs)].filter(Boolean).join(" · ")
-    : [item.error || "실패", item.retryScheduledAt ? `재시도 ${formatTriggerDate(item.retryScheduledAt)}` : "", `${item.attempt || 1}회차`].filter(Boolean).join(" · ");
+    ? [item.jobStatusLabel || item.modeLabel || item.intent || "실행 완료", item.jobId ? `작업 ${item.jobId}` : "", item.jobSavedRelPath ? `Vault ${item.jobSavedRelPath}` : "", formatAutomationDuration(item.durationMs)].filter(Boolean).join(" · ")
+    : [item.jobStatusLabel || "실패", item.error || item.jobSavedReason || "", item.retryScheduledAt ? `재시도 ${formatTriggerDate(item.retryScheduledAt)}` : "", `${item.attempt || 1}회차`].filter(Boolean).join(" · ");
   return `
     <article class="review-item automation ${item.ok ? "" : "warn"}">
       <div class="review-item-head">
@@ -2412,6 +2418,8 @@ function showAutomationReviewDetail(item = {}) {
       `- 실행 시각: ${item.ranAt || ""}`,
       `- 결과: ${item.ok ? "성공" : "실패"}`,
       item.jobId ? `- 작업 ID: ${item.jobId}` : "",
+      item.jobStatusLabel ? `- 작업 상태: ${item.jobStatusLabel}` : "",
+      item.jobSavedRelPath ? `- 저장: ${item.jobSavedRelPath}` : item.jobSavedReason ? `- 저장: ${item.jobSavedReason}` : "",
       item.file ? `- 파일: ${item.file}` : "",
       item.retryScheduledAt ? `- 재시도 예약: ${item.retryScheduledAt}` : "",
       item.error ? `- 오류: ${item.error}` : "",

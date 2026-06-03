@@ -20,6 +20,7 @@ const chatSessionsPath = path.join(runtimeRoot, "chat-sessions.json");
 const skillCandidatesPath = path.join(runtimeRoot, "skill-candidates.json");
 const ragIndexPath = path.join(runtimeRoot, "rag-index.json");
 const taskQueueHistoryPath = path.join(runtimeRoot, "task-queue.json");
+const automationTriggerStatePath = path.join(runtimeRoot, "automation-trigger-state.json");
 const performanceLogPath = path.join(runtimeRoot, "performance-log.json");
 const reviewDecisionsPath = path.join(runtimeRoot, "review-decisions.json");
 const economicsAdjustmentsPath = path.join(runtimeRoot, "economics-adjustments.json");
@@ -3648,6 +3649,9 @@ function recordWorkflowError(stepLabel, error) {
 
 async function runCodexText(prompt, label) {
   const result = await runCodexPrompt(prompt);
+  if (!result.ok && result.exitCode === 0 && result.output) {
+    return { text: result.output, commandLabel: result.commandLabel };
+  }
   if (!result.ok) throw new Error(codexFailureMessage(result, label));
   if (!result.output) throw new Error(`${label} 실패: Codex CLI가 빈 응답을 반환했습니다.`);
   return { text: result.output, commandLabel: result.commandLabel };
@@ -4681,11 +4685,11 @@ function resolveTaskQueueJob(type, id) {
   if (!jobId) return null;
   if (normalizedType === "codex") {
     const job = codexJobs.get(jobId);
-    return job ? { type: "codex", job } : null;
+    if (job) return { type: "codex", job };
   }
   if (normalizedType === "office") {
     const job = orchestrationJobs.get(jobId);
-    return job ? { type: "office", job } : null;
+    if (job) return { type: "office", job };
   }
   const officeJob = orchestrationJobs.get(jobId);
   if (officeJob) return { type: "office", job: officeJob };
@@ -6548,6 +6552,13 @@ function normalizeAutomationTriggerHistoryEntry(input = {}) {
     event: compactLine(input.event || "trigger", 32),
     file: String(input.file || "").replace(/\\/g, "/").slice(0, 260),
     jobId: String(input.jobId || ""),
+    jobStatus: compactLine(input.jobStatus || "", 36),
+    jobStatusLabel: compactLine(input.jobStatusLabel || "", 48),
+    jobCompletedAt: String(input.jobCompletedAt || ""),
+    jobUpdatedAt: String(input.jobUpdatedAt || ""),
+    jobSavedOk: input.jobSavedOk === true,
+    jobSavedRelPath: String(input.jobSavedRelPath || "").replace(/\\/g, "/").slice(0, 260),
+    jobSavedReason: compactLine(input.jobSavedReason || "", 180),
     modeLabel: compactLine(input.modeLabel || "", 48),
     intent: compactLine(input.intent || "", 32),
     error: compactLine(input.error || "", 180),
@@ -6565,6 +6576,55 @@ function appendAutomationTriggerHistory(trigger, entry) {
     normalizeAutomationTriggerHistoryEntry(entry),
     ...history.map(normalizeAutomationTriggerHistoryEntry)
   ].slice(0, automationTriggerHistoryLimit);
+}
+
+function automationJobOutcomeText(row = {}) {
+  return compactLine(row.progress || row.lastLog || row.saved?.reason || row.detail || row.statusLabel || row.status || "", 180);
+}
+
+function syncAutomationEntryWithJob(entry = {}) {
+  const normalized = normalizeAutomationTriggerHistoryEntry(entry);
+  const jobId = String(normalized.jobId || "").trim();
+  if (!jobId) return { entry: normalized, changed: false };
+  const resolved = resolveTaskQueueJob("", jobId);
+  if (!resolved) return { entry: normalized, changed: false };
+  const row = publicResolvedTaskQueueJob(resolved);
+  if (!row?.status || !finalJobStatuses.has(row.status)) return { entry: normalized, changed: false };
+  const jobOk = row.status === "completed";
+  const next = normalizeAutomationTriggerHistoryEntry({
+    ...normalized,
+    ok: jobOk,
+    jobStatus: row.status,
+    jobStatusLabel: row.statusLabel || serverJobStatusLabel(row.status),
+    jobCompletedAt: row.completedAt || row.updatedAt || "",
+    jobUpdatedAt: row.updatedAt || "",
+    jobSavedOk: row.saved?.ok === true,
+    jobSavedRelPath: row.saved?.relPath || "",
+    jobSavedReason: row.saved?.reason || "",
+    modeLabel: normalized.modeLabel || row.statusLabel || serverJobStatusLabel(row.status),
+    error: jobOk ? normalized.error : automationJobOutcomeText(row)
+  });
+  const changed = JSON.stringify(normalized) !== JSON.stringify(next);
+  return { entry: next, changed };
+}
+
+function syncAutomationTriggerJobResults(config = {}) {
+  let dirty = false;
+  for (const trigger of Array.isArray(config.triggers) ? config.triggers : []) {
+    if (trigger.lastResult?.jobId) {
+      const synced = syncAutomationEntryWithJob(trigger.lastResult);
+      trigger.lastResult = synced.entry;
+      dirty = dirty || synced.changed;
+    }
+    if (Array.isArray(trigger.history) && trigger.history.length) {
+      trigger.history = trigger.history.map((entry) => {
+        const synced = syncAutomationEntryWithJob(entry);
+        dirty = dirty || synced.changed;
+        return synced.entry;
+      });
+    }
+  }
+  return dirty;
 }
 
 function normalizeTriggerTime(value) {
@@ -6617,9 +6677,94 @@ function normalizeAutomationTriggersConfig(config = defaultAutomationTriggersCon
   return { triggers };
 }
 
+function normalizeAutomationTriggerRuntimeFields(input = {}) {
+  return {
+    lastRunAt: String(input.lastRunAt || ""),
+    nextRunAt: String(input.nextRunAt || ""),
+    lastEventAt: String(input.lastEventAt || ""),
+    lastResult: input.lastResult && typeof input.lastResult === "object" ? normalizeAutomationTriggerHistoryEntry(input.lastResult) : null,
+    failureCount: Math.max(0, Math.min(5, Number(input.failureCount || 0) || 0)),
+    nextRetryAt: String(input.nextRetryAt || ""),
+    retryContext: normalizeAutomationRetryContext(input.retryContext),
+    history: (Array.isArray(input.history) ? input.history : []).map(normalizeAutomationTriggerHistoryEntry).slice(0, automationTriggerHistoryLimit)
+  };
+}
+
+function automationTriggerConfigFields(trigger = {}) {
+  return {
+    ...trigger,
+    lastRunAt: "",
+    nextRunAt: "",
+    lastEventAt: "",
+    lastResult: null,
+    failureCount: 0,
+    nextRetryAt: "",
+    retryContext: null,
+    history: []
+  };
+}
+
+function automationTriggerRuntimeStateFromConfig(config = {}) {
+  const normalized = normalizeAutomationTriggersConfig(config);
+  const triggers = {};
+  for (const trigger of normalized.triggers) {
+    triggers[trigger.id] = normalizeAutomationTriggerRuntimeFields(trigger);
+  }
+  return { triggers };
+}
+
+function normalizeAutomationTriggerRuntimeState(input = {}) {
+  const source = input?.triggers && typeof input.triggers === "object" && !Array.isArray(input.triggers) ? input.triggers : {};
+  const triggers = {};
+  for (const [id, value] of Object.entries(source)) {
+    const triggerId = slugId(id);
+    if (!triggerId) continue;
+    triggers[triggerId] = normalizeAutomationTriggerRuntimeFields(value);
+  }
+  return { triggers };
+}
+
+function automationTriggerHasRuntimeState(input = {}) {
+  return Boolean(
+    input.lastRunAt
+    || input.nextRunAt
+    || input.lastEventAt
+    || input.lastResult
+    || Number(input.failureCount || 0) > 0
+    || input.nextRetryAt
+    || input.retryContext
+    || (Array.isArray(input.history) && input.history.length)
+  );
+}
+
+function automationConfigHasRuntimeState(input = {}) {
+  return (Array.isArray(input.triggers) ? input.triggers : []).some(automationTriggerHasRuntimeState);
+}
+
+function applyAutomationTriggerRuntimeState(config = {}, state = {}) {
+  const normalized = normalizeAutomationTriggersConfig(config);
+  const runtime = normalizeAutomationTriggerRuntimeState(state);
+  return {
+    triggers: normalized.triggers.map((trigger) => runtime.triggers[trigger.id] ? {
+      ...trigger,
+      ...runtime.triggers[trigger.id]
+    } : trigger)
+  };
+}
+
+async function readAutomationTriggerState() {
+  return normalizeAutomationTriggerRuntimeState(await readJson(automationTriggerStatePath, { triggers: {} }));
+}
+
+async function writeAutomationTriggerState(config) {
+  await writeJsonFile(automationTriggerStatePath, automationTriggerRuntimeStateFromConfig(config));
+}
+
 async function readAutomationTriggersConfig() {
-  if (!(await exists(automationTriggersConfigPath))) return normalizeAutomationTriggersConfig(defaultAutomationTriggersConfig());
-  return normalizeAutomationTriggersConfig(await readJson(automationTriggersConfigPath, defaultAutomationTriggersConfig()));
+  const rawConfig = await exists(automationTriggersConfigPath) ? await readJson(automationTriggersConfigPath, defaultAutomationTriggersConfig()) : defaultAutomationTriggersConfig();
+  const config = applyAutomationTriggerRuntimeState(rawConfig, await readAutomationTriggerState());
+  if (automationConfigHasRuntimeState(rawConfig)) await writeAutomationTriggersConfig(config, { syncWatchers: false });
+  return config;
 }
 
 function dailyRunAt(time, base = new Date()) {
@@ -6886,7 +7031,11 @@ async function executeAutomationTrigger(trigger, context = {}) {
 
 async function writeAutomationTriggersConfig(config, options = {}) {
   const normalized = normalizeAutomationTriggersConfig(config);
-  await writeFile(automationTriggersConfigPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  const configOnly = {
+    triggers: normalized.triggers.map(automationTriggerConfigFields)
+  };
+  await writeFile(automationTriggersConfigPath, `${JSON.stringify(configOnly, null, 2)}\n`, "utf8");
+  await writeAutomationTriggerState(normalized);
   if (options.syncWatchers !== false) await syncFolderWatchers(normalized);
   return normalized;
 }
@@ -6931,6 +7080,8 @@ async function publicAutomationTrigger(trigger) {
 
 async function buildAutomationTriggersState() {
   const config = await readAutomationTriggersConfig();
+  const jobSyncDirty = syncAutomationTriggerJobResults(config);
+  if (jobSyncDirty) await writeAutomationTriggersConfig(config, { syncWatchers: false });
   await syncFolderWatchers(config);
   const triggers = await Promise.all(config.triggers.map(publicAutomationTrigger));
   return {
