@@ -6698,6 +6698,79 @@ async function resolveTriggerWatchFolder(trigger) {
   return { ok: true, folder, fullPath, vaultRoot };
 }
 
+function automationReadinessLabel(status = "") {
+  return ({
+    ready: "활성화 가능",
+    review: "점검 권장",
+    blocked: "활성화 차단"
+  })[status] || "점검 대기";
+}
+
+async function buildAutomationTriggerReadiness(trigger) {
+  const checks = [];
+  const addCheck = (id, status, label, detail = "", blocking = false) => {
+    checks.push({ id, status, label, detail, blocking: blocking === true });
+  };
+  const sampleFile = trigger.type === "folder_watch" ? `${trigger.watch?.folder || "00_Inbox"}/example.md` : "";
+  const sampleMessage = renderAutomationMessage(trigger, { event: "preview", file: sampleFile });
+  if (sampleMessage) addCheck("message", "ok", "실행 메시지", "미리보기 생성 가능");
+  else addCheck("message", "bad", "실행 메시지", "실행할 메시지가 없습니다.", true);
+
+  const hasExplicitRoute = /^\s*\/(?:업무|codex|cc|claude|vault)(?:\s+|$)/i.test(String(trigger.message || ""));
+  addCheck(
+    "route",
+    hasExplicitRoute ? "ok" : "warn",
+    "라우팅",
+    hasExplicitRoute ? "명시적 라우팅 사용" : "자동 분류로 라우팅됩니다."
+  );
+
+  if (trigger.type === "schedule") {
+    const schedule = trigger.schedule || {};
+    const detail = schedule.kind === "interval"
+      ? `${Number(schedule.everyMinutes || 60)}분 간격`
+      : `매일 ${schedule.time || "09:00"}`;
+    addCheck("schedule", "ok", "예약", detail);
+  } else {
+    const resolved = await resolveTriggerWatchFolder(trigger);
+    addCheck(
+      "watch_folder",
+      resolved.ok ? "ok" : "bad",
+      "감시 폴더",
+      resolved.ok ? `${resolved.folder} 확인됨` : resolved.reason,
+      !resolved.ok
+    );
+    const patterns = Array.isArray(trigger.watch?.patterns) ? trigger.watch.patterns : [];
+    addCheck("watch_pattern", patterns.length ? "ok" : "warn", "파일 패턴", patterns.length ? patterns.join(", ") : "*.md 기본값 사용");
+  }
+
+  const policy = normalizeAutomationRetryPolicy(trigger.retryPolicy);
+  addCheck(
+    "retry",
+    policy.enabled ? "ok" : "warn",
+    "재시도",
+    policy.enabled ? `최대 ${policy.maxAttempts}회 · ${policy.delayMinutes}분` : "재시도 꺼짐"
+  );
+  addCheck("review", "ok", "검수 연결", "실행 후 검수함에 기록됩니다.");
+  if (trigger.nextRetryAt) addCheck("retry_waiting", "warn", "재시도 대기", trigger.nextRetryAt);
+
+  const blockers = checks.filter((check) => check.blocking);
+  const warnings = checks.filter((check) => check.status === "warn");
+  const status = blockers.length ? "blocked" : warnings.length ? "review" : "ready";
+  return {
+    status,
+    statusLabel: automationReadinessLabel(status),
+    blocking: blockers.length > 0,
+    warningCount: warnings.length,
+    blockerCount: blockers.length,
+    summary: blockers.length
+      ? blockers.map((check) => `${check.label}: ${check.detail}`).join(" · ")
+      : warnings.length
+        ? warnings.map((check) => `${check.label}: ${check.detail}`).join(" · ")
+        : "활성화 전 점검 통과",
+    checks
+  };
+}
+
 function renderAutomationMessage(trigger, context = {}) {
   const timestamp = new Date().toISOString();
   return String(trigger.message || "")
@@ -6820,12 +6893,16 @@ async function writeAutomationTriggersConfig(config, options = {}) {
 
 async function publicAutomationTrigger(trigger) {
   const running = automationTriggerRuntime.running.has(trigger.id);
+  const readiness = await buildAutomationTriggerReadiness(trigger);
   let status = trigger.enabled ? "ready" : "disabled";
   let detail = trigger.enabled ? "실행 조건 대기" : "설정에서 켜면 실행됩니다.";
   let nextRunAt = trigger.nextRunAt;
   if (running) {
     status = "running";
     detail = "백그라운드 실행 중";
+  } else if (trigger.enabled && readiness.blocking) {
+    status = "blocked";
+    detail = readiness.summary;
   } else if (trigger.enabled && trigger.nextRetryAt) {
     status = "retrying";
     detail = `실패 ${Number(trigger.failureCount || 0)}회 · ${trigger.nextRetryAt} 재시도`;
@@ -6847,7 +6924,8 @@ async function publicAutomationTrigger(trigger) {
     statusLabel: automationTriggerStatusLabel(status),
     detail,
     nextRunAt,
-    running
+    running,
+    readiness
   };
 }
 
@@ -6864,6 +6942,8 @@ async function buildAutomationTriggersState() {
       running: triggers.filter((trigger) => trigger.running).length,
       retrying: triggers.filter((trigger) => trigger.status === "retrying").length,
       failed: triggers.filter((trigger) => trigger.status === "failed").length,
+      readinessBlocked: triggers.filter((trigger) => trigger.readiness?.blocking).length,
+      readinessWarnings: triggers.filter((trigger) => Number(trigger.readiness?.warningCount || 0) > 0).length,
       attention: triggers.filter((trigger) => ["blocked", "failed"].includes(trigger.status)).length
     },
     triggers
@@ -6882,11 +6962,23 @@ async function updateAutomationTriggersConfig(input = {}) {
     const next = normalizeAutomationTrigger(rawTrigger, config.triggers.length);
     if (next.enabled && next.type === "schedule" && !next.nextRunAt) next.nextRunAt = computeAutomationNextRunAt(next);
     const ids = new Set(config.triggers.map((item) => item.id));
-    if (ids.has(next.id)) config.triggers = config.triggers.map((item) => item.id === next.id ? { ...preserveAutomationRuntimeFields(item, next, { replaceRetryPolicy: Object.prototype.hasOwnProperty.call(rawTrigger, "retryPolicy") }), updatedAt: new Date().toISOString() } : item);
-    else config.triggers.push({ ...next, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const existing = config.triggers.find((item) => item.id === next.id);
+    const savedTrigger = existing ? preserveAutomationRuntimeFields(existing, next, { replaceRetryPolicy: Object.prototype.hasOwnProperty.call(rawTrigger, "retryPolicy") }) : next;
+    if (savedTrigger.enabled) {
+      const readiness = await buildAutomationTriggerReadiness(savedTrigger);
+      if (readiness.blocking) throw new Error(`활성화 점검 실패: ${readiness.summary}`);
+    }
+    if (ids.has(next.id)) config.triggers = config.triggers.map((item) => item.id === next.id ? { ...savedTrigger, updatedAt: new Date().toISOString() } : item);
+    else config.triggers.push({ ...savedTrigger, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     await writeAutomationTriggersConfig(config);
   } else if (action === "toggle") {
     const id = String(input.id || "");
+    if (input.enabled !== false) {
+      const target = config.triggers.find((item) => item.id === id);
+      if (!target) throw new Error("자동화 트리거를 찾을 수 없습니다");
+      const readiness = await buildAutomationTriggerReadiness({ ...target, enabled: true });
+      if (readiness.blocking) throw new Error(`활성화 점검 실패: ${readiness.summary}`);
+    }
     config.triggers = config.triggers.map((item) => {
       if (item.id !== id) return item;
       const enabled = input.enabled !== false;

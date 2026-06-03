@@ -1018,6 +1018,20 @@ function renderAutomationTriggerHistory(history = []) {
   `;
 }
 
+function renderAutomationReadiness(readiness = null) {
+  if (!readiness || !Array.isArray(readiness.checks)) return "";
+  const checks = readiness.checks.slice(0, 5);
+  return `
+    <div class="automation-readiness ${escapeHtml(readiness.status || "")}">
+      <strong>${escapeHtml(readiness.statusLabel || "활성화 점검")}</strong>
+      ${readiness.summary ? `<small>${escapeHtml(readiness.summary)}</small>` : ""}
+      <div>
+        ${checks.map((check) => `<span class="${escapeHtml(check.status || "")}">${escapeHtml(check.label || check.id)}${check.detail ? ` · ${escapeHtml(check.detail)}` : ""}</span>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderAutomationTriggerCard(trigger) {
   const typeLabel = trigger.type === "folder_watch" ? "폴더 감시" : "예약";
   const nextText = trigger.nextRunAt ? `다음: ${formatTriggerDate(trigger.nextRunAt)}` : "";
@@ -1044,6 +1058,7 @@ function renderAutomationTriggerCard(trigger) {
         <small>${escapeHtml(trigger.detail || "")}</small>
         <small>${escapeHtml([nextText, lastText, resultText].filter(Boolean).join(" · "))}</small>
         <small>${escapeHtml([retryText, retryPolicyText].filter(Boolean).join(" · "))}</small>
+        ${renderAutomationReadiness(trigger.readiness)}
         ${renderAutomationTriggerHistory(trigger.history || [])}
       </div>
       <div class="connection-row-actions">
@@ -1064,6 +1079,8 @@ function renderAutomationTriggersState(state = automationTriggersState) {
   if (nodes.automationTriggerSummary) {
     nodes.automationTriggerSummary.textContent = summary.running
       ? `${summary.running}개 실행`
+      : summary.readinessBlocked
+        ? `점검 ${summary.readinessBlocked}개`
       : summary.enabled
         ? `${summary.enabled}/${summary.total || triggers.length} 활성`
         : "대기";
@@ -1071,6 +1088,8 @@ function renderAutomationTriggersState(state = automationTriggersState) {
   if (nodes.automationTriggerStatus) {
     nodes.automationTriggerStatus.textContent = summary.attention
       ? `확인 필요 ${summary.attention}개`
+      : summary.readinessBlocked
+        ? `활성화 점검 필요 ${summary.readinessBlocked}개`
       : summary.retrying
         ? `재시도 대기 ${summary.retrying}개`
       : summary.enabled
