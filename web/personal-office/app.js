@@ -2019,15 +2019,17 @@ function reviewDecisionStats(decisionRows = []) {
   const approved = rows.filter((decision) => decision.status === "approved").length;
   const rejected = rows.filter((decision) => decision.status === "rejected").length;
   const needsRevision = rows.filter((decision) => decision.status === "needs_revision").length;
+  const resolvedByRetry = rows.filter((decision) => decision.status === "resolved").length;
   const pending = rows.filter((decision) => !decision.status || decision.status === "pending").length;
   const edited = rows.filter((decision) => decision.edit?.diff?.changed).length;
-  const resolved = approved + rejected + needsRevision;
+  const resolved = approved + rejected + needsRevision + resolvedByRetry;
   const revisionLike = rejected + needsRevision;
   return {
     total: rows.length,
     approved,
     rejected,
     needsRevision,
+    resolvedByRetry,
     pending,
     edited,
     resolved,
@@ -2112,7 +2114,11 @@ function renderReviewOpsDashboard(summary = {}) {
 
 function reviewDecisionLabel(decision = null) {
   if (!decision?.status || decision.status === "pending") return "";
-  return decision.statusLabel || ({ approved: "승인", rejected: "반려", needs_revision: "수정 필요" })[decision.status] || decision.status;
+  return decision.statusLabel || ({ approved: "승인", rejected: "반려", needs_revision: "수정 필요", resolved: "재시도 해결" })[decision.status] || decision.status;
+}
+
+function reviewDecisionClosesAttention(decision = null) {
+  return ["approved", "rejected", "resolved"].includes(decision?.status || "");
 }
 
 function reviewEditSummary(decision = null) {
@@ -2316,10 +2322,10 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   const decisionsByKey = new Map(decisionRows.filter((decision) => decision.key).map((decision) => [decision.key, decision]));
   const automationRows = automationReviewItems(automation);
   reviewAutomationItemsState = automationRows;
-  const attentionJobs = jobs.filter((job) => job.needsAttention || ["waiting_question", "failed", "completed_with_errors", "cancelled"].includes(job.status)).slice(0, 8);
+  const attentionJobs = jobs.filter((job) => !reviewDecisionClosesAttention(job.reviewDecision) && (job.needsAttention || ["waiting_question", "failed", "completed_with_errors", "cancelled"].includes(job.status))).slice(0, 8);
   const automationAttention = automationRows.filter((item) => {
     const decision = decisionsByKey.get(`automation:${item.id || ""}`);
-    return item.ok === false && !["approved", "rejected"].includes(decision?.status || "");
+    return item.ok === false && !reviewDecisionClosesAttention(decision);
   });
   const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status)).slice(0, 8);
   const pendingSkills = candidates.filter((candidate) => candidate.status === "pending").slice(0, 8);

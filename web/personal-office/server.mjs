@@ -4647,10 +4647,11 @@ function buildTaskQueueState(limit = 20) {
     .map((job) => attachTaskQueueReviewDecision(job, reviewDecisionsByKey));
   const running = jobs.filter((job) => taskQueueActiveStatuses.has(job.status));
   const completed = jobs.filter((job) => job.status === "completed");
-  const failed = jobs.filter((job) => ["failed", "cancelled"].includes(job.status));
-  const waiting = jobs.filter((job) => job.status === "waiting_question");
-  const partial = jobs.filter((job) => job.status === "completed_with_errors");
+  const failed = jobs.filter((job) => job.needsAttention && ["failed", "cancelled"].includes(job.status));
+  const waiting = jobs.filter((job) => job.needsAttention && job.status === "waiting_question");
+  const partial = jobs.filter((job) => job.needsAttention && job.status === "completed_with_errors");
   const restored = jobs.filter((job) => job.restored);
+  const attention = jobs.filter((job) => job.needsAttention);
   const latestCompleted = [...completed, ...partial]
     .sort((a, b) => jobTimeValue(b.completedAt || b.updatedAt || b.createdAt) - jobTimeValue(a.completedAt || a.updatedAt || a.createdAt))[0] || null;
   const latestUpdated = jobs
@@ -4667,7 +4668,7 @@ function buildTaskQueueState(limit = 20) {
       partial: partial.length,
       failed: failed.length,
       waiting: waiting.length,
-      attention: failed.length + waiting.length + partial.length,
+      attention: attention.length,
       restored: restored.length,
       active: running.length + waiting.length,
       latestCompletedAt: latestCompleted?.completedAt || latestCompleted?.updatedAt || "",
@@ -4734,21 +4735,49 @@ function cancelTaskQueueJob(input = {}) {
   return { ok: true, action: "cancel", job: publicTaskQueueJob(type, job), queue: buildTaskQueueState() };
 }
 
-function retryTaskQueueJob(input = {}) {
+async function markTaskQueueRetrySourceResolved(type, sourceId, nextId, title = "") {
+  const state = await readReviewDecisionsState();
+  const key = reviewDecisionKey(type, sourceId);
+  const existing = state.decisions.find((decision) => decision.key === key);
+  const now = new Date().toISOString();
+  const note = compactLine(`재시도 작업 ${nextId} 등록으로 원본 확인 필요 항목을 닫았습니다.`, 300);
+  const decision = normalizeReviewDecision({
+    ...existing,
+    type,
+    id: sourceId,
+    targetTitle: title || existing?.targetTitle || "",
+    status: "resolved",
+    note,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    decidedAt: now
+  });
+  state.decisions = [decision, ...state.decisions.filter((item) => item.key !== key)];
+  await writeReviewDecisionsState(state);
+  return decision;
+}
+
+async function retryTaskQueueJob(input = {}) {
   const resolved = resolveTaskQueueJob(input.type, input.id);
   if (!resolved) throw new Error("작업을 찾을 수 없습니다");
   const { type, job, row } = resolved;
+  const sourceId = resolved.restored ? row.id : job.id;
+  const sourceTitle = resolved.restored ? row.title || "" : job.task || job.capsule?.normalizedTask || job.message || "";
   const status = resolved.restored ? row.status : job.status;
   if (!finalJobStatuses.has(status)) throw new Error("진행 중인 작업은 재시도할 수 없습니다");
   if (type === "codex") {
     const next = createCodexJob(resolved.restored ? row.title || "" : job.task || "");
-    appendJobLog(next, `이전 작업 ${resolved.restored ? row.id : job.id}에서 재시도했습니다.`, "taeo");
+    next.retryOf = { type, id: sourceId, title: sourceTitle };
+    appendJobLog(next, `이전 작업 ${sourceId}에서 재시도했습니다.`, "taeo");
+    await markTaskQueueRetrySourceResolved("codex", sourceId, next.id, sourceTitle);
     return { ok: true, action: "retry", job: publicTaskQueueJob("codex", next), queue: buildTaskQueueState() };
   }
   const message = resolved.restored ? row.title || "" : job.message || job.capsule?.originalInput || job.capsule?.normalizedTask || "";
   const route = resolved.restored ? { intent: "office", task: message, reason: "복원된 작업 큐 재시도" } : job.route || { intent: "office", task: job.capsule?.normalizedTask || message, reason: "작업 큐 재시도" };
   const next = createOrchestrationJob(message, route, createYomiOrchestration(message, route));
-  appendJobLog(next, `이전 작업 ${resolved.restored ? row.id : job.id}에서 재시도했습니다.`, "ceo");
+  next.retryOf = { type, id: sourceId, title: sourceTitle };
+  appendJobLog(next, `이전 작업 ${sourceId}에서 재시도했습니다.`, "ceo");
+  await markTaskQueueRetrySourceResolved("office", sourceId, next.id, sourceTitle);
   return { ok: true, action: "retry", job: publicTaskQueueJob("office", next), queue: buildTaskQueueState() };
 }
 
@@ -4768,7 +4797,7 @@ function enqueueTaskQueueJob(input = {}) {
   return { ok: true, action: "enqueue", job: publicTaskQueueJob("office", job), queue: buildTaskQueueState() };
 }
 
-function updateTaskQueue(input = {}) {
+async function updateTaskQueue(input = {}) {
   const action = String(input.action || "list").trim().toLowerCase();
   if (!action || action === "list") return buildTaskQueueState(input.limit);
   if (action === "detail") {
@@ -5682,6 +5711,7 @@ function reviewDecisionStatusLabel(status = "") {
     approved: "승인",
     rejected: "반려",
     needs_revision: "수정 필요",
+    resolved: "재시도 해결",
     pending: "검수 대기"
   }[status] || "검수 대기";
 }
@@ -5762,7 +5792,7 @@ function normalizeReviewDecision(input = {}) {
   const type = ["office", "codex", "portfolio", "skill", "automation"].includes(rawType) ? rawType : "office";
   const id = String(input.id || input.targetId || "").trim();
   const rawStatus = String(input.status || "").trim().toLowerCase();
-  const status = ["approved", "rejected", "needs_revision", "pending"].includes(rawStatus) ? rawStatus : "pending";
+  const status = ["approved", "rejected", "needs_revision", "resolved", "pending"].includes(rawStatus) ? rawStatus : "pending";
   const createdAt = String(input.createdAt || new Date().toISOString());
   const updatedAt = String(input.updatedAt || createdAt);
   const editSource = input.edit && typeof input.edit === "object"
@@ -5818,15 +5848,23 @@ function publicTaskQueueReviewDecision(decision = null) {
   };
 }
 
+function reviewDecisionClosesAttention(decision = null) {
+  return ["approved", "rejected", "resolved"].includes(decision?.status || "");
+}
+
 function taskQueueReviewDecisionMapSync() {
   return new Map(readReviewDecisionsStateSync().decisions.map((decision) => [decision.key, decision]));
 }
 
 function attachTaskQueueReviewDecision(row = {}, decisionsByKey = taskQueueReviewDecisionMapSync()) {
   const decision = decisionsByKey.get(reviewDecisionKey(row.type || "office", row.id || ""));
+  const reviewDecision = publicTaskQueueReviewDecision(decision);
+  const closesAttention = reviewDecisionClosesAttention(reviewDecision);
   return {
     ...row,
-    reviewDecision: publicTaskQueueReviewDecision(decision)
+    needsAttention: closesAttention ? false : row.needsAttention,
+    sortRank: closesAttention && Number(row.sortRank || 0) < 4 ? 4 : row.sortRank,
+    reviewDecision
   };
 }
 
@@ -5845,6 +5883,7 @@ function reviewDecisionSummary(decisions = []) {
     approved: decisions.filter((decision) => decision.status === "approved").length,
     rejected: decisions.filter((decision) => decision.status === "rejected").length,
     needsRevision: decisions.filter((decision) => decision.status === "needs_revision").length,
+    resolved: decisions.filter((decision) => decision.status === "resolved").length,
     pending: decisions.filter((decision) => decision.status === "pending").length,
     edited: decisions.filter((decision) => decision.edit?.diff?.changed).length
   };
@@ -5880,10 +5919,12 @@ async function updateReviewDecision(input = {}) {
     rejected: "rejected",
     revision: "needs_revision",
     needs_revision: "needs_revision",
+    resolve: "resolved",
+    resolved: "resolved",
     save_edit: existing?.status || "needs_revision"
   };
   const status = statusByAction[action] || String(input.status || "pending").trim().toLowerCase();
-  if (!["approved", "rejected", "needs_revision", "pending"].includes(status)) throw new Error("알 수 없는 검수 상태입니다");
+  if (!["approved", "rejected", "needs_revision", "resolved", "pending"].includes(status)) throw new Error("알 수 없는 검수 상태입니다");
   const now = new Date().toISOString();
   const decision = normalizeReviewDecision({
     ...existing,
@@ -7306,7 +7347,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/task-queue") {
       const body = await readJsonBody(request);
       try {
-        return sendJson(response, 200, updateTaskQueue(body));
+        return sendJson(response, 200, await updateTaskQueue(body));
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
