@@ -4741,7 +4741,7 @@ async function markTaskQueueRetrySourceResolved(type, sourceId, nextId, title = 
   const existing = state.decisions.find((decision) => decision.key === key);
   const now = new Date().toISOString();
   const note = compactLine(`재시도 작업 ${nextId} 등록으로 원본 확인 필요 항목을 닫았습니다.`, 300);
-  const decision = normalizeReviewDecision({
+  const decisions = [normalizeReviewDecision({
     ...existing,
     type,
     id: sourceId,
@@ -4751,10 +4751,26 @@ async function markTaskQueueRetrySourceResolved(type, sourceId, nextId, title = 
     createdAt: existing?.createdAt || now,
     updatedAt: now,
     decidedAt: now
-  });
-  state.decisions = [decision, ...state.decisions.filter((item) => item.key !== key)];
+  })];
+  for (const automationId of await automationReviewIdsForJob(sourceId)) {
+    const automationKey = reviewDecisionKey("automation", automationId);
+    const existingAutomation = state.decisions.find((decision) => decision.key === automationKey);
+    decisions.push(normalizeReviewDecision({
+      ...existingAutomation,
+      type: "automation",
+      id: automationId,
+      targetTitle: existingAutomation?.targetTitle || title || "",
+      status: "resolved",
+      note: compactLine(`재시도 작업 ${nextId} 등록으로 연결된 자동화 실행 기록을 닫았습니다.`, 300),
+      createdAt: existingAutomation?.createdAt || now,
+      updatedAt: now,
+      decidedAt: now
+    }));
+  }
+  const keys = new Set(decisions.map((decision) => decision.key));
+  state.decisions = [...decisions, ...state.decisions.filter((item) => !keys.has(item.key))];
   await writeReviewDecisionsState(state);
-  return decision;
+  return decisions[0];
 }
 
 async function retryTaskQueueJob(input = {}) {
@@ -6666,6 +6682,29 @@ function syncAutomationTriggerJobResults(config = {}) {
     }
   }
   return dirty;
+}
+
+function automationReviewIdForEntry(triggerId = "", entry = {}) {
+  return `${String(triggerId || "").trim()}:${String(entry.id || entry.ranAt || entry.event || "run").trim()}`;
+}
+
+async function automationReviewIdsForJob(jobId = "") {
+  const targetJobId = String(jobId || "").trim();
+  if (!targetJobId) return [];
+  const config = await readAutomationTriggersConfig().catch(() => ({ triggers: [] }));
+  const ids = new Set();
+  for (const trigger of Array.isArray(config.triggers) ? config.triggers : []) {
+    const entries = [
+      ...(trigger.lastResult ? [trigger.lastResult] : []),
+      ...(Array.isArray(trigger.history) ? trigger.history : [])
+    ];
+    for (const entry of entries) {
+      if (String(entry?.jobId || "").trim() !== targetJobId) continue;
+      const id = automationReviewIdForEntry(trigger.id, entry);
+      if (id.includes(":")) ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 function normalizeTriggerTime(value) {
