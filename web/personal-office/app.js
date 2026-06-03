@@ -96,6 +96,8 @@ const nodes = {
   reviewSkillList: document.getElementById("reviewSkillList"),
   reviewPortfolioStatus: document.getElementById("reviewPortfolioStatus"),
   reviewPortfolioList: document.getElementById("reviewPortfolioList"),
+  reviewAutomationStatus: document.getElementById("reviewAutomationStatus"),
+  reviewAutomationList: document.getElementById("reviewAutomationList"),
   reviewEditPanel: document.getElementById("reviewEditPanel"),
   reviewEditForm: document.getElementById("reviewEditForm"),
   reviewEditTarget: document.getElementById("reviewEditTarget"),
@@ -242,6 +244,7 @@ let chatSessionsState = { sessions: [] };
 let skillCandidatesState = { candidates: [] };
 let editingSkillCandidateId = "";
 let reviewEditTarget = null;
+let reviewAutomationItemsState = [];
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
@@ -2197,7 +2200,88 @@ function reviewPortfolioCard(record = {}, decisionsByKey = new Map()) {
   `;
 }
 
-function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decisions = {} } = {}) {
+function automationReviewItemId(triggerId = "", entry = {}) {
+  return `${String(triggerId || "").trim()}:${String(entry.id || entry.ranAt || entry.event || "run").trim()}`;
+}
+
+function automationReviewItems(automation = {}) {
+  const rows = [];
+  for (const trigger of Array.isArray(automation.triggers) ? automation.triggers : []) {
+    const history = Array.isArray(trigger.history) && trigger.history.length
+      ? trigger.history
+      : trigger.lastResult
+        ? [trigger.lastResult]
+        : [];
+    for (const entry of history.slice(0, 6)) {
+      const id = automationReviewItemId(trigger.id, entry);
+      if (!trigger.id || !id.includes(":")) continue;
+      rows.push({
+        id,
+        triggerId: trigger.id,
+        triggerTitle: trigger.title || trigger.id,
+        triggerType: trigger.type || "",
+        triggerStatus: trigger.status || "",
+        statusLabel: trigger.statusLabel || trigger.status || "",
+        ok: entry.ok === true,
+        event: entry.event || "",
+        file: entry.file || "",
+        jobId: entry.jobId || "",
+        modeLabel: entry.modeLabel || "",
+        intent: entry.intent || "",
+        error: entry.error || "",
+        attempt: entry.attempt || 1,
+        retryScheduledAt: entry.retryScheduledAt || "",
+        retryExhausted: entry.retryExhausted === true,
+        durationMs: entry.durationMs || 0,
+        ranAt: entry.ranAt || trigger.lastRunAt || "",
+        message: trigger.message || ""
+      });
+    }
+  }
+  return rows
+    .sort((a, b) => new Date(b.ranAt || 0).getTime() - new Date(a.ranAt || 0).getTime())
+    .slice(0, 12);
+}
+
+function automationReviewDecisionLabel(decision = null) {
+  const label = reviewDecisionLabel(decision);
+  return label ? `자동화 검수: ${label}` : "";
+}
+
+function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
+  const decision = decisionsByKey.get(`automation:${item.id || ""}`);
+  const decisionLabel = automationReviewDecisionLabel(decision);
+  const trust = item.ok ? 88 : item.retryScheduledAt ? 58 : 42;
+  const typeLabel = item.triggerType === "folder_watch" ? "폴더 감시" : "예약";
+  const resultText = item.ok
+    ? [item.modeLabel || item.intent || "실행 완료", item.jobId ? `작업 ${item.jobId}` : "", formatAutomationDuration(item.durationMs)].filter(Boolean).join(" · ")
+    : [item.error || "실패", item.retryScheduledAt ? `재시도 ${formatTriggerDate(item.retryScheduledAt)}` : "", `${item.attempt || 1}회차`].filter(Boolean).join(" · ");
+  return `
+    <article class="review-item automation ${item.ok ? "" : "warn"}">
+      <div class="review-item-head">
+        <strong>${escapeHtml(item.triggerTitle || item.triggerId || "자동화 실행")}</strong>
+        <b class="review-trust ${reviewTrustClass(trust)}">${trust}점</b>
+      </div>
+      <div class="review-item-meta">
+        <span>${escapeHtml(item.ok ? "성공" : "실패")}</span>
+        <span>${escapeHtml(typeLabel)}</span>
+        ${item.ranAt ? `<span>${escapeHtml(formatShortTime(item.ranAt))}</span>` : ""}
+        ${item.event ? `<span>${escapeHtml(item.event)}</span>` : ""}
+      </div>
+      ${resultText ? `<p>${escapeHtml(resultText)}</p>` : ""}
+      ${item.file ? `<small>${escapeHtml(item.file)}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
+      <div class="review-actions">
+        <button type="button" data-review-automation-action="detail" data-automation-id="${escapeHtml(item.id || "")}">상세</button>
+        <button type="button" data-review-automation-action="approve" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">승인</button>
+        <button type="button" data-review-automation-action="revision" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">보완 필요</button>
+        <button type="button" data-review-automation-action="reject" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">반려</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decisions = {}, automation = {} } = {}) {
   if (!nodes.reviewStatus) return;
   const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
   const records = Array.isArray(performance.records) ? performance.records : [];
@@ -2205,7 +2289,13 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   const decisionRows = Array.isArray(decisions.decisions) ? decisions.decisions : [];
   const recordsByJobId = new Map(records.filter((record) => record.jobId).map((record) => [record.jobId, record]));
   const decisionsByKey = new Map(decisionRows.filter((decision) => decision.key).map((decision) => [decision.key, decision]));
+  const automationRows = automationReviewItems(automation);
+  reviewAutomationItemsState = automationRows;
   const attentionJobs = jobs.filter((job) => job.needsAttention || ["waiting_question", "failed", "completed_with_errors", "cancelled"].includes(job.status)).slice(0, 8);
+  const automationAttention = automationRows.filter((item) => {
+    const decision = decisionsByKey.get(`automation:${item.id || ""}`);
+    return item.ok === false && !["approved", "rejected"].includes(decision?.status || "");
+  });
   const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status)).slice(0, 8);
   const pendingSkills = candidates.filter((candidate) => candidate.status === "pending").slice(0, 8);
   const portfolioRecords = records.filter((record) => record.portfolioCandidate || record.portfolioRelPath).slice(0, 8);
@@ -2214,8 +2304,10 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   const skillsSummary = skills.summary || {};
   renderReviewOpsDashboard(buildReviewOpsSummary(jobs, records, decisionRows, recordsByJobId, decisionsByKey));
 
-  if (nodes.reviewQueueCount) nodes.reviewQueueCount.textContent = `${Number(queueSummary.attention || attentionJobs.length || 0)}건`;
-  if (nodes.reviewQueueMeta) nodes.reviewQueueMeta.textContent = attentionJobs.length ? "확인 필요 작업 있음" : "대기 없음";
+  if (nodes.reviewQueueCount) nodes.reviewQueueCount.textContent = `${Number(queueSummary.attention || attentionJobs.length || 0) + automationAttention.length}건`;
+  if (nodes.reviewQueueMeta) nodes.reviewQueueMeta.textContent = attentionJobs.length || automationAttention.length
+    ? [attentionJobs.length ? "작업 확인 필요" : "", automationAttention.length ? `자동화 ${automationAttention.length}건` : ""].filter(Boolean).join(" · ")
+    : "대기 없음";
   if (nodes.reviewActiveCount) nodes.reviewActiveCount.textContent = `${Number(queueSummary.active || queueSummary.running || 0)}건`;
   if (nodes.reviewActiveMeta) nodes.reviewActiveMeta.textContent = queueSummary.latestUpdatedAt ? `최근 ${formatShortTime(queueSummary.latestUpdatedAt)}` : "실행 대기";
   if (nodes.reviewQualityScore) nodes.reviewQualityScore.textContent = performanceSummary.lastScore ? `${performanceSummary.lastScore}점` : `${performanceSummary.avgScore || 0}점`;
@@ -2231,6 +2323,8 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   if (nodes.reviewSkillList) nodes.reviewSkillList.innerHTML = pendingSkills.length ? pendingSkills.map((candidate) => reviewSkillCard(candidate, decisionsByKey)).join("") : reviewEmpty("검토할 스킬 후보가 없습니다.");
   if (nodes.reviewPortfolioStatus) nodes.reviewPortfolioStatus.textContent = portfolioRecords.length ? `${portfolioRecords.length}건` : "대기";
   if (nodes.reviewPortfolioList) nodes.reviewPortfolioList.innerHTML = portfolioRecords.length ? portfolioRecords.map((record) => reviewPortfolioCard(record, decisionsByKey)).join("") : reviewEmpty("포트폴리오 후보가 없습니다.");
+  if (nodes.reviewAutomationStatus) nodes.reviewAutomationStatus.textContent = automationRows.length ? `${automationRows.length}건` : "대기";
+  if (nodes.reviewAutomationList) nodes.reviewAutomationList.innerHTML = automationRows.length ? automationRows.slice(0, 8).map((item) => reviewAutomationCard(item, decisionsByKey)).join("") : reviewEmpty("자동화 실행 이력이 없습니다.");
 }
 
 async function fetchReviewApiState(pathValue, label) {
@@ -2247,16 +2341,17 @@ async function fetchReviewApiState(pathValue, label) {
 async function loadReviewInbox() {
   if (!nodes.reviewStatus) return null;
   nodes.reviewStatus.textContent = "검수함 불러오는 중";
-  const [queue, performance, skills, decisions] = await Promise.all([
+  const [queue, performance, skills, decisions, automation] = await Promise.all([
     fetchReviewApiState("/api/task-queue?limit=30", "작업 큐").catch((error) => ({ ok: false, error: error.message, jobs: [], summary: {} })),
     fetchReviewApiState("/api/performance-log?limit=20", "성과기록").catch((error) => ({ ok: false, error: error.message, records: [], summary: {} })),
     fetchReviewApiState("/api/skill-candidates", "스킬 후보").catch((error) => ({ ok: false, error: error.message, candidates: [], summary: {} })),
-    fetchReviewApiState("/api/review-decisions", "검수 결정").catch((error) => ({ ok: false, error: error.message, decisions: [], summary: {} }))
+    fetchReviewApiState("/api/review-decisions", "검수 결정").catch((error) => ({ ok: false, error: error.message, decisions: [], summary: {} })),
+    fetchReviewApiState("/api/automation-triggers", "자동화").catch((error) => ({ ok: false, error: error.message, triggers: [], summary: {} }))
   ]);
-  renderReviewInbox({ queue, performance, skills, decisions });
-  const errors = [queue, performance, skills, decisions].filter((item) => item.ok === false && item.error).map((item) => item.error);
+  renderReviewInbox({ queue, performance, skills, decisions, automation });
+  const errors = [queue, performance, skills, decisions, automation].filter((item) => item.ok === false && item.error).map((item) => item.error);
   nodes.reviewStatus.textContent = errors.length ? `일부 로드 실패: ${errors.join(" · ")}` : `업데이트 ${nowTime()}`;
-  return { queue, performance, skills, decisions };
+  return { queue, performance, skills, decisions, automation };
 }
 
 function showReviewJobDetail(job = {}) {
@@ -2279,6 +2374,31 @@ function showReviewJobDetail(job = {}) {
       "",
       "## 최근 로그",
       logs.length ? logs.join("\n") : "로그 없음"
+    ].filter(Boolean).join("\n");
+  }
+  switchPage("chat");
+}
+
+function showAutomationReviewDetail(item = {}) {
+  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "자동화 검수 상세";
+  if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${item.triggerTitle || item.triggerId || "자동화"} · ${item.ok ? "성공" : "실패"}`;
+  if (nodes.chatResultPreview) {
+    nodes.chatResultPreview.textContent = [
+      "# 자동화 실행 상세",
+      "",
+      `- 검수 ID: ${item.id || ""}`,
+      `- 트리거: ${item.triggerTitle || item.triggerId || ""}`,
+      `- 유형: ${item.triggerType === "folder_watch" ? "폴더 감시" : "예약"}`,
+      `- 이벤트: ${item.event || ""}`,
+      `- 실행 시각: ${item.ranAt || ""}`,
+      `- 결과: ${item.ok ? "성공" : "실패"}`,
+      item.jobId ? `- 작업 ID: ${item.jobId}` : "",
+      item.file ? `- 파일: ${item.file}` : "",
+      item.retryScheduledAt ? `- 재시도 예약: ${item.retryScheduledAt}` : "",
+      item.error ? `- 오류: ${item.error}` : "",
+      "",
+      "## 실행 메시지",
+      item.message || "(메시지 없음)"
     ].filter(Boolean).join("\n");
   }
   switchPage("chat");
@@ -2368,8 +2488,42 @@ async function submitReviewEditPanel(event) {
 async function handleReviewClick(event) {
   const openButton = event.target.closest("button[data-review-open]");
   if (openButton && nodes.reviewPage?.contains(openButton)) {
-    const target = openButton.dataset.reviewOpen === "vault" ? "vault" : "chat";
+    const requested = openButton.dataset.reviewOpen || "chat";
+    const target = ["vault", "settings", "chat"].includes(requested) ? requested : "chat";
     switchPage(target);
+    return;
+  }
+  const automationButton = event.target.closest("button[data-review-automation-action]");
+  if (automationButton && nodes.reviewPage?.contains(automationButton)) {
+    const action = automationButton.dataset.reviewAutomationAction || "";
+    const id = automationButton.dataset.automationId || "";
+    const title = automationButton.dataset.automationTitle || id;
+    const item = reviewAutomationItemsState.find((row) => row.id === id);
+    if (action === "detail") {
+      showAutomationReviewDetail(item || { id, triggerTitle: title });
+      return;
+    }
+    automationButton.disabled = true;
+    try {
+      if (!id) throw new Error("자동화 검수 ID가 없습니다");
+      const needsNote = action !== "approve";
+      const note = needsNote ? window.prompt(action === "reject" ? "자동화 결과 반려 이유를 적어주세요." : "보완할 부분을 적어주세요.", "") : "";
+      if (needsNote && note === null) return;
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "자동화 검수 저장 중";
+      await saveReviewDecision({
+        action,
+        type: "automation",
+        id,
+        targetTitle: title,
+        note: note || ""
+      });
+      await loadReviewInbox();
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "자동화 결과 승인 저장 완료" : "자동화 검수 저장 완료";
+    } catch (error) {
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `자동화 검수 실패: ${error.message}`;
+    } finally {
+      automationButton.disabled = false;
+    }
     return;
   }
   const skillButton = event.target.closest("button[data-review-skill-action]");

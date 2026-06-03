@@ -5755,7 +5755,7 @@ function normalizeReviewEdit(input = {}) {
 
 function normalizeReviewDecision(input = {}) {
   const rawType = String(input.type || input.targetType || "office").trim().toLowerCase();
-  const type = ["office", "codex", "portfolio", "skill"].includes(rawType) ? rawType : "office";
+  const type = ["office", "codex", "portfolio", "skill", "automation"].includes(rawType) ? rawType : "office";
   const id = String(input.id || input.targetId || "").trim();
   const rawStatus = String(input.status || "").trim().toLowerCase();
   const status = ["approved", "rejected", "needs_revision", "pending"].includes(rawStatus) ? rawStatus : "pending";
