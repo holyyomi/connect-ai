@@ -4160,6 +4160,7 @@ function compactLine(text, maxLength = 42) {
 
 function inferYomiWorkType(text, intent = "office") {
   const value = String(text || "").toLowerCase();
+  if (/(vault|저장소|옵시디언|00[_\-/\\]?inbox).*(새로|파일|문서|요약|태그|정리|다음\s*행동)/i.test(value)) return "vault";
   if (intent === "codex" || /(코드|버그|api|서버|파일|css|dom|콘솔|빌드|테스트|수정|개발|git|npm|typescript|javascript|extension)/i.test(value)) return "code";
   if (intent === "vault" || /(저장소|vault|옵시디언|문서 검색|rag|기록|찾아|예전에)/i.test(value)) return "vault";
   if (/(영상|유튜브|쇼츠|릴스|썸네일|대본)/i.test(value)) return "video";
@@ -4176,7 +4177,7 @@ function criteriaForWorkType(workType) {
   const common = ["요청의 목표와 완료 기준이 한 문장으로 확인된다.", "직원별 산출물이 최종 보고서로 합쳐질 수 있다."];
   const byType = {
     code: ["변경 대상 파일과 검증 방법이 분리되어 있다.", "쓰기 작업이 필요한 경우 사용자 확인을 먼저 받는다."],
-    vault: ["검색 키워드와 근거 문서 기준이 명확하다.", "답변에 참조 문서 경로를 남길 수 있다."],
+    vault: ["검색/읽기 대상과 근거 문서 기준이 명확하다.", "요약, 태그 후보, 다음 실행 액션을 남길 수 있다."],
     video: ["후킹 문장, 구성, 플랫폼별 산출물이 구분된다."],
     social: ["캡션, 해시태그, 재활용 포맷이 분리된다."],
     design: ["현재 문제, 개선 방향, 화면 적용 기준이 구분된다."],
@@ -4191,7 +4192,7 @@ function criteriaForWorkType(workType) {
 function deliverablesForWorkType(workType) {
   const byType = {
     code: ["작업 분석", "변경 계획", "검증 체크리스트"],
-    vault: ["검색 질의", "근거 문서 목록", "요약 답변"],
+    vault: ["대상 문서", "근거 문서 목록", "요약 답변", "태그 후보", "다음 실행 액션"],
     video: ["영상 훅", "구성안", "제목 후보"],
     social: ["SNS 캡션", "해시태그", "재활용 포맷"],
     design: ["문제 진단", "개선안", "화면 적용 체크리스트"],
@@ -4644,6 +4645,7 @@ function taskQueueCodexRow(job) {
   return {
     type: "codex",
     id: job.id,
+    retryOf: normalizeTaskQueueRetryOf(job.retryOf),
     restored: false,
     title: job.task || "코덱스 작업",
     status: job.status,
@@ -4669,6 +4671,7 @@ function taskQueueOrchestrationRow(job) {
   return {
     type: "office",
     id: job.id,
+    retryOf: normalizeTaskQueueRetryOf(job.retryOf),
     restored: false,
     title: job.capsule?.normalizedTask || job.capsule?.goal || job.message || "요미 직원 실행",
     status: job.status,
@@ -4692,11 +4695,23 @@ function taskQueueRowKey(row) {
   return `${row?.type || "job"}:${row?.id || ""}`;
 }
 
+function normalizeTaskQueueRetryOf(input = null) {
+  if (!input || typeof input !== "object") return null;
+  const id = String(input.id || "").trim();
+  if (!id) return null;
+  return {
+    type: String(input.type || "office").trim().toLowerCase() || "office",
+    id,
+    title: compactLine(input.title || "", 180)
+  };
+}
+
 function normalizeTaskQueueHistoryRow(row = {}) {
   const status = ["queued", "running", "retrying", "finalizing"].includes(row.status) ? "cancelled" : String(row.status || "completed");
   return {
     type: String(row.type || "office"),
     id: String(row.id || ""),
+    retryOf: normalizeTaskQueueRetryOf(row.retryOf),
     restored: true,
     title: String(row.title || row.task || "이전 작업"),
     status,
@@ -4885,6 +4900,7 @@ async function markTaskQueueRetrySourceResolved(type, sourceId, nextId, title = 
   const keys = new Set(decisions.map((decision) => decision.key));
   state.decisions = [...decisions, ...state.decisions.filter((item) => !keys.has(item.key))];
   await writeReviewDecisionsState(state);
+  await relinkAutomationTriggerRetryJob(sourceId, nextId);
   return decisions[0];
 }
 
@@ -5043,8 +5059,92 @@ function reflectOrchestrationGroup(job, groupIndex, groupResults = [], completed
   return reflection;
 }
 
+function vaultInboxRelPathFromText(text = "") {
+  const match = String(text || "").match(/((?:00[_\-/\\]Inbox)[^\s"'<>]*?\.md)/i);
+  if (!match) return "";
+  return match[1].replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+async function readVaultInboxMarkdown(relPath = "") {
+  const cleanRelPath = String(relPath || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!cleanRelPath || !/^00[_\-/\\]Inbox\//i.test(cleanRelPath) || !cleanRelPath.toLowerCase().endsWith(".md")) return null;
+  if (cleanRelPath.includes("..") || path.isAbsolute(cleanRelPath) || isSensitiveVaultPath(cleanRelPath)) return null;
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return null;
+  const vaultPath = path.resolve(vaultRoot);
+  const fullPath = path.resolve(vaultRoot, cleanRelPath);
+  if (fullPath !== vaultPath && !fullPath.startsWith(`${vaultPath}${path.sep}`)) return null;
+  if (!(await exists(fullPath))) return null;
+  const content = stripAnsi(await readFile(fullPath, "utf8")).slice(0, 20000);
+  return { relPath: cleanRelPath, fullPath, content };
+}
+
+function summarizeMarkdownForInbox(content = "") {
+  const rawLines = String(content || "").replace(/\r\n/g, "\n").split("\n");
+  const title = rawLines.find((line) => /^#\s+/.test(line))?.replace(/^#\s+/, "").trim()
+    || rawLines.find((line) => line.trim())?.trim().slice(0, 80)
+    || "제목 없음";
+  const bodyLines = rawLines
+    .map((line) => line.trim())
+    .filter((line) => line && !/^#\s+/.test(line));
+  const bullets = bodyLines
+    .filter((line) => /^[-*]\s+/.test(line))
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .slice(0, 5);
+  const summaryLines = (bullets.length ? bullets : bodyLines).slice(0, 5).map((line) => compactLine(line, 160));
+  const hashtags = [...new Set((String(content).match(/#[\w가-힣_-]+/g) || []).map((tag) => tag.replace(/^#/, "").toLowerCase()))].slice(0, 6);
+  const fallbackTags = ["inbox", "vault-watch", "automation-review"];
+  return {
+    title,
+    summaryLines: summaryLines.length ? summaryLines : ["요약할 본문이 짧거나 비어 있습니다."],
+    tags: [...new Set([...hashtags, ...fallbackTags])].slice(0, 8)
+  };
+}
+
+async function buildLocalVaultInboxSubtaskResult(job, subtask) {
+  if (job?.capsule?.workType !== "vault") return null;
+  const relPath = vaultInboxRelPathFromText(`${job.message || ""}\n${job.capsule?.normalizedTask || ""}\n${job.capsule?.originalInput || ""}`);
+  const doc = await readVaultInboxMarkdown(relPath);
+  if (!doc) return null;
+  const summary = summarizeMarkdownForInbox(doc.content);
+  const roleNote = subtask.agentId === "archivist"
+    ? "태그, 저장 후보, RAG 재사용 기준을 우선 정리했습니다."
+    : subtask.agentId === "writer"
+      ? "읽기 쉬운 요약과 다음 행동을 우선 정리했습니다."
+      : "누락 확인과 실행 체크리스트를 우선 정리했습니다.";
+  return {
+    text: [
+      "### 담당 해석",
+      `Vault 00_Inbox 신규 markdown 파일 정리 요청으로 해석했습니다. ${roleNote}`,
+      "",
+      "### 산출물",
+      `- 원본 파일: ${doc.relPath}`,
+      `- 제목: ${summary.title}`,
+      "- 요약:",
+      ...summary.summaryLines.map((line) => `  - ${line}`),
+      `- 태그 후보: ${summary.tags.map((tag) => `#${tag}`).join(" ")}`,
+      "- 다음 실행 액션:",
+      "  - 필요하면 원본을 읽고 실제 업무/자료/아이디어 중 하나로 분류합니다.",
+      "  - 재사용 가치가 있으면 20_Knowledge 또는 50_Outputs 쪽으로 이동 후보를 검토합니다.",
+      "  - 단순 테스트 파일이면 검수 후 보관 또는 삭제 후보로 표시합니다.",
+      "",
+      "### 근거 출처",
+      `- ${doc.relPath} (로컬 Vault 파일 직접 읽기)`,
+      "",
+      "### 요미에게 인계할 메모",
+      "CLI sandbox가 없어도 감시 파일 자체는 서버가 안전하게 읽어 정리할 수 있습니다. 외부 전송, Git 쓰기, 파일 이동은 하지 않았습니다."
+    ].join("\n"),
+    commandLabel: `local-vault-inbox-read ${doc.relPath}`,
+    engine: "local",
+    engineLabel: "로컬 Vault 읽기",
+    provider: "filesystem"
+  };
+}
+
 async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], critique = "" }) {
   const agent = resolveAgent(subtask.agentId) || { name: subtask.agentName, role: subtask.role, work: "" };
+  const localVaultResult = await buildLocalVaultInboxSubtaskResult(job, subtask);
+  if (localVaultResult) return localVaultResult;
   const previous = previousOutputs.length ? orchestrationOutputSummary(previousOutputs) : "이전 그룹 산출물 없음";
   const contextBlock = job.context?.promptBlock || "";
   const contextUseBlock = formatContextUsePlan(job.contextUse || job.capsule?.contextUse || {});
@@ -5274,9 +5374,11 @@ function buildAssetQualityReview(job) {
   const sourceCount = job.context?.sources?.length || 0;
   const criteriaCount = job.capsule?.completionCriteria?.length || 0;
   const staffingLevel = job.capsule?.staffing?.level || "";
+  const workType = job.capsule?.workType || "general_work";
+  const durableWorkType = workType === "vault";
   const durableAssetKeyword = /(보고서|전략|자료|초안|문서|콘텐츠|기획안|분석|조사|자산|저장|매뉴얼|가이드|템플릿|로드맵|프로세스|정책|포트폴리오|자동화)/i.test(input);
   const hasSourceSection = /근거\s*출처|RAG\s*근거|Vault\s*참조|참고\s*자료/i.test(reportText);
-  const hasActionSection = /다음\s*(액션|단계)|실행\s*계획|우선순위|체크리스트|To-?do/i.test(reportText);
+  const hasActionSection = /다음\s*(액션|단계|행동)|실행\s*(계획|액션|행동)|우선순위|체크리스트|To-?do/i.test(reportText);
   const hasRetrospectiveSection = /회고|보완|리스크|한계|검수|평가/i.test(reportText);
   const hasConcreteOutput = /##\s*(산출물|최종|결론|초안|전략|계획|보고서)|#\s+.+/i.test(reportText);
   const completionRatio = subtasks.length ? completed.length / subtasks.length : 0;
@@ -5284,7 +5386,7 @@ function buildAssetQualityReview(job) {
     assetSignal(reportLength >= 520, "충분한 산출물 분량", reportLength >= 1200 ? 18 : 14, `${reportLength}자`),
     assetSignal(completionRatio >= 1 && completed.length > 0 && failed.length === 0, "직원 실행 완료", 18, `${completed.length}/${subtasks.length || 0} 완료`),
     assetSignal(criteriaCount >= 2, "완료 기준 명확성", 12, `${criteriaCount}개 기준`),
-    assetSignal(durableAssetKeyword || staffingLevel === "deep", "재사용 가능한 업무 유형", 16, job.capsule?.workType || "general_work"),
+    assetSignal(durableAssetKeyword || durableWorkType || staffingLevel === "deep", "재사용 가능한 업무 유형", 16, workType),
     assetSignal(hasConcreteOutput, "구체 산출물 포함", 12),
     assetSignal(sourceCount >= 2 && hasSourceSection, "근거 출처 연결", 14, `${sourceCount}개 Vault 근거`),
     assetSignal(hasActionSection, "다음 실행 액션 포함", 8),
@@ -5299,7 +5401,7 @@ function buildAssetQualityReview(job) {
   if (reportLength < 520) issues.push("재사용 자산으로 보기엔 보고서 분량이 부족합니다.");
   if (failed.length) issues.push(`실패한 직원 산출물 ${failed.length}개가 있습니다.`);
   if (isTrivialAutoSaveInput(input)) issues.push("단발성 추천/잡담으로 판단됩니다.");
-  if (!durableAssetKeyword && staffingLevel !== "deep" && reportLength < 1200) issues.push("반복 활용할 업무 유형 신호가 약합니다.");
+  if (!durableAssetKeyword && !durableWorkType && staffingLevel !== "deep" && reportLength < 1200) issues.push("반복 활용할 업무 유형 신호가 약합니다.");
   if (!hasConcreteOutput) issues.push("구체 산출물 섹션이 부족합니다.");
   if (sourceCount && !hasSourceSection) issues.push("Vault 근거를 사용했지만 근거 출처 섹션이 명확하지 않습니다.");
   if (sourceCount < 2 && /조사|분석|전략|트렌드|자료|리서치/i.test(input)) issues.push("리서치/전략 업무인데 연결된 근거가 부족합니다.");
@@ -6774,7 +6876,7 @@ function syncAutomationEntryWithJob(entry = {}) {
     jobSavedRelPath: row.saved?.relPath || "",
     jobSavedReason: row.saved?.reason || "",
     modeLabel: normalized.modeLabel || row.statusLabel || serverJobStatusLabel(row.status),
-    error: jobOk ? normalized.error : automationJobOutcomeText(row)
+    error: jobOk ? "" : automationJobOutcomeText(row)
   });
   const changed = JSON.stringify(normalized) !== JSON.stringify(next);
   return { entry: next, changed };
@@ -6796,6 +6898,40 @@ function syncAutomationTriggerJobResults(config = {}) {
       });
     }
   }
+  return dirty;
+}
+
+async function relinkAutomationTriggerRetryJob(sourceJobId = "", nextJobId = "") {
+  const sourceId = String(sourceJobId || "").trim();
+  const nextId = String(nextJobId || "").trim();
+  if (!sourceId || !nextId) return false;
+  const config = await readAutomationTriggersConfig();
+  const now = new Date().toISOString();
+  let dirty = false;
+  const relinkEntry = (entry = null) => {
+    if (!entry?.jobId || String(entry.jobId) !== sourceId) return entry;
+    dirty = true;
+    return normalizeAutomationTriggerHistoryEntry({
+      ...entry,
+      ok: false,
+      jobId: nextId,
+      jobStatus: "queued",
+      jobStatusLabel: "재시도",
+      jobCompletedAt: "",
+      jobUpdatedAt: now,
+      jobSavedOk: false,
+      jobSavedRelPath: "",
+      jobSavedReason: "",
+      error: `재시도 작업 ${nextId} 결과를 기다립니다.`
+    });
+  };
+  for (const trigger of Array.isArray(config.triggers) ? config.triggers : []) {
+    if (trigger.lastResult?.jobId === sourceId) trigger.lastResult = relinkEntry(trigger.lastResult);
+    if (Array.isArray(trigger.history) && trigger.history.length) {
+      trigger.history = trigger.history.map(relinkEntry);
+    }
+  }
+  if (dirty) await writeAutomationTriggerState(config);
   return dirty;
 }
 

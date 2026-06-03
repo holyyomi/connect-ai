@@ -37,7 +37,7 @@
       "id": "vault-inbox-watch",
       "title": "Vault 00_Inbox 새 파일 정리",
       "type": "folder_watch",
-      "enabled": false,
+      "enabled": true,
       "message": "/업무 Vault에 새로 들어온 파일을 읽고 요약, 태그 후보, 다음 행동을 정리해줘: {{file}}",
       "schedule": {
         "kind": "manual",
