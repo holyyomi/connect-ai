@@ -3004,8 +3004,32 @@ function taskQueueTimeValue(value) {
   return Number.isFinite(time) ? time : 0;
 }
 
+function taskQueueIsClosedHistory(job = {}) {
+  return job.restored && reviewDecisionClosesAttention(job.reviewDecision);
+}
+
+function taskQueueCompletionKey(job = {}) {
+  const title = String(job.title || job.task || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!title || job.status !== "completed") return "";
+  return `${job.type || "job"}:${title}`;
+}
+
 function taskQueueDisplayRows(jobs = []) {
-  return [...jobs]
+  const openJobs = [...jobs].filter((job) => !taskQueueIsClosedHistory(job));
+  const latestCompleted = new Map();
+  for (const job of openJobs) {
+    const key = taskQueueCompletionKey(job);
+    if (!key) continue;
+    const current = latestCompleted.get(key);
+    if (!current || taskQueueTimeValue(job.updatedAt || job.createdAt) > taskQueueTimeValue(current.updatedAt || current.createdAt)) {
+      latestCompleted.set(key, job);
+    }
+  }
+  return openJobs
+    .filter((job) => {
+      const key = taskQueueCompletionKey(job);
+      return !key || latestCompleted.get(key)?.id === job.id;
+    })
     .sort((a, b) => taskQueueDisplayRank(a) - taskQueueDisplayRank(b)
       || taskQueueTimeValue(b.updatedAt || b.createdAt) - taskQueueTimeValue(a.updatedAt || a.createdAt))
     .slice(0, 8);
@@ -3439,6 +3463,7 @@ function renderTaskQueue(state = {}) {
   if (!nodes.taskQueueList) return;
   const jobs = state.jobs || [];
   const visibleJobs = taskQueueDisplayRows(jobs);
+  const hiddenClosedJobs = jobs.filter(taskQueueIsClosedHistory).length;
   if (nodes.taskQueueStatus) {
     const running = state.summary?.running || 0;
     const completed = state.summary?.completed || 0;
@@ -3447,11 +3472,11 @@ function renderTaskQueue(state = {}) {
       ? `${running}개 실행 · 완료 ${completed}개`
       : attention
         ? `주의 ${attention}개 · 완료 ${completed}개`
-        : jobs.length
-          ? `완료 ${completed}개 · 기록 ${jobs.length}개`
+        : visibleJobs.length
+          ? `완료 ${completed}개 · 기록 ${visibleJobs.length}개${hiddenClosedJobs ? ` · 정리 ${hiddenClosedJobs}개` : ""}`
           : "대기";
   }
-  if (!jobs.length) {
+  if (!visibleJobs.length) {
     nodes.taskQueueList.innerHTML = '<div class="office-agent-empty">대기 중인 작업이 없습니다.</div>';
     return;
   }
