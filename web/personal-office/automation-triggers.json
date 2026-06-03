@@ -21,7 +21,17 @@
       "lastRunAt": "",
       "nextRunAt": "",
       "lastEventAt": "",
-      "lastResult": null
+      "lastResult": null,
+      "failureCount": 0,
+      "nextRetryAt": "",
+      "retryContext": null,
+      "retryPolicy": {
+        "enabled": true,
+        "maxAttempts": 2,
+        "delayMinutes": 5,
+        "backoffMultiplier": 2
+      },
+      "history": []
     },
     {
       "id": "vault-inbox-watch",
@@ -44,7 +54,17 @@
       "lastRunAt": "",
       "nextRunAt": "",
       "lastEventAt": "",
-      "lastResult": null
+      "lastResult": null,
+      "failureCount": 0,
+      "nextRetryAt": "",
+      "retryContext": null,
+      "retryPolicy": {
+        "enabled": true,
+        "maxAttempts": 2,
+        "delayMinutes": 5,
+        "backoffMultiplier": 2
+      },
+      "history": []
     }
   ]
 }

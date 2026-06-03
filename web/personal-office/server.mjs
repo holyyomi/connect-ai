@@ -6472,6 +6472,14 @@ function updateAutomationRules(input = {}) {
   return publicAutomationRules();
 }
 
+const automationTriggerHistoryLimit = 20;
+const defaultAutomationTriggerRetryPolicy = {
+  enabled: true,
+  maxAttempts: 2,
+  delayMinutes: 5,
+  backoffMultiplier: 2
+};
+
 function defaultAutomationTriggersConfig() {
   return {
     triggers: [
@@ -6486,7 +6494,12 @@ function defaultAutomationTriggersConfig() {
         lastRunAt: "",
         nextRunAt: "",
         lastEventAt: "",
-        lastResult: null
+        lastResult: null,
+        failureCount: 0,
+        nextRetryAt: "",
+        retryContext: null,
+        retryPolicy: { ...defaultAutomationTriggerRetryPolicy },
+        history: []
       },
       {
         id: "vault-inbox-watch",
@@ -6499,10 +6512,59 @@ function defaultAutomationTriggersConfig() {
         lastRunAt: "",
         nextRunAt: "",
         lastEventAt: "",
-        lastResult: null
+        lastResult: null,
+        failureCount: 0,
+        nextRetryAt: "",
+        retryContext: null,
+        retryPolicy: { ...defaultAutomationTriggerRetryPolicy },
+        history: []
       }
     ]
   };
+}
+
+function normalizeAutomationRetryPolicy(input = {}) {
+  const policy = input && typeof input === "object" ? input : {};
+  return {
+    enabled: policy.enabled !== false,
+    maxAttempts: Math.max(1, Math.min(5, Number(policy.maxAttempts || defaultAutomationTriggerRetryPolicy.maxAttempts) || defaultAutomationTriggerRetryPolicy.maxAttempts)),
+    delayMinutes: Math.max(1, Math.min(120, Number(policy.delayMinutes || defaultAutomationTriggerRetryPolicy.delayMinutes) || defaultAutomationTriggerRetryPolicy.delayMinutes)),
+    backoffMultiplier: Math.max(1, Math.min(5, Number(policy.backoffMultiplier || defaultAutomationTriggerRetryPolicy.backoffMultiplier) || defaultAutomationTriggerRetryPolicy.backoffMultiplier))
+  };
+}
+
+function normalizeAutomationRetryContext(input = null) {
+  if (!input || typeof input !== "object") return null;
+  return {
+    event: compactLine(input.event || "retry", 32),
+    file: String(input.file || "").replace(/\\/g, "/").slice(0, 260)
+  };
+}
+
+function normalizeAutomationTriggerHistoryEntry(input = {}) {
+  return {
+    id: String(input.id || `run-${Date.now().toString(36)}`),
+    ok: input.ok === true,
+    event: compactLine(input.event || "trigger", 32),
+    file: String(input.file || "").replace(/\\/g, "/").slice(0, 260),
+    jobId: String(input.jobId || ""),
+    modeLabel: compactLine(input.modeLabel || "", 48),
+    intent: compactLine(input.intent || "", 32),
+    error: compactLine(input.error || "", 180),
+    attempt: Math.max(1, Math.min(5, Number(input.attempt || 1) || 1)),
+    retryScheduledAt: String(input.retryScheduledAt || ""),
+    durationMs: Math.max(0, Math.round(Number(input.durationMs || 0) || 0)),
+    ranAt: String(input.ranAt || input.createdAt || new Date().toISOString())
+  };
+}
+
+function appendAutomationTriggerHistory(trigger, entry) {
+  if (!trigger) return;
+  const history = Array.isArray(trigger.history) ? trigger.history : [];
+  trigger.history = [
+    normalizeAutomationTriggerHistoryEntry(entry),
+    ...history.map(normalizeAutomationTriggerHistoryEntry)
+  ].slice(0, automationTriggerHistoryLimit);
 }
 
 function normalizeTriggerTime(value) {
@@ -6539,7 +6601,12 @@ function normalizeAutomationTrigger(input = {}, index = 0) {
     lastRunAt: String(input.lastRunAt || ""),
     nextRunAt: String(input.nextRunAt || ""),
     lastEventAt: String(input.lastEventAt || ""),
-    lastResult: input.lastResult && typeof input.lastResult === "object" ? input.lastResult : null
+    lastResult: input.lastResult && typeof input.lastResult === "object" ? input.lastResult : null,
+    failureCount: Math.max(0, Math.min(5, Number(input.failureCount || 0) || 0)),
+    nextRetryAt: String(input.nextRetryAt || ""),
+    retryContext: normalizeAutomationRetryContext(input.retryContext),
+    retryPolicy: normalizeAutomationRetryPolicy(input.retryPolicy),
+    history: (Array.isArray(input.history) ? input.history : []).map(normalizeAutomationTriggerHistoryEntry).slice(0, automationTriggerHistoryLimit)
   };
 }
 
@@ -6573,6 +6640,28 @@ function computeAutomationNextRunAt(trigger, base = new Date()) {
   return dailyRunAt(trigger.schedule?.time, base);
 }
 
+function computeAutomationRetryAt(trigger, failureCount = 1, base = new Date()) {
+  const policy = normalizeAutomationRetryPolicy(trigger.retryPolicy);
+  const exponent = Math.max(0, Math.min(4, Number(failureCount || 1) - 1));
+  const delayMinutes = policy.delayMinutes * Math.pow(policy.backoffMultiplier, exponent);
+  return new Date(base.getTime() + Math.max(1, Math.min(720, delayMinutes)) * 60000).toISOString();
+}
+
+function preserveAutomationRuntimeFields(existing = {}, next = {}, options = {}) {
+  return {
+    ...next,
+    lastRunAt: existing.lastRunAt || next.lastRunAt || "",
+    nextRunAt: next.type === "schedule" ? (next.nextRunAt || existing.nextRunAt || "") : "",
+    lastEventAt: existing.lastEventAt || next.lastEventAt || "",
+    lastResult: existing.lastResult || next.lastResult || null,
+    failureCount: Number(existing.failureCount || next.failureCount || 0) || 0,
+    nextRetryAt: existing.nextRetryAt || next.nextRetryAt || "",
+    retryContext: existing.retryContext || next.retryContext || null,
+    retryPolicy: normalizeAutomationRetryPolicy(options.replaceRetryPolicy ? next.retryPolicy : (existing.retryPolicy || next.retryPolicy)),
+    history: Array.isArray(existing.history) ? existing.history : (Array.isArray(next.history) ? next.history : [])
+  };
+}
+
 function automationTriggerStatusLabel(status = "") {
   return {
     disabled: "비활성",
@@ -6580,6 +6669,7 @@ function automationTriggerStatusLabel(status = "") {
     watching: "감시 중",
     ready: "준비",
     running: "실행 중",
+    retrying: "재시도 예약",
     blocked: "확인 필요",
     failed: "실패"
   }[status] || status || "대기";
@@ -6663,29 +6753,58 @@ async function executeAutomationTrigger(trigger, context = {}) {
   if (automationTriggerRuntime.running.has(trigger.id)) return { ok: false, skipped: true, reason: "이미 실행 중" };
   const message = renderAutomationMessage(trigger, context);
   if (!message) throw new Error("실행할 메시지가 없습니다");
+  const startedAt = Date.now();
+  const event = context.event || (context.manual ? "manual" : "schedule");
+  const file = context.file || "";
+  const policy = normalizeAutomationRetryPolicy(trigger.retryPolicy);
+  const isAutomaticRun = context.manual !== true;
+  const runAttempt = Math.max(1, Math.min(5, Number(trigger.failureCount || 0) + 1));
   automationTriggerRuntime.running.add(trigger.id);
-  trigger.lastEventAt = context.event ? new Date().toISOString() : trigger.lastEventAt;
+  trigger.lastEventAt = event ? new Date().toISOString() : trigger.lastEventAt;
   try {
     const result = await runChatMessage({ message });
     const jobId = result.officeJob?.id || result.codexJob?.id || "";
     trigger.lastRunAt = new Date().toISOString();
     trigger.nextRunAt = computeAutomationNextRunAt(trigger, new Date(trigger.lastRunAt));
+    trigger.failureCount = 0;
+    trigger.nextRetryAt = "";
+    trigger.retryContext = null;
     trigger.lastResult = {
       ok: true,
       intent: result.intent || "",
       modeLabel: result.modeLabel || "",
       jobId,
-      event: context.event || (context.manual ? "manual" : "schedule"),
-      file: context.file || "",
+      event,
+      file,
+      attempt: runAttempt,
+      durationMs: Date.now() - startedAt,
       ranAt: trigger.lastRunAt
     };
+    appendAutomationTriggerHistory(trigger, trigger.lastResult);
     return trigger.lastResult;
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     trigger.lastRunAt = new Date().toISOString();
     trigger.nextRunAt = computeAutomationNextRunAt(trigger, new Date(trigger.lastRunAt));
-    trigger.lastResult = { ok: false, error: messageText, event: context.event || "trigger", ranAt: trigger.lastRunAt };
-    recordWorkflowError("자동화 트리거", `${trigger.title}: ${messageText}`);
+    trigger.failureCount = runAttempt;
+    const retryScheduledAt = isAutomaticRun && policy.enabled && trigger.enabled && trigger.failureCount < policy.maxAttempts
+      ? computeAutomationRetryAt(trigger, trigger.failureCount, new Date(trigger.lastRunAt))
+      : "";
+    trigger.nextRetryAt = retryScheduledAt;
+    trigger.retryContext = retryScheduledAt ? normalizeAutomationRetryContext({ event, file }) : null;
+    trigger.lastResult = {
+      ok: false,
+      error: messageText,
+      event,
+      file,
+      attempt: trigger.failureCount,
+      retryScheduledAt,
+      retryExhausted: !retryScheduledAt && isAutomaticRun,
+      durationMs: Date.now() - startedAt,
+      ranAt: trigger.lastRunAt
+    };
+    appendAutomationTriggerHistory(trigger, trigger.lastResult);
+    recordWorkflowError("자동화 트리거", `${trigger.title}: ${messageText}${retryScheduledAt ? ` · 재시도 예약 ${retryScheduledAt}` : ""}`);
     return trigger.lastResult;
   } finally {
     automationTriggerRuntime.running.delete(trigger.id);
@@ -6707,6 +6826,12 @@ async function publicAutomationTrigger(trigger) {
   if (running) {
     status = "running";
     detail = "백그라운드 실행 중";
+  } else if (trigger.enabled && trigger.nextRetryAt) {
+    status = "retrying";
+    detail = `실패 ${Number(trigger.failureCount || 0)}회 · ${trigger.nextRetryAt} 재시도`;
+  } else if (trigger.enabled && trigger.lastResult?.ok === false && Number(trigger.failureCount || 0) >= normalizeAutomationRetryPolicy(trigger.retryPolicy).maxAttempts) {
+    status = "failed";
+    detail = `재시도 한도 도달 · ${trigger.lastResult.error || "실패 원인 확인 필요"}`;
   } else if (trigger.type === "schedule") {
     nextRunAt = trigger.enabled ? (trigger.nextRunAt || computeAutomationNextRunAt(trigger)) : "";
     status = trigger.enabled ? "scheduled" : "disabled";
@@ -6737,6 +6862,8 @@ async function buildAutomationTriggersState() {
       total: triggers.length,
       enabled: triggers.filter((trigger) => trigger.enabled).length,
       running: triggers.filter((trigger) => trigger.running).length,
+      retrying: triggers.filter((trigger) => trigger.status === "retrying").length,
+      failed: triggers.filter((trigger) => trigger.status === "failed").length,
       attention: triggers.filter((trigger) => ["blocked", "failed"].includes(trigger.status)).length
     },
     triggers
@@ -6751,10 +6878,11 @@ async function updateAutomationTriggersConfig(input = {}) {
     return await buildAutomationTriggersState();
   }
   if (action === "save") {
-    const next = normalizeAutomationTrigger(input.trigger || input, config.triggers.length);
+    const rawTrigger = input.trigger || input;
+    const next = normalizeAutomationTrigger(rawTrigger, config.triggers.length);
     if (next.enabled && next.type === "schedule" && !next.nextRunAt) next.nextRunAt = computeAutomationNextRunAt(next);
     const ids = new Set(config.triggers.map((item) => item.id));
-    if (ids.has(next.id)) config.triggers = config.triggers.map((item) => item.id === next.id ? { ...item, ...next, updatedAt: new Date().toISOString() } : item);
+    if (ids.has(next.id)) config.triggers = config.triggers.map((item) => item.id === next.id ? { ...preserveAutomationRuntimeFields(item, next, { replaceRetryPolicy: Object.prototype.hasOwnProperty.call(rawTrigger, "retryPolicy") }), updatedAt: new Date().toISOString() } : item);
     else config.triggers.push({ ...next, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     await writeAutomationTriggersConfig(config);
   } else if (action === "toggle") {
@@ -6766,6 +6894,8 @@ async function updateAutomationTriggersConfig(input = {}) {
         ...item,
         enabled,
         nextRunAt: enabled && item.type === "schedule" ? (item.nextRunAt || computeAutomationNextRunAt(item)) : "",
+        nextRetryAt: enabled ? item.nextRetryAt || "" : "",
+        retryContext: enabled ? item.retryContext || null : null,
         updatedAt: new Date().toISOString()
       };
     });
@@ -6852,7 +6982,14 @@ async function tickAutomationTriggers() {
   const now = new Date();
   let dirty = false;
   for (const trigger of config.triggers) {
-    if (!trigger.enabled || trigger.type !== "schedule") continue;
+    if (!trigger.enabled) continue;
+    if (trigger.nextRetryAt && new Date(trigger.nextRetryAt).getTime() <= now.getTime()) {
+      const retryContext = normalizeAutomationRetryContext(trigger.retryContext) || { event: trigger.type === "folder_watch" ? "change" : "schedule", file: trigger.lastResult?.file || "" };
+      await executeAutomationTrigger(trigger, { ...retryContext, retry: true });
+      dirty = true;
+      continue;
+    }
+    if (trigger.type !== "schedule") continue;
     const nextRunAt = trigger.nextRunAt || computeAutomationNextRunAt(trigger, now);
     if (!trigger.nextRunAt) {
       trigger.nextRunAt = nextRunAt;

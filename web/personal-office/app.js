@@ -991,10 +991,43 @@ function formatTriggerDate(value) {
   return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatAutomationDuration(ms) {
+  const value = Number(ms || 0);
+  if (!value) return "";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}s`;
+}
+
+function renderAutomationTriggerHistory(history = []) {
+  const rows = (Array.isArray(history) ? history : []).slice(0, 3);
+  if (!rows.length) return "";
+  return `
+    <div class="automation-trigger-history" aria-label="최근 자동화 실행 이력">
+      ${rows.map((entry) => {
+        const status = entry.ok ? "성공" : "실패";
+        const when = formatTriggerDate(entry.ranAt);
+        const detail = entry.ok
+          ? [entry.modeLabel, entry.jobId ? `작업 ${entry.jobId}` : "", formatAutomationDuration(entry.durationMs)].filter(Boolean).join(" · ")
+          : [entry.error || "오류", entry.retryScheduledAt ? `재시도 ${formatTriggerDate(entry.retryScheduledAt)}` : "", `${entry.attempt || 1}회차`].filter(Boolean).join(" · ");
+        return `<small class="${entry.ok ? "success" : "warn"}">${escapeHtml(status)}${when ? ` · ${escapeHtml(when)}` : ""}${detail ? ` · ${escapeHtml(detail)}` : ""}</small>`;
+      }).join("")}
+    </div>
+  `;
+}
+
 function renderAutomationTriggerCard(trigger) {
   const typeLabel = trigger.type === "folder_watch" ? "폴더 감시" : "예약";
   const nextText = trigger.nextRunAt ? `다음: ${formatTriggerDate(trigger.nextRunAt)}` : "";
   const lastText = trigger.lastRunAt ? `최근: ${formatTriggerDate(trigger.lastRunAt)}` : "실행 기록 없음";
+  const retryText = trigger.nextRetryAt
+    ? `재시도: ${formatTriggerDate(trigger.nextRetryAt)}`
+    : trigger.failureCount
+      ? `실패 ${trigger.failureCount}회`
+      : "";
+  const policy = trigger.retryPolicy || {};
+  const retryPolicyText = policy.enabled === false
+    ? "재시도 꺼짐"
+    : `재시도 최대 ${policy.maxAttempts || 2}회 · ${policy.delayMinutes || 5}분`;
   const resultText = trigger.lastResult?.ok === false
     ? `실패: ${trigger.lastResult.error || "오류"}`
     : trigger.lastResult?.jobId
@@ -1007,6 +1040,8 @@ function renderAutomationTriggerCard(trigger) {
         <span>${escapeHtml(typeLabel)} · ${escapeHtml(trigger.statusLabel || trigger.status || "대기")}</span>
         <small>${escapeHtml(trigger.detail || "")}</small>
         <small>${escapeHtml([nextText, lastText, resultText].filter(Boolean).join(" · "))}</small>
+        <small>${escapeHtml([retryText, retryPolicyText].filter(Boolean).join(" · "))}</small>
+        ${renderAutomationTriggerHistory(trigger.history || [])}
       </div>
       <div class="connection-row-actions">
         <button type="button" data-trigger-action="toggle" data-trigger-id="${escapeHtml(trigger.id)}" data-enabled="${trigger.enabled ? "false" : "true"}">${trigger.enabled ? "끄기" : "켜기"}</button>
@@ -1033,6 +1068,8 @@ function renderAutomationTriggersState(state = automationTriggersState) {
   if (nodes.automationTriggerStatus) {
     nodes.automationTriggerStatus.textContent = summary.attention
       ? `확인 필요 ${summary.attention}개`
+      : summary.retrying
+        ? `재시도 대기 ${summary.retrying}개`
       : summary.enabled
         ? "자동화 준비"
         : "필요할 때 켜기";
@@ -1185,9 +1222,13 @@ async function handleAutomationTriggerClick(event) {
     if (action === "delete") await updateAutomationTriggerConfig({ action: "delete", id });
     if (action === "preview") await updateAutomationTriggerConfig({ action: "preview", id });
     if (action === "run") {
-      await updateAutomationTriggerConfig({ action: "run", id });
+      const data = await updateAutomationTriggerConfig({ action: "run", id });
       await loadTaskQueue({ resume: false });
-      if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = "수동 실행을 시작했습니다.";
+      if (nodes.automationTriggerStatus) {
+        nodes.automationTriggerStatus.textContent = data.runResult?.ok === false
+          ? `수동 실행 실패: ${data.runResult.error || data.runResult.reason || "오류"}`
+          : "수동 실행을 시작했습니다.";
+      }
     }
   } catch (error) {
     if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = `실행 실패: ${error.message}`;

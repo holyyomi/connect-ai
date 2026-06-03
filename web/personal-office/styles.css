@@ -392,8 +392,12 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .automation-trigger-item strong { color: var(--bright); font-size: 13px; }
 .automation-trigger-item span, .automation-trigger-item small { margin-top: 4px; color: var(--dim); font-size: 11px; line-height: 1.45; }
 .automation-trigger-item.running, .automation-trigger-item.watching, .automation-trigger-item.scheduled { border-color: rgba(65,242,122,.23); background: rgba(65,242,122,.065); }
-.automation-trigger-item.blocked, .automation-trigger-item.failed { border-color: rgba(255,191,77,.24); background: rgba(255,191,77,.05); }
+.automation-trigger-item.retrying, .automation-trigger-item.blocked, .automation-trigger-item.failed { border-color: rgba(255,191,77,.24); background: rgba(255,191,77,.05); }
 .automation-trigger-item.disabled { opacity: .76; }
+.automation-trigger-history { display: grid; gap: 3px; margin-top: 7px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 7px; }
+.automation-trigger-history small { margin-top: 0; }
+.automation-trigger-history small.success { color: var(--accent); }
+.automation-trigger-history small.warn { color: var(--warn); }
 .automation-trigger-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(0,0,0,.18); padding: 10px; }
 .automation-trigger-form label { display: grid; gap: 5px; color: var(--dim); font-size: 11px; font-weight: 900; }
 .automation-trigger-form label.wide { grid-column: 1 / -1; }
