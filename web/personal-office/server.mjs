@@ -3881,13 +3881,102 @@ async function saveCodexJobReport(job) {
   job.saved = await saveReportToVault(`[코덱스] ${job.task}`, formatCodexJobReport(job), assigned);
 }
 
+function isWindowsCodexSandboxSpawnFailure(text = "") {
+  return /windows sandbox:\s*spawn setup refresh|sandbox.*spawn setup refresh/i.test(String(text || ""));
+}
+
+function shouldUseLocalCodexFallback(task = "", failureText = "") {
+  const taskText = String(task || "");
+  if (!isWindowsCodexSandboxSpawnFailure(failureText)) return false;
+  return /(readme|yomi|요미|personal\s*office|프로젝트|project|repository|저장소|구조|분석|확인)/i.test(taskText);
+}
+
+async function readLocalProjectDocSummary(relPath, maxChars = 5000) {
+  const fullPath = path.resolve(projectRoot, relPath);
+  if (fullPath !== projectRoot && !fullPath.startsWith(`${projectRoot}${path.sep}`)) return null;
+  if (!(await exists(fullPath))) return null;
+  const content = stripAnsi(await readFile(fullPath, "utf8"));
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim())
+    .slice(0, 80);
+  return {
+    relPath,
+    excerpt: lines.join("\n").slice(0, maxChars)
+  };
+}
+
+async function buildLocalProjectAnalysisFallback(task = "", failureText = "") {
+  const docs = (await Promise.all([
+    readLocalProjectDocSummary("README.md"),
+    readLocalProjectDocSummary("docs/PROJECT_INTENT.md"),
+    readLocalProjectDocSummary("web/personal-office/README.md"),
+    readLocalProjectDocSummary("package.json", 2500)
+  ])).filter(Boolean);
+  const docList = docs.map((doc) => `- ${doc.relPath}`).join("\n") || "- 확인 가능한 문서 없음";
+  const readme = docs.find((doc) => doc.relPath === "README.md")?.excerpt || "";
+  const intent = docs.find((doc) => doc.relPath === "docs/PROJECT_INTENT.md")?.excerpt || "";
+  const office = docs.find((doc) => doc.relPath === "web/personal-office/README.md")?.excerpt || "";
+  const packageText = docs.find((doc) => doc.relPath === "package.json")?.excerpt || "";
+  const hasYomiRuntime = /YOMI Office|요미오피스|personal office/i.test(`${readme}\n${office}`);
+  const hasCodexClaude = /Codex CLI[\s\S]*Claude Code CLI|Claude Code CLI[\s\S]*Codex CLI/i.test(`${readme}\n${office}\n${intent}`);
+  const hasVault = /Vault|Obsidian|markdown/i.test(`${readme}\n${office}\n${intent}`);
+  const hasScripts = /yomi:start|yomi:restart|yomi:check/i.test(packageText);
+  return [
+    "# 로컬 프로젝트 분석 fallback",
+    "",
+    `- 요청: ${compactLine(task, 180)}`,
+    "- 상태: Codex CLI 내부 Windows read-only sandbox 셸 실행이 막혀 서버의 로컬 파일 읽기로 대체 분석했습니다.",
+    `- 실패 신호: ${compactCliFailureDetail(failureText, 180) || "windows sandbox spawn failure"}`,
+    "",
+    "## 핵심 판단",
+    hasYomiRuntime
+      ? "- 이 저장소는 VS Code/Cursor 확장 프로젝트이며, 현재 실사용 중심 화면은 `web/personal-office/`의 YOMI Office입니다."
+      : "- 저장소 README 기준으로 프로젝트 구조 확인이 필요합니다.",
+    hasCodexClaude
+      ? "- 런타임 엔진 방향은 Codex CLI 기본, Claude Code CLI 보조입니다."
+      : "- Codex/Claude 엔진 설명은 문서에서 추가 확인이 필요합니다.",
+    hasVault
+      ? "- 재사용 가능한 결과는 Obsidian/Vault markdown 산출물로 자산화하는 방향입니다."
+      : "- Vault 자산화 경로는 문서에서 명확히 확인되지 않았습니다.",
+    hasScripts
+      ? "- 로컬 실행/점검 스크립트는 `npm run yomi:start`, `npm run yomi:restart`, `npm run yomi:check` 계열입니다."
+      : "- package.json에서 YOMI 실행 스크립트 확인이 필요합니다.",
+    "",
+    "## 확인한 파일",
+    docList,
+    "",
+    "## YOMI Office 구조",
+    "- 서버: `web/personal-office/server.mjs`",
+    "- UI: `web/personal-office/index.html`, `web/personal-office/app.js`, `web/personal-office/styles.css`",
+    "- 직원/도구 메타데이터: `web/personal-office/skills.json`, `web/personal-office/connections.json`",
+    "- 런타임 상태: `web/personal-office/runtime/` 아래에 저장되며 Git 추적 대상이 아닙니다.",
+    "",
+    "## 다음 조치",
+    "- Codex 직접 큐는 Windows read-only sandbox 실패 시 이 fallback처럼 서버 로컬 읽기 기반 분석으로 전환해야 합니다.",
+    "- 실제 코드 변경/검증 작업은 Codex 에이전트가 로컬 셸로 직접 수행하고, YOMI Office에는 결과만 큐/검수 상태로 반영하는 방식이 안정적입니다.",
+    "- 외부 전송, Git 쓰기, 배포, 비밀 파일 접근은 사용자 승인 없이는 진행하지 않는 정책을 유지해야 합니다."
+  ].join("\n");
+}
+
+async function applyCodexLocalFallbackIfUseful(job) {
+  const failureText = [job.stderr, job.output, job.error].filter(Boolean).join("\n");
+  if (!shouldUseLocalCodexFallback(job.task, failureText)) return false;
+  job.output = await buildLocalProjectAnalysisFallback(job.task, failureText);
+  job.error = "";
+  job.exitCode = job.exitCode ?? 0;
+  appendJobLog(job, "Codex sandbox 실패를 로컬 문서 분석 fallback으로 대체했습니다.", "taeo", "warn");
+  return true;
+}
+
 function createCodexJob(task) {
   const command = codexCommand();
   const job = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     task,
     status: "queued",
-    commandLabel: `${command} exec --sandbox read-only`,
+    commandLabel: `${command} exec --sandbox read-only --output-last-message <runtime> - <stdin>`,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     output: "",
@@ -3903,58 +3992,84 @@ function createCodexJob(task) {
   return job;
 }
 
-function runCodexJob(job, command) {
+async function runCodexJob(job, command) {
   job.status = "running";
   job.updatedAt = new Date().toISOString();
   appendJobLog(job, "Codex CLI 실행을 시작했습니다.", "taeo");
-  const child = spawn(command, ["exec", "--sandbox", "read-only", job.task], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-  job.child = child;
-  const timer = setTimeout(() => {
-    job.error = "timeout";
-    appendJobLog(job, "제한 시간을 넘겨 작업을 중단합니다.", "taeo", "warn");
-    child.kill();
-  }, codexTimeoutMs);
-  child.stdout.on("data", (chunk) => {
-    job.output = (job.output + chunk.toString()).slice(-maxCodexOutputBytes);
-    const now = Date.now();
-    if (!job.lastStreamLogAt || now - job.lastStreamLogAt > 2200) {
-      appendJobLog(job, `출력을 수신 중입니다. 현재 ${job.output.length.toLocaleString("ko-KR")}자`, "taeo");
-      job.lastStreamLogAt = now;
-    }
-    job.updatedAt = new Date().toISOString();
-  });
-  child.stderr.on("data", (chunk) => {
-    job.stderr = (job.stderr + chunk.toString()).slice(-maxCodexOutputBytes);
-    appendJobLog(job, "오류 출력이 감지되었습니다.", "taeo", "warn");
-    job.updatedAt = new Date().toISOString();
-  });
-  child.on("error", async (error) => {
-    clearTimeout(timer);
+  const sandbox = "read-only";
+  const outputDir = path.join(runtimeRoot, "cli");
+  let outputPath = "";
+  try {
+    await mkdir(outputDir, { recursive: true });
+    outputPath = path.join(outputDir, `codex-job-${job.id}.md`);
+    job.commandLabel = `${command} exec --sandbox ${sandbox} --output-last-message <runtime> - <stdin>`;
+    const child = spawn(command, ["exec", "--sandbox", sandbox, "--output-last-message", outputPath, "-"], { cwd: projectRoot, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    job.child = child;
+    writePromptToChild(child, job.task, job);
+    const timer = setTimeout(() => {
+      job.error = "timeout";
+      appendJobLog(job, "제한 시간을 넘겨 작업을 중단합니다.", "taeo", "warn");
+      terminateChildProcess(child);
+    }, codexTimeoutMs);
+    child.stdout.on("data", (chunk) => {
+      job.output = stripAnsi((job.output + chunk.toString()).slice(-maxCodexOutputBytes));
+      const now = Date.now();
+      if (!job.lastStreamLogAt || now - job.lastStreamLogAt > 2200) {
+        appendJobLog(job, `출력을 수신 중입니다. 현재 ${job.output.length.toLocaleString("ko-KR")}자`, "taeo");
+        job.lastStreamLogAt = now;
+      }
+      job.updatedAt = new Date().toISOString();
+    });
+    child.stderr.on("data", (chunk) => {
+      job.stderr = stripAnsi((job.stderr + chunk.toString()).slice(-maxCodexOutputBytes));
+      appendJobLog(job, "오류 출력이 감지되었습니다.", "taeo", "warn");
+      job.updatedAt = new Date().toISOString();
+    });
+    child.on("error", async (error) => {
+      clearTimeout(timer);
+      delete job.child;
+      job.status = "failed";
+      job.error = error.message;
+      job.updatedAt = new Date().toISOString();
+      appendJobLog(job, `실행 실패: ${job.error}`, "taeo", "error");
+      await rm(outputPath, { force: true }).catch(() => {});
+      await saveCodexJobReport(job);
+    });
+    child.on("close", async (code) => {
+      clearTimeout(timer);
+      delete job.child;
+      job.exitCode = code;
+      try {
+        const lastMessage = stripAnsi(await readFile(outputPath, "utf8"));
+        if (lastMessage) job.output = lastMessage;
+      } catch {
+        // If Codex did not write a final message, keep streamed stdout.
+      }
+      await rm(outputPath, { force: true }).catch(() => {});
+      const fallbackCompleted = !job.cancelRequested && !(code === 0 && !job.error) ? await applyCodexLocalFallbackIfUseful(job) : false;
+      job.status = job.cancelRequested ? "cancelled" : (code === 0 && !job.error) || fallbackCompleted ? "completed" : "failed";
+      job.updatedAt = new Date().toISOString();
+      appendJobLog(
+        job,
+        job.status === "cancelled"
+          ? "코덱스 작업이 취소되었습니다."
+          : job.status === "completed"
+            ? "코덱스 작업이 완료되었습니다."
+            : `코덱스 작업이 실패했습니다. 종료 코드: ${code}`,
+        "taeo",
+        job.status === "completed" ? "info" : job.status === "cancelled" ? "warn" : "error"
+      );
+      await saveCodexJobReport(job);
+    });
+  } catch (error) {
     delete job.child;
     job.status = "failed";
-    job.error = error.message;
+    job.error = error instanceof Error ? error.message : String(error);
     job.updatedAt = new Date().toISOString();
     appendJobLog(job, `실행 실패: ${job.error}`, "taeo", "error");
+    if (outputPath) await rm(outputPath, { force: true }).catch(() => {});
     await saveCodexJobReport(job);
-  });
-  child.on("close", async (code) => {
-    clearTimeout(timer);
-    delete job.child;
-    job.exitCode = code;
-    job.status = job.cancelRequested ? "cancelled" : code === 0 && !job.error ? "completed" : "failed";
-    job.updatedAt = new Date().toISOString();
-    appendJobLog(
-      job,
-      job.status === "cancelled"
-        ? "코덱스 작업이 취소되었습니다."
-        : job.status === "completed"
-          ? "코덱스 작업이 완료되었습니다."
-          : `코덱스 작업이 실패했습니다. 종료 코드: ${code}`,
-      "taeo",
-      job.status === "completed" ? "info" : job.status === "cancelled" ? "warn" : "error"
-    );
-    await saveCodexJobReport(job);
-  });
+  }
 }
 
 function parseChatRoute(message) {
@@ -5727,7 +5842,7 @@ function reviewDecisionStatusLabel(status = "") {
     approved: "승인",
     rejected: "반려",
     needs_revision: "수정 필요",
-    resolved: "재시도 해결",
+    resolved: "재시도됨",
     pending: "검수 대기"
   }[status] || "검수 대기";
 }

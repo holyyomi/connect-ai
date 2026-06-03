@@ -2114,7 +2114,7 @@ function renderReviewOpsDashboard(summary = {}) {
 
 function reviewDecisionLabel(decision = null) {
   if (!decision?.status || decision.status === "pending") return "";
-  return decision.statusLabel || ({ approved: "승인", rejected: "반려", needs_revision: "수정 필요", resolved: "재시도 해결" })[decision.status] || decision.status;
+  return decision.statusLabel || ({ approved: "승인", rejected: "반려", needs_revision: "수정 필요", resolved: "재시도됨" })[decision.status] || decision.status;
 }
 
 function reviewDecisionClosesAttention(decision = null) {
