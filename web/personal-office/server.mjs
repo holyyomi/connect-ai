@@ -891,9 +891,12 @@ function trueLike(value) {
 function isCommandLikeAssetTitle(value = "") {
   const text = String(value || "").normalize("NFKC").trim();
   if (!text) return false;
-  const commandTail = /(해줘|해 줘|줘|해봐|해 봐|바꿔줘|수정해줘|정리해줘|만들어줘|알려줘|설명해봐|확인만|진행해|적용해|덮어써|삭제해|추천해줘|list up|check only)$/i;
+  const routePrefix = /^\/(?:업무|codex|code|cc|claude|vault)(?:\s+|$)/i;
+  const shortProgressCommand = /^(다음\s*)?(진행|진행해|이어\s*진행|이어서\s*진행|다음\s*진행)(?:\s*[:：-].*)?$/i;
+  const commandTail = /(해줘|해 줘|줘|해봐|해 봐|바꿔줘|수정해줘|정리해줘|만들어줘|알려줘|설명해봐|확인만|진행해|적용해|덮어써|삭제해|추천해줘|list up|check only)(?:\s*[:：-].*)?$/i;
   const commandVerb = /(README|ARCHITECTURE|AGENTS|코덱스|codex|claude|파일|문서|설정).{0,40}(바꿔|수정|확인|정리|덮어|설명|진행)/i;
-  return text.length <= 160 && (commandTail.test(text) || commandVerb.test(text));
+  const requestChain = /(읽고|찾고|확인하고|조사해서|분석해서|요약|태그|정리).{0,90}(해줘|줘)(?:\s*[:：-].*)?$/i;
+  return text.length <= 180 && (routePrefix.test(text) || shortProgressCommand.test(text) || commandTail.test(text) || commandVerb.test(text) || requestChain.test(text));
 }
 
 function encodingNoiseScore(value = "") {
@@ -2747,15 +2750,74 @@ function parseJsonObject(text) {
   return JSON.parse(candidate);
 }
 
+function cleanAssetTitleCandidate(value = "") {
+  const title = compactLine(String(value || "")
+    .replace(/[`*_#>\[\]"']/g, " ")
+    .replace(/^\s*(?:[-*]\s*)?(?:제목|문서\s*제목|원본\s*제목|핵심\s*주제|결론|요약)\s*[:：-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim(), 90);
+  if (!title || title.length < 4) return "";
+  if (/^(YOMI Office|요미|코덱스|Codex).{0,20}(보고서|최종 보고|개발자 보고서)$/i.test(title)) return "";
+  if (/^(목표와 완료 기준|직원별 핵심 산출물|직원 간 인계|근거 출처|통합 결과|리스크와 확인 필요 사항|다음 행동|산출물|요미 라우팅 결과|사용자 입력|요미 응답|목표 정의 질문|필요한 재료|직원 분배 계획|작업캡슐 JSON|참고 문서)$/i.test(title)) return "";
+  if (isTrivialAutoSaveInput(title) || isCommandLikeAssetTitle(title) || encodingNoiseScore(title) >= 3) return "";
+  return title;
+}
+
+function titleFromReportContent(report = "") {
+  const text = stripMarkdownFrontmatter(report).replace(/\r\n/g, "\n");
+  const candidates = [];
+  for (const match of text.matchAll(/^\s*[-*]\s*(?:제목|문서\s*제목|원본\s*제목)\s*[:：-]\s*(.+)$/gmi)) {
+    candidates.push(`${match[1]} 정리`);
+  }
+  for (const match of text.matchAll(/^\s*[-*]\s*(?:핵심\s*주제|결론|요약)\s*[:：-]\s*(.+)$/gmi)) {
+    candidates.push(match[1]);
+  }
+  const resultSection = text.match(/^##\s*(?:통합 결과|산출물|최종 결과)\s*\n([\s\S]*?)(?:\n##\s+|$)/im)?.[1] || "";
+  for (const line of resultSection.split("\n")) {
+    const cleaned = line.replace(/^\s*[-*]\s*/, "").trim();
+    if (/^(원본 파일|태그 후보|핵심 요약|다음 실행 액션)\s*[:：-]/i.test(cleaned)) continue;
+    if (cleaned) candidates.push(cleaned);
+    if (candidates.length >= 8) break;
+  }
+  for (const match of text.matchAll(/^#{1,3}\s+(.+)$/gm)) {
+    candidates.push(match[1]);
+  }
+  for (const candidate of candidates) {
+    const clean = cleanAssetTitleCandidate(candidate);
+    if (clean) return clean;
+  }
+  return "";
+}
+
 function titleFromReport(task, report, options = {}) {
   const explicit = compactLine(options.title || "", 90);
   if (explicit && !isCommandLikeAssetTitle(explicit)) return explicit;
   const heading = compactLine(markdownTitle(report, ""), 90);
   if (heading && !/^(YOMI Office|요미|코덱스|Codex).{0,20}(보고서|최종 보고|개발자 보고서)$/i.test(heading) && !isCommandLikeAssetTitle(heading)) return heading;
+  const reportTitle = titleFromReportContent(report);
+  if (reportTitle) return reportTitle;
   const taskTitle = compactLine(task, 90);
   if (taskTitle && !isCommandLikeAssetTitle(taskTitle)) return taskTitle;
   const secondary = stripMarkdownFrontmatter(report).match(/^##\s+(.+)$/m)?.[1] || "";
-  return compactLine(secondary || "검토 필요 산출물", 90);
+  return cleanAssetTitleCandidate(secondary) || "검토 필요 산출물";
+}
+
+function titleFromConversationAsset(turn = {}) {
+  const assistant = String(turn.assistant || "");
+  const reportTitle = titleFromReportContent(assistant);
+  if (reportTitle) return reportTitle;
+  for (const rawLine of stripMarkdownFrontmatter(assistant).split(/\r?\n/)) {
+    const line = rawLine
+      .replace(/^\s*(?:[-*]\s*|\d+\.\s*)/, "")
+      .replace(/^\s*(?:요약|핵심|결론|답변|목표)\s*[:：-]\s*/i, "")
+      .trim();
+    if (!line || /^(네|예|좋습니다|알겠습니다|확인했습니다|다음과 같이|아래와 같이)[.!。!?\s]*$/i.test(line)) continue;
+    if (/^(분류|작업\s*유형|담당\s*엔진|배정\s*규모|배정\s*이유|다음\s*상태|저장\s*이유|대화\s*모드)\s*[:：-]/i.test(line)) continue;
+    const sentence = line.split(/(?<=[.!?。！？])\s+/)[0] || line;
+    const clean = cleanAssetTitleCandidate(sentence);
+    if (clean) return clean;
+  }
+  return "대화 자산";
 }
 
 function classifyVaultSave(task, report, options = {}) {
@@ -3248,12 +3310,13 @@ async function saveConversationMemoryToVault({ session, turn, assessment }) {
   const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const outDir = path.join(vaultRoot, "50_Outputs", primaryReportFolder, "Conversation Assets", day);
   await mkdir(outDir, { recursive: true });
-  const title = compactLine(turn.user || session.title || "대화 자산", 52);
+  const title = titleFromConversationAsset(turn);
   const fullPath = path.join(outDir, `${stamp}-${slugify(title)}.md`);
   const relPath = path.relative(vaultRoot, fullPath).replace(/\\/g, "/");
   const frontmatter = [
     "---",
     `type: ${yamlString("yomi_office_conversation_asset")}`,
+    `title: ${yamlString(title)}`,
     `created: ${now.toISOString()}`,
     `session: ${yamlString(session.id)}`,
     `turn: ${yamlString(turn.id)}`,
@@ -3282,11 +3345,70 @@ function defaultSkillCandidatesState() {
   return { candidates: [] };
 }
 
+function skillCandidateWorkTypeFromTitle(title = "") {
+  const prefix = String(title || "").match(/^([a-z_]+)\s*:/i)?.[1]?.toLowerCase() || "";
+  return ["code", "vault", "video", "social", "design", "research", "strategy", "writing", "general_work"].includes(prefix) ? prefix : "";
+}
+
+function normalizeSkillCandidateScope(input = {}, title = "") {
+  const scope = input && typeof input === "object" ? input : {};
+  const workType = String(scope.workType || "");
+  const inferredWorkType = workType && workType !== "general_work" ? workType : (skillCandidateWorkTypeFromTitle(title) || workType || "general_work");
+  const taskPattern = compactLine(scope.taskPattern || String(title || "").replace(/^[a-z_]+\s*:\s*/i, ""), 140);
+  const appliesWhen = normalizeStringList(scope.appliesWhen || [], 8);
+  const excludes = normalizeStringList(scope.excludes || [], 8);
+  return {
+    workType: inferredWorkType,
+    taskPattern,
+    outputType: compactLine(scope.outputType || "workflow", 80),
+    appliesWhen: appliesWhen.length ? appliesWhen : [
+      `${inferredWorkType} 유형 요청에서 목표, 완료 기준, 산출물 형태가 유사할 때`,
+      "자료 수집, 직원 분배, 검수, Vault 자산화 흐름을 반복 사용할 때"
+    ],
+    excludes: excludes.length ? excludes : [
+      "단순 잡담이나 일회성 짧은 실행 지시",
+      "키워드만 같고 산출물 형식과 완료 기준이 다른 작업"
+    ],
+    specificity: compactLine(scope.specificity || "scoped", 40)
+  };
+}
+
+function normalizeSkillCandidateHierarchy(input = {}, scope = {}) {
+  const hierarchy = input && typeof input === "object" ? input : {};
+  const level = ["principle", "procedure", "template", "case"].includes(String(hierarchy.level || "")) ? String(hierarchy.level) : "procedure";
+  const workType = compactLine(scope.workType || "general_work", 80);
+  return {
+    level,
+    parent: compactLine(hierarchy.parent || `${workType}-assetization-principle`, 120),
+    principle: compactLine(hierarchy.principle || "목표 정의, 자료 기준, 직원 분배, 검수/회고, 자산화 순서를 재사용하되 작업 유형 범위를 벗어나면 적용하지 않는다.", 220),
+    procedureRelPath: String(hierarchy.procedureRelPath || "").replace(/\\/g, "/").slice(0, 260)
+  };
+}
+
+function normalizeSkillCandidateAntiOverfit(input = {}, scope = {}) {
+  const anti = input && typeof input === "object" ? input : {};
+  const rules = normalizeStringList(anti.rules || [], 8);
+  const workType = compactLine(scope.workType || "general_work", 80);
+  return {
+    minimumEvidence: Math.max(1, Math.min(10, Number(anti.minimumEvidence || 2) || 2)),
+    rules: rules.length ? rules : [
+      `사용자 원문이나 특정 파일명만으로 ${workType} 워크플로우를 적용하지 않는다.`,
+      "workType, 완료 기준, 산출물 형태가 함께 맞을 때만 적용한다.",
+      "구체 절차는 근거 Vault 산출물을 참조하고 상위 원칙은 짧게 유지한다."
+    ]
+  };
+}
+
 function normalizeSkillCandidate(input = {}) {
   const title = compactLine(input.title || input.label || "대화 기반 스킬", 42);
   const id = String(input.id || `skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
   const agentIds = normalizeStringList(input.agentIds || ["ceo", "writer", "archivist"]).filter((idValue) => specialistRoles.some((agent) => agent.id === idValue));
   const kind = ["skill", "memory", "workflow", "template"].includes(String(input.kind || "")) ? String(input.kind) : "skill";
+  const scope = normalizeSkillCandidateScope(input.scope, title);
+  const hierarchy = normalizeSkillCandidateHierarchy(input.hierarchy, scope);
+  const sourceJobIds = normalizeStringList(input.sourceJobIds || [input.sourceJobId], 20);
+  const sourceRelPaths = normalizeStringList(input.sourceRelPaths || [input.sourceRelPath], 20).map((item) => item.replace(/\\/g, "/"));
+  const workflowKey = slugId(input.workflowKey || (kind === "workflow" ? `${scope.workType}-${title}` : `${kind}-${title}`));
   return {
     id,
     kind,
@@ -3298,10 +3420,18 @@ function normalizeSkillCandidate(input = {}) {
     agentIds: agentIds.length ? agentIds : ["ceo", "writer", "archivist"],
     toolId: slugId(input.toolId || `memory-${title}`),
     status: String(input.status || "pending"),
+    workflowKey,
+    scope,
+    hierarchy,
+    antiOverfit: normalizeSkillCandidateAntiOverfit(input.antiOverfit, scope),
+    sourceType: String(input.sourceType || (kind === "workflow" ? "orchestration" : "chat")),
+    sourceJobIds,
+    sourceRelPaths,
+    uses: Math.max(sourceJobIds.length || sourceRelPaths.length || 1, Number(input.uses || 1) || 1),
     sourceSessionId: String(input.sourceSessionId || ""),
     sourceTurnId: String(input.sourceTurnId || ""),
-    sourceJobId: String(input.sourceJobId || ""),
-    sourceRelPath: String(input.sourceRelPath || ""),
+    sourceJobId: String(input.sourceJobId || sourceJobIds[0] || ""),
+    sourceRelPath: String(input.sourceRelPath || sourceRelPaths[0] || ""),
     createdAt: String(input.createdAt || new Date().toISOString()),
     updatedAt: String(input.updatedAt || input.createdAt || new Date().toISOString()),
     appliedAt: String(input.appliedAt || ""),
@@ -3309,9 +3439,39 @@ function normalizeSkillCandidate(input = {}) {
   };
 }
 
+function mergeSkillCandidateRows(rows = []) {
+  const merged = new Map();
+  const passthrough = [];
+  for (const candidate of rows.map(normalizeSkillCandidate)) {
+    const mergeKey = candidate.kind === "workflow" && candidate.workflowKey ? `workflow:${candidate.workflowKey}` : "";
+    if (!mergeKey) {
+      passthrough.push(candidate);
+      continue;
+    }
+    const current = merged.get(mergeKey);
+    if (!current) {
+      merged.set(mergeKey, candidate);
+      continue;
+    }
+    const keep = current.status === "approved" ? current
+      : candidate.status === "approved" ? candidate
+        : jobTimeValue(candidate.updatedAt || candidate.createdAt) > jobTimeValue(current.updatedAt || current.createdAt) ? candidate : current;
+    const other = keep === current ? candidate : current;
+    keep.sourceJobIds = [...new Set([...(keep.sourceJobIds || []), ...(other.sourceJobIds || []), other.sourceJobId].filter(Boolean))].slice(0, 20);
+    keep.sourceRelPaths = [...new Set([...(keep.sourceRelPaths || []), ...(other.sourceRelPaths || []), other.sourceRelPath].filter(Boolean))].slice(0, 20);
+    keep.uses = Math.max(Number(keep.uses || 1), keep.sourceJobIds.length, keep.sourceRelPaths.length);
+    keep.confidence = clampScore(Math.max(Number(keep.confidence || 0), Number(other.confidence || 0)));
+    keep.createdAt = jobTimeValue(keep.createdAt) <= jobTimeValue(other.createdAt) ? keep.createdAt : other.createdAt;
+    keep.updatedAt = jobTimeValue(keep.updatedAt) >= jobTimeValue(other.updatedAt) ? keep.updatedAt : other.updatedAt;
+    if (!keep.evidence && other.evidence) keep.evidence = other.evidence;
+    merged.set(mergeKey, keep);
+  }
+  return [...merged.values(), ...passthrough];
+}
+
 function normalizeSkillCandidatesState(input = {}) {
   const candidates = Array.isArray(input.candidates) ? input.candidates : [];
-  return { candidates: candidates.map(normalizeSkillCandidate).filter((candidate) => candidate.id) };
+  return { candidates: mergeSkillCandidateRows(candidates).filter((candidate) => candidate.id) };
 }
 
 async function readSkillCandidatesState() {
@@ -3532,7 +3692,15 @@ async function applySkillCandidate(candidateId) {
     sourceSessionId: candidate.sourceSessionId,
     sourceTurnId: candidate.sourceTurnId,
     sourceJobId: candidate.sourceJobId,
-    sourceRelPath: candidate.sourceRelPath
+    sourceRelPath: candidate.sourceRelPath,
+    workflowKey: candidate.workflowKey,
+    scope: candidate.scope,
+    hierarchy: candidate.hierarchy,
+    antiOverfit: candidate.antiOverfit,
+    sourceType: candidate.sourceType,
+    sourceJobIds: candidate.sourceJobIds || [],
+    sourceRelPaths: candidate.sourceRelPaths || [],
+    uses: Number(candidate.uses || 1)
   };
   for (const agentId of candidate.agentIds) {
     const current = Array.isArray(config.agentSkills[agentId]) ? config.agentSkills[agentId].map(String) : [];
@@ -6250,6 +6418,23 @@ function workflowCandidateAgentIds(job) {
   ])].filter((id) => specialistRoles.some((agent) => agent.id === id)).slice(0, 6);
 }
 
+function normalizeWorkflowTaskPattern(text = "") {
+  return compactLine(String(text || "")
+    .replace(/00[_\-/\\]Inbox[^\s"'<>]*?\.md/gi, "00_Inbox/*.md")
+    .replace(/\b20\d{2}[-_.]\d{2}[-_.]\d{2}(?:[T_\-\d:.]*)?/g, "<date>")
+    .replace(/\s+/g, " ")
+    .trim(), 160);
+}
+
+function workflowCandidateKey(job) {
+  const capsule = job?.capsule || {};
+  const workType = capsule.workType || "workflow";
+  const criteria = (capsule.completionCriteria || []).slice(0, 4).join(" ");
+  const staffing = (job?.subtasks || []).map((step) => `${step.agentId}:${step.label}`).join("|");
+  const taskPattern = normalizeWorkflowTaskPattern(capsule.normalizedTask || capsule.title || job?.message || "");
+  return slugId(normalizeMemoryKey(`${workType} ${taskPattern} ${criteria} ${staffing}`));
+}
+
 async function createWorkflowCandidateFromJob(job) {
   if (!job || job.plan?.questionRequired) return null;
   const performance = job.performance || {};
@@ -6257,9 +6442,55 @@ async function createWorkflowCandidateFromJob(job) {
   const reusable = job.saved?.ok || performance.portfolioCandidate || score >= 82;
   if (!reusable || !job.report || String(job.report).trim().length < 500) return null;
   const state = await readSkillCandidatesState();
-  const existing = state.candidates.find((candidate) => candidate.kind === "workflow" && candidate.sourceJobId === job.id);
-  if (existing) return existing;
   const capsule = job.capsule || {};
+  const workflowKey = workflowCandidateKey(job);
+  const sourceRelPath = job.saved?.relPath || performance.portfolioRelPath || "";
+  const workType = capsule.workType || "general_work";
+  const scope = {
+    workType,
+    taskPattern: normalizeWorkflowTaskPattern(capsule.normalizedTask || capsule.title || ""),
+    outputType: "orchestration-workflow",
+    specificity: "scoped",
+    appliesWhen: [
+      `${workType} 유형의 요청이고 목표/완료 기준이 유사할 때`,
+      "직원 분배, 근거 수집, 검수, Vault 자산화 흐름을 반복 사용할 때"
+    ],
+    excludes: [
+      "단순 잡담이나 일회성 짧은 질문",
+      "같은 키워드만 있고 산출물 형식과 완료 기준이 다른 작업"
+    ]
+  };
+  const hierarchy = {
+    level: "procedure",
+    parent: `${workType}-assetization-principle`,
+    principle: "목표 정의, 자료 기준, 직원 분배, 검수/회고, 자산화 순서를 재사용하되 작업 유형 범위를 벗어나면 적용하지 않는다.",
+    procedureRelPath: sourceRelPath
+  };
+  const antiOverfit = {
+    minimumEvidence: 2,
+    rules: [
+      "사용자 원문이나 특정 파일명만으로 적용하지 않는다.",
+      "workType, 완료 기준, 산출물 형태가 함께 맞을 때만 적용한다.",
+      "구체 절차는 원본 Vault 산출물을 참조하고 상위 원칙은 짧게 유지한다."
+    ]
+  };
+  const existing = state.candidates.find((candidate) => candidate.kind === "workflow" && (candidate.sourceJobId === job.id || candidate.workflowKey === workflowKey) && candidate.status !== "dismissed");
+  if (existing) {
+    existing.sourceJobIds = [...new Set([...(existing.sourceJobIds || []), existing.sourceJobId, job.id].filter(Boolean))].slice(0, 20);
+    existing.sourceRelPaths = [...new Set([...(existing.sourceRelPaths || []), existing.sourceRelPath, sourceRelPath].filter(Boolean))].slice(0, 20);
+    existing.sourceJobId = existing.sourceJobId || job.id;
+    existing.sourceRelPath = sourceRelPath || existing.sourceRelPath || "";
+    existing.uses = Math.max(Number(existing.uses || 1) + (existing.sourceJobIds.includes(job.id) ? 0 : 1), existing.sourceJobIds.length, existing.sourceRelPaths.length);
+    existing.confidence = clampScore(Math.max(Number(existing.confidence || 0), score || 82));
+    existing.description = `성과 ${existing.confidence || "N/A"}점 작업에서 추출한 재사용 워크플로우 후보입니다. 누적 근거 ${existing.uses || existing.sourceJobIds.length || 1}건.`;
+    existing.workflowKey = workflowKey;
+    if (!existing.scope?.appliesWhen?.length) existing.scope = scope;
+    if (!existing.hierarchy?.principle) existing.hierarchy = hierarchy;
+    if (!existing.antiOverfit?.rules?.length) existing.antiOverfit = antiOverfit;
+    existing.updatedAt = new Date().toISOString();
+    await writeSkillCandidatesState(state);
+    return existing;
+  }
   const completed = (job.subtasks || []).filter((step) => step.status === "completed");
   const title = compactLine(`${capsule.workType || "workflow"}: ${capsule.title || capsule.normalizedTask || "YOMI workflow"}`, 42);
   const candidate = normalizeSkillCandidate({
@@ -6267,10 +6498,15 @@ async function createWorkflowCandidateFromJob(job) {
     title,
     description: `성과 ${score || "N/A"}점 작업에서 추출한 재사용 워크플로우 후보입니다.`,
     confidence: score || 82,
-    evidence: job.saved?.relPath || performance.portfolioRelPath || "",
+    evidence: sourceRelPath,
+    workflowKey,
+    scope,
+    hierarchy,
+    antiOverfit,
     instructions: [
       "이 워크플로우 후보는 완료된 직원 실행에서 자동 추출되었습니다.",
       "같은 유형의 업무가 들어오면 목표 질문, 자료 기준, 직원 분배, 검수/회고 순서를 재사용합니다.",
+      "적용 범위가 맞지 않으면 이 후보를 사용하지 않고 새 계획을 세웁니다.",
       "",
       "## Goal",
       capsule.goal || capsule.normalizedTask || "",
@@ -6290,7 +6526,10 @@ async function createWorkflowCandidateFromJob(job) {
     agentIds: workflowCandidateAgentIds(job),
     status: "pending",
     sourceJobId: job.id,
-    sourceRelPath: job.saved?.relPath || performance.portfolioRelPath || ""
+    sourceJobIds: [job.id],
+    sourceRelPath,
+    sourceRelPaths: [sourceRelPath].filter(Boolean),
+    sourceType: "orchestration"
   });
   state.candidates.unshift(candidate);
   await writeSkillCandidatesState(state);

@@ -2860,6 +2860,17 @@ function renderSkillCandidateEditor(candidate = {}) {
   `;
 }
 
+function skillCandidateScopeText(candidate = {}) {
+  const scope = candidate.scope || {};
+  const hierarchy = candidate.hierarchy || {};
+  return [
+    scope.workType ? `범위 ${scope.workType}` : "",
+    hierarchy.level ? `계층 ${hierarchy.level}` : "",
+    candidate.uses ? `근거 ${candidate.uses}건` : "",
+    scope.specificity ? `적용 ${scope.specificity}` : ""
+  ].filter(Boolean).join(" · ");
+}
+
 function renderSkillCandidates(state = skillCandidatesState) {
   skillCandidatesState = state || { candidates: [] };
   if (!nodes.skillCandidateList) return;
@@ -2885,6 +2896,7 @@ function renderSkillCandidates(state = skillCandidatesState) {
         ${candidate.createdAt ? `<b>${escapeHtml(formatShortTime(candidate.createdAt))}</b>` : ""}
       </div>
       <small>${escapeHtml(candidate.description || "")}</small>
+      ${skillCandidateScopeText(candidate) ? `<small>${escapeHtml(skillCandidateScopeText(candidate))}</small>` : ""}
       ${candidate.evidencePreview ? `<p class="skill-candidate-evidence">${escapeHtml(candidate.evidencePreview)}</p>` : ""}
       ${candidate.instructionsPreview ? `<p class="skill-candidate-instructions">${escapeHtml(candidate.instructionsPreview)}</p>` : ""}
       ${renderSkillCandidateEditor(candidate)}
