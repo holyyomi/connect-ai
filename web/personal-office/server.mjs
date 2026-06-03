@@ -97,6 +97,21 @@ const defaultAutomationRules = {
   keywords: ["자산", "저장", "정리", "계획", "결정", "절차", "아이디어", "자동화", "프롬프트", "RAG", "옵시디언"]
 };
 let automationRules = { ...defaultAutomationRules, keywords: [...defaultAutomationRules.keywords] };
+const profileMemoryPolicy = {
+  maxTotalChars: 2000,
+  maxItemChars: 220,
+  maxItemsPerBucket: 12,
+  buckets: {
+    memory: "작업/환경 사실, 프로젝트 기준, 반복 절차",
+    user: "사용자 선호, 말투, 작업 방식"
+  },
+  selectionRules: [
+    "작업/환경 사실은 MEMORY에 저장하고 사용자 선호/말투는 USER에 저장한다.",
+    "일회성 지시, 테스트 문구, 짧은 진행 명령은 저장하지 않는다.",
+    "새 항목은 한 줄로 압축하고 중복은 정규화 키로 제거한다.",
+    "총 2000자 예산을 넘으면 중요도 낮은 항목부터 제외한다."
+  ]
+};
 const automationTriggerRuntime = {
   initialized: false,
   schedulerTimer: null,
@@ -131,7 +146,8 @@ const defaultStyleProfile = {
     "근거 없는 확정 표현",
     "실행하지 않은 일을 완료한 것처럼 쓰기"
   ],
-  memory: [
+  memory: [],
+  userMemory: [
     "사소한 요청에는 필요한 담당자만 투입하고, 중요한 업무만 깊게 진행한다."
   ]
 };
@@ -1740,6 +1756,104 @@ async function updateRagExclusionState(input = {}) {
   };
 }
 
+function classifyProfileMemoryBucket(value = "") {
+  const text = String(value || "").normalize("NFKC");
+  if (/(말투|어조|톤|스타일|형식|포맷|답변\s*방식|보고\s*방식|간결|자세히|한국어|존댓말|반말|칭찬|이모지|선호|싫어|좋아|원해|원함|필요없|물어봐|묻고|사소한\s*요청|중요한\s*업무)/i.test(text)) {
+    return "userMemory";
+  }
+  return "memory";
+}
+
+function normalizeProfileMemoryBucketName(value = "") {
+  const bucket = String(value || "").trim().toLowerCase();
+  if (["user", "usermemory", "preference", "preferences"].includes(bucket)) return "userMemory";
+  if (["memory", "work", "environment"].includes(bucket)) return "memory";
+  return "";
+}
+
+function memoryImportanceScore(value = "", bucket = "memory") {
+  const text = String(value || "").normalize("NFKC");
+  let score = bucket === "memory" ? 60 : 55;
+  if (/(목표|엔진|Codex|Claude|RAG|Vault|환경|프로젝트|정책|기준|절차|워크플로우|자동화|자산화|검수|성과기록)/i.test(text)) score += 25;
+  if (/(항상|절대|기본|선호|싫어|좋아|말투|스타일|형식|보고)/i.test(text)) score += 20;
+  if (isTrivialAutoSaveInput(text) || isEphemeralLearningInput(text)) score -= 80;
+  if (text.length < 12) score -= 40;
+  if (text.length > profileMemoryPolicy.maxItemChars) score -= 4;
+  return score;
+}
+
+function normalizeProfileMemoryLine(value = "") {
+  return compactLine(String(value || "").replace(/\s+/g, " ").trim(), profileMemoryPolicy.maxItemChars);
+}
+
+function uniqueProfileMemoryRows(rows = []) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const text = normalizeProfileMemoryLine(row.value || row.text || row);
+    const key = normalizeMemoryKey(text);
+    if (!text || !key || seen.has(key)) continue;
+    if (memoryImportanceScore(text, row.bucket || classifyProfileMemoryBucket(text)) <= 0) continue;
+    seen.add(key);
+    result.push({ ...row, value: text, bucket: row.bucket || classifyProfileMemoryBucket(text) });
+  }
+  return result;
+}
+
+function enforceProfileMemoryBudget(memory = [], userMemory = []) {
+  const rows = uniqueProfileMemoryRows([
+    ...memory.map((value, index) => ({ value, bucket: "memory", index })),
+    ...userMemory.map((value, index) => ({ value, bucket: "userMemory", index }))
+  ]).map((row) => ({
+    ...row,
+    score: memoryImportanceScore(row.value, row.bucket)
+  }));
+  const selected = [];
+  const bucketCounts = { memory: 0, userMemory: 0 };
+  let totalChars = 0;
+  for (const row of rows.sort((a, b) => b.score - a.score || a.index - b.index)) {
+    if (bucketCounts[row.bucket] >= profileMemoryPolicy.maxItemsPerBucket) continue;
+    const nextTotal = totalChars + row.value.length;
+    if (nextTotal > profileMemoryPolicy.maxTotalChars) continue;
+    bucketCounts[row.bucket] += 1;
+    totalChars = nextTotal;
+    selected.push(row);
+  }
+  selected.sort((a, b) => a.index - b.index);
+  return {
+    memory: selected.filter((row) => row.bucket === "memory").map((row) => row.value),
+    userMemory: selected.filter((row) => row.bucket === "userMemory").map((row) => row.value)
+  };
+}
+
+function normalizeProfileMemoryBuckets(memoryValue = [], userMemoryValue = [], splitLegacy = false) {
+  const rawMemory = Array.isArray(memoryValue) ? memoryValue : [];
+  const rawUserMemory = Array.isArray(userMemoryValue) ? userMemoryValue : [];
+  const memory = [];
+  const userMemory = [];
+  for (const item of rawMemory) {
+    const text = normalizeProfileMemoryLine(item);
+    if (!text) continue;
+    if (splitLegacy && classifyProfileMemoryBucket(text) === "userMemory") userMemory.push(text);
+    else memory.push(text);
+  }
+  for (const item of rawUserMemory) {
+    const text = normalizeProfileMemoryLine(item);
+    if (text) userMemory.push(text);
+  }
+  return enforceProfileMemoryBudget(memory, userMemory);
+}
+
+function profileMemoryCounts(profile = {}) {
+  return {
+    memory: Array.isArray(profile.memory) ? profile.memory.length : 0,
+    userMemory: Array.isArray(profile.userMemory) ? profile.userMemory.length : 0,
+    total: (Array.isArray(profile.memory) ? profile.memory.length : 0) + (Array.isArray(profile.userMemory) ? profile.userMemory.length : 0),
+    totalChars: [...(profile.memory || []), ...(profile.userMemory || [])].join("").length,
+    maxTotalChars: profileMemoryPolicy.maxTotalChars
+  };
+}
+
 function normalizeStyleProfile(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const list = (key) => {
@@ -1751,13 +1865,16 @@ function normalizeStyleProfile(input = {}) {
     : Array.isArray(source.longMemory)
       ? source.longMemory
       : defaultStyleProfile.memory;
+  const hasUserMemory = Array.isArray(source.userMemory);
+  const memoryBuckets = normalizeProfileMemoryBuckets(memoryValue, hasUserMemory ? source.userMemory : [], !hasUserMemory);
   return {
     label: String(source.label || defaultStyleProfile.label),
     enabled: source.enabled !== false,
     voice: list("voice"),
     format: list("format"),
     avoid: list("avoid"),
-    memory: memoryValue.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 20),
+    memory: memoryBuckets.memory,
+    userMemory: memoryBuckets.userMemory,
     updatedAt: String(source.updatedAt || "")
   };
 }
@@ -1777,24 +1894,38 @@ function normalizeMemoryKey(value = "") {
   return String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-async function appendProfileMemory(items = []) {
+async function appendProfileMemory(items = [], options = {}) {
   const incoming = normalizeStringList(items, 12).map((item) => compactLine(item, 180)).filter(Boolean);
   if (!incoming.length) return { ok: true, added: [], profile: await readStyleProfile() };
   const profile = await readStyleProfile();
-  const seen = new Set((profile.memory || []).map(normalizeMemoryKey));
-  const added = [];
+  const memory = [...(profile.memory || [])];
+  const userMemory = [...(profile.userMemory || [])];
+  const seen = new Set([...memory, ...userMemory].map(normalizeMemoryKey));
+  const addedMemory = [];
+  const addedUserMemory = [];
   for (const item of incoming) {
-    const key = normalizeMemoryKey(item);
+    const text = normalizeProfileMemoryLine(item);
+    const key = normalizeMemoryKey(text);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    added.push(item);
+    const bucket = normalizeProfileMemoryBucketName(options.bucket) || classifyProfileMemoryBucket(text);
+    if (bucket === "userMemory") {
+      userMemory.unshift(text);
+      addedUserMemory.push(text);
+    } else {
+      memory.unshift(text);
+      addedMemory.push(text);
+    }
   }
+  const added = [...addedMemory, ...addedUserMemory];
   if (!added.length) return { ok: true, added: [], profile };
+  const buckets = enforceProfileMemoryBudget(memory, userMemory);
   const profileNext = await writeStyleProfile({
     ...profile,
-    memory: [...added, ...(profile.memory || [])].slice(0, 20)
+    memory: buckets.memory,
+    userMemory: buckets.userMemory
   });
-  return { ok: true, added, profile: profileNext };
+  return { ok: true, added, addedMemory, addedUserMemory, profile: profileNext };
 }
 
 function parseProfileList(value, fallback = []) {
@@ -1804,12 +1935,16 @@ function parseProfileList(value, fallback = []) {
 }
 
 async function buildProfileState() {
-  return { ok: true, generatedAt: new Date().toISOString(), profile: await readStyleProfile() };
+  const profile = await readStyleProfile();
+  return { ok: true, generatedAt: new Date().toISOString(), profile, counts: profileMemoryCounts(profile) };
 }
 
 async function updateProfileState(input = {}) {
   const action = String(input.action || "save").trim().toLowerCase();
   const current = await readStyleProfile();
+  const memoryInput = parseProfileList(input.memory ?? input.longMemory, current.memory);
+  const userMemoryInput = parseProfileList(input.userMemory ?? input.user ?? input.preferences, current.userMemory);
+  const memoryBuckets = normalizeProfileMemoryBuckets(memoryInput, userMemoryInput, false);
   const next = action === "reset"
     ? normalizeStyleProfile(defaultStyleProfile)
     : normalizeStyleProfile({
@@ -1819,7 +1954,8 @@ async function updateProfileState(input = {}) {
       voice: parseProfileList(input.voice, current.voice),
       format: parseProfileList(input.format, current.format),
       avoid: parseProfileList(input.avoid, current.avoid),
-      memory: parseProfileList(input.memory ?? input.longMemory, current.memory)
+      memory: memoryBuckets.memory,
+      userMemory: memoryBuckets.userMemory
     });
   if (input.dryRun === true) return { ok: true, dryRun: true, profile: next };
   return { ok: true, profile: await writeStyleProfile(next) };
@@ -1832,7 +1968,9 @@ async function buildMemoryState() {
     generatedAt: new Date().toISOString(),
     profile: { label: profile.label, enabled: profile.enabled, updatedAt: profile.updatedAt || "" },
     memory: profile.memory || [],
-    count: (profile.memory || []).length,
+    userMemory: profile.userMemory || [],
+    count: profileMemoryCounts(profile).total,
+    counts: profileMemoryCounts(profile),
     captureRules: publicAutomationRules()
   };
 }
@@ -1842,28 +1980,50 @@ async function updateMemoryState(input = {}) {
   const current = await readStyleProfile();
   if (action === "add" || action === "append") {
     const items = input.items || input.memory || input.text || input.value || [];
-    const result = await appendProfileMemory(Array.isArray(items) ? items : [items]);
-    return { ok: true, added: result.added || [], memory: result.profile.memory || [], profile: result.profile };
+    const result = await appendProfileMemory(Array.isArray(items) ? items : [items], { bucket: input.bucket || input.type });
+    return {
+      ok: true,
+      added: result.added || [],
+      addedMemory: result.addedMemory || [],
+      addedUserMemory: result.addedUserMemory || [],
+      memory: result.profile.memory || [],
+      userMemory: result.profile.userMemory || [],
+      counts: profileMemoryCounts(result.profile),
+      profile: result.profile
+    };
   }
   if (action === "save" || action === "replace") {
-    const memory = parseProfileList(input.memory || input.items || [], current.memory).slice(0, 20);
-    const profile = await writeStyleProfile({ ...current, memory });
-    return { ok: true, memory: profile.memory || [], profile };
+    const memory = parseProfileList(input.memory || input.items || [], current.memory);
+    const userMemory = parseProfileList(input.userMemory || input.user || [], current.userMemory);
+    const buckets = normalizeProfileMemoryBuckets(memory, userMemory, false);
+    const profile = await writeStyleProfile({ ...current, memory: buckets.memory, userMemory: buckets.userMemory });
+    return { ok: true, memory: profile.memory || [], userMemory: profile.userMemory || [], counts: profileMemoryCounts(profile), profile };
   }
   if (action === "remove" || action === "delete") {
     const index = Number.isInteger(input.index) ? input.index : Number(input.index);
     const valueKey = normalizeMemoryKey(input.value || input.text || "");
-    const memory = (current.memory || []).filter((item, itemIndex) => {
+    const targetBucket = normalizeProfileMemoryBucketName(input.bucket);
+    const filterMemory = (items = [], bucket) => items.filter((item, itemIndex) => {
+      if (targetBucket && targetBucket !== bucket) return true;
       if (Number.isInteger(index) && itemIndex === index) return false;
       if (valueKey && normalizeMemoryKey(item) === valueKey) return false;
       return true;
     });
-    const profile = await writeStyleProfile({ ...current, memory });
-    return { ok: true, memory: profile.memory || [], profile };
+    const profile = await writeStyleProfile({
+      ...current,
+      memory: filterMemory(current.memory || [], "memory"),
+      userMemory: filterMemory(current.userMemory || [], "userMemory")
+    });
+    return { ok: true, memory: profile.memory || [], userMemory: profile.userMemory || [], counts: profileMemoryCounts(profile), profile };
   }
   if (action === "clear") {
-    const profile = await writeStyleProfile({ ...current, memory: [] });
-    return { ok: true, memory: [], profile };
+    const bucket = normalizeProfileMemoryBucketName(input.bucket);
+    const profile = await writeStyleProfile({
+      ...current,
+      memory: bucket === "userMemory" ? current.memory : [],
+      userMemory: bucket === "memory" ? current.userMemory : []
+    });
+    return { ok: true, memory: profile.memory || [], userMemory: profile.userMemory || [], counts: profileMemoryCounts(profile), profile };
   }
   throw new Error("Unknown memory action");
 }
@@ -1883,8 +2043,11 @@ function formatStyleProfilePrompt(profile) {
     "### 피할 것",
     ...profile.avoid.map((item) => `- ${item}`),
     "",
-    "### 장기 메모리",
-    ...(profile.memory || []).map((item) => `- ${item}`)
+    "### MEMORY: 작업/환경 사실",
+    ...((profile.memory || []).length ? (profile.memory || []).map((item) => `- ${item}`) : ["- 없음"]),
+    "",
+    "### USER: 사용자 선호/작업 방식",
+    ...((profile.userMemory || []).length ? (profile.userMemory || []).map((item) => `- ${item}`) : ["- 없음"])
   ].join("\n");
 }
 
@@ -2501,7 +2664,12 @@ async function buildOfficeState() {
     skills: await buildSkillsState(),
     context: {
       autoRag: true,
-      styleProfile: { label: styleProfile.label, enabled: styleProfile.enabled, memoryCount: Array.isArray(styleProfile.memory) ? styleProfile.memory.length : 0 },
+      styleProfile: {
+        label: styleProfile.label,
+        enabled: styleProfile.enabled,
+        memoryCount: profileMemoryCounts(styleProfile).total,
+        memoryCounts: profileMemoryCounts(styleProfile)
+      },
       vaultContextLimit: 4,
       rag
     },
@@ -7044,7 +7212,15 @@ async function runChatMessage({ message, sessionId = "" }) {
 }
 
 function publicAutomationRules() {
-  return { ...automationRules, keywords: [...automationRules.keywords] };
+  return {
+    ...automationRules,
+    keywords: [...automationRules.keywords],
+    memoryPolicy: {
+      ...profileMemoryPolicy,
+      selectionRules: [...profileMemoryPolicy.selectionRules],
+      buckets: { ...profileMemoryPolicy.buckets }
+    }
+  };
 }
 
 function updateAutomationRules(input = {}) {

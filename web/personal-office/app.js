@@ -133,6 +133,7 @@ const nodes = {
   profileFormat: document.getElementById("profileFormat"),
   profileAvoid: document.getElementById("profileAvoid"),
   profileMemory: document.getElementById("profileMemory"),
+  profileUserMemory: document.getElementById("profileUserMemory"),
   profileReloadBtn: document.getElementById("profileReloadBtn"),
   ragStatus: document.getElementById("ragStatus"),
   ragMeta: document.getElementById("ragMeta"),
@@ -718,19 +719,30 @@ function profileListToText(value = []) {
   return (Array.isArray(value) ? value : []).join("\n");
 }
 
+function profileMemorySummary(profile = {}, counts = null) {
+  const totalFallback = Number(counts?.total ?? counts?.memoryCount ?? 0);
+  const memoryCount = Number(counts?.memory ?? (Array.isArray(profile.memory) ? profile.memory.length : totalFallback));
+  const userMemoryCount = Number(counts?.userMemory ?? (Array.isArray(profile.userMemory) ? profile.userMemory.length : 0));
+  const totalChars = Number(counts?.totalChars || 0);
+  const maxChars = Number(counts?.maxTotalChars || 0);
+  const budget = maxChars ? ` · ${totalChars}/${maxChars}자` : "";
+  return `MEMORY ${memoryCount}개 · USER ${userMemoryCount}개${budget}`;
+}
+
 function renderProfileState(state = profileState) {
   profileState = state || { profile: null };
   const profile = profileState.profile || {};
-  const memoryCount = Array.isArray(profile.memory) ? profile.memory.length : 0;
+  const memorySummary = profileMemorySummary(profile, profileState.counts);
   if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = profile.enabled !== false ? "RAG+톤 적용" : "프로필 꺼짐";
-  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · 메모리 ${memoryCount}개`;
-  if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = profile.enabled !== false ? `적용 중 · 메모리 ${memoryCount}개` : `꺼짐 · 메모리 ${memoryCount}개`;
+  if (nodes.styleProfileMeta) nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · ${memorySummary}`;
+  if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = profile.enabled !== false ? `적용 중 · ${memorySummary}` : `꺼짐 · ${memorySummary}`;
   if (nodes.profileLabel) nodes.profileLabel.value = profile.label || "";
   if (nodes.profileEnabled) nodes.profileEnabled.checked = profile.enabled !== false;
   if (nodes.profileVoice) nodes.profileVoice.value = profileListToText(profile.voice);
   if (nodes.profileFormat) nodes.profileFormat.value = profileListToText(profile.format);
   if (nodes.profileAvoid) nodes.profileAvoid.value = profileListToText(profile.avoid);
   if (nodes.profileMemory) nodes.profileMemory.value = profileListToText(profile.memory);
+  if (nodes.profileUserMemory) nodes.profileUserMemory.value = profileListToText(profile.userMemory);
 }
 
 async function loadProfileState() {
@@ -762,7 +774,8 @@ async function saveProfileState(event) {
         voice: nodes.profileVoice?.value || "",
         format: nodes.profileFormat?.value || "",
         avoid: nodes.profileAvoid?.value || "",
-        memory: nodes.profileMemory?.value || ""
+        memory: nodes.profileMemory?.value || "",
+        userMemory: nodes.profileUserMemory?.value || ""
       })
     });
     const data = await response.json();
@@ -1402,7 +1415,7 @@ function summarizeDiagnostic(pathValue, data = {}) {
   }
   if (pathValue === "/api/profile") {
     const profile = data.profile || {};
-    return `${profile.enabled !== false ? "프로필 켜짐" : "프로필 꺼짐"} · 메모리 ${Array.isArray(profile.memory) ? profile.memory.length : 0}개`;
+    return `${profile.enabled !== false ? "프로필 켜짐" : "프로필 꺼짐"} · ${profileMemorySummary(profile, data.counts)}`;
   }
   if (pathValue === "/api/connections") {
     const summary = data.summary || {};
@@ -1724,8 +1737,7 @@ function updateDashboard(data) {
   if (nodes.styleProfileStatus) nodes.styleProfileStatus.textContent = data.context?.styleProfile?.enabled ? "RAG+톤 적용" : "프로필 꺼짐";
   if (nodes.styleProfileMeta) {
     const profile = data.context?.styleProfile || {};
-    const count = Number(profile.memoryCount || 0);
-    nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · 메모리 ${count}개`;
+    nodes.styleProfileMeta.textContent = `${profile.label || "Vault RAG와 톤 프로필"} · ${profileMemorySummary({}, profile.memoryCounts || { total: profile.memoryCount || 0 })}`;
   }
   renderRagState(data.rag || data.context?.rag || {});
   if (nodes.dashboardLastReport) nodes.dashboardLastReport.textContent = data.lastReport?.displayPath || cleanDisplayPath(data.lastReport?.relPath) || "저장된 보고서 없음";
