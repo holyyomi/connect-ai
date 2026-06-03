@@ -4,7 +4,7 @@
       "id": "daily-ai-trend",
       "title": "매일 오전 AI 트렌드 요약",
       "type": "schedule",
-      "enabled": false,
+      "enabled": true,
       "message": "/업무 오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인사이트, 실행 아이디어, 저장할 키워드로 정리해줘",
       "schedule": {
         "kind": "daily",
