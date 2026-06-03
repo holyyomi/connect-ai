@@ -5141,6 +5141,72 @@ async function buildLocalVaultInboxSubtaskResult(job, subtask) {
   };
 }
 
+async function buildLocalVaultInboxFinalReport(job) {
+  if (job?.capsule?.workType !== "vault") return null;
+  const relPath = vaultInboxRelPathFromText(`${job.message || ""}\n${job.capsule?.normalizedTask || ""}\n${job.capsule?.originalInput || ""}`);
+  const doc = await readVaultInboxMarkdown(relPath);
+  if (!doc) return null;
+  const summary = summarizeMarkdownForInbox(doc.content);
+  const completed = (job.subtasks || []).filter((step) => step.status === "completed");
+  const failed = (job.subtasks || []).filter((step) => step.status === "failed");
+  const sources = compactContextSources(job.contextUse?.sources || job.context?.sources || [], 5);
+  const tagText = summary.tags.map((tag) => `#${tag}`).join(" ");
+  const testLike = /(test|verify|verification|테스트|검증)/i.test(`${doc.relPath}\n${doc.content}`);
+  const documentNature = testLike
+    ? "감시 자동화 검증 자료로 보이며, 검수자가 테스트 산출물로 남길지 정리할지 판단할 수 있게 근거를 남기는 것이 적절합니다."
+    : "신규 inbox 메모로 보이며, 원본을 임의 이동하거나 삭제하지 않고 내용 성격을 먼저 분류한 뒤 저장 위치를 결정하는 것이 적절합니다.";
+  const archiveAction = testLike
+    ? "테스트 파일을 계속 둘 경우 `00_Inbox`가 아니라 테스트/운영 기록 위치로 이동 후보를 표시합니다."
+    : "업무/자료/아이디어 중 하나로 분류한 뒤 20_Knowledge 또는 50_Outputs 이동 후보를 표시합니다.";
+  const ragNote = testLike
+    ? "실제 업무 메모가 아니라 검증 파일이면 RAG에는 `automation-review` 성격으로만 활용하는 것이 안전합니다."
+    : "재사용 가치가 있는 본문이면 RAG 후보로 두고, 일회성 메모면 보관 후보에서 제외합니다.";
+  return [
+    "# 요미 최종 보고서",
+    "",
+    "## 목표와 완료 기준",
+    `Vault 00_Inbox에 새로 들어온 Markdown 파일 \`${doc.relPath}\`를 읽고 요약, 태그 후보, 다음 실행 액션을 정리하는 작업입니다.`,
+    "",
+    "- 완료 기준 1: 원본 파일 경로와 제목을 명확히 남긴다.",
+    "- 완료 기준 2: 본문에서 바로 확인 가능한 핵심 내용을 요약한다.",
+    "- 완료 기준 3: Vault에서 다시 찾기 쉬운 태그 후보를 제안한다.",
+    "- 완료 기준 4: 보관, 이동, 삭제 후보를 판단할 다음 실행 액션을 남긴다.",
+    "",
+    "## 직원별 핵심 산출물",
+    ...(completed.length ? completed.map((step) => `- ${step.agentName || step.agentId}: ${step.label} 완료 · ${compactLine(step.output || step.expectedOutput || "", 180)}`) : ["- 완료된 직원 산출물이 없습니다."]),
+    ...(failed.length ? failed.map((step) => `- ${step.agentName || step.agentId}: 실패 · ${compactLine(step.error || "", 180)}`) : []),
+    "",
+    "## 직원 간 인계와 재계획",
+    formatHandoffLinks(job),
+    "",
+    formatOrchestrationReflections(job.reflections || []),
+    "",
+    "## 근거 출처",
+    `- ${doc.relPath} (로컬 Vault 파일 직접 읽기)`,
+    ...sources.map((item) => `- ${item.title} · ${item.displayPath || item.relPath}`),
+    "",
+    "## 통합 결과",
+    `- 원본 파일: ${doc.relPath}`,
+    `- 제목: ${summary.title}`,
+    `- 태그 후보: ${tagText}`,
+    "- 핵심 요약:",
+    ...summary.summaryLines.map((line) => `  - ${line}`),
+    "",
+    `이 파일은 ${documentNature} 서버는 원본을 읽기만 했고, 사용자의 별도 지시 없이 이동, 삭제, 덮어쓰기, 외부 전송을 수행하지 않았습니다.`,
+    "",
+    "## 리스크와 확인 필요 사항",
+    "- 원본 Vault 파일은 읽기만 했고 이동, 삭제, 덮어쓰기 작업은 하지 않았습니다.",
+    "- 파일 성격이 애매하면 사용자가 확인할 수 있도록 원본 경로와 요약만 남깁니다.",
+    `- ${ragNote}`,
+    "",
+    "## 다음 행동",
+    "- 검수자는 이 산출물이 `verified`로 저장됐는지 확인합니다.",
+    `- ${archiveAction}`,
+    "- 감시 로직 검증이 끝났다면 다음 신규 Markdown 파일에서도 같은 흐름으로 요약, 태그 후보, 다음 실행 액션이 생성되는지 확인합니다.",
+    "- 운영 기록에는 `vault-watch`, `automation-review`, `inbox` 태그를 유지해 나중에 감시 자동화 검증 사례로 검색되게 합니다."
+  ].join("\n");
+}
+
 async function runYomiSubtaskAttempt({ job, subtask, previousOutputs = [], critique = "" }) {
   const agent = resolveAgent(subtask.agentId) || { name: subtask.agentName, role: subtask.role, work: "" };
   const localVaultResult = await buildLocalVaultInboxSubtaskResult(job, subtask);
@@ -5255,6 +5321,8 @@ async function executeOrchestrationSubtask(job, subtask, previousOutputs = []) {
 }
 
 async function buildYomiFinalReport(job) {
+  const localVaultInboxReport = await buildLocalVaultInboxFinalReport(job);
+  if (localVaultInboxReport) return localVaultInboxReport;
   const contextBlock = job.context?.promptBlock || "";
   const contextUseBlock = formatContextUsePlan(job.contextUse || job.capsule?.contextUse || {});
   const prompt = [
@@ -6864,7 +6932,8 @@ function syncAutomationEntryWithJob(entry = {}) {
   if (!resolved) return { entry: normalized, changed: false };
   const row = publicResolvedTaskQueueJob(resolved);
   if (!row?.status || !finalJobStatuses.has(row.status)) return { entry: normalized, changed: false };
-  const jobOk = row.status === "completed";
+  const saveFailed = row.saved?.ok === false && row.saved?.skipped === true;
+  const jobOk = row.status === "completed" && !saveFailed;
   const next = normalizeAutomationTriggerHistoryEntry({
     ...normalized,
     ok: jobOk,
