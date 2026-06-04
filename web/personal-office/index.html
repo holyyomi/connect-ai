@@ -193,32 +193,37 @@
           </section>
         </details>
         <div class="review-section-tabs" id="reviewSectionTabs" role="tablist" aria-label="검토 섹션">
-          <button class="active" type="button" data-review-section="pending">검토 대기</button>
-          <button type="button" data-review-section="skills">스킬 후보</button>
+          <button type="button" data-review-section="pending">검토 대기</button>
+          <button class="active" type="button" data-review-section="skills">스킬 후보</button>
           <button type="button" data-review-section="portfolio">포트폴리오</button>
           <button type="button" data-review-section="history">실행 기록</button>
         </div>
-        <div class="review-board-grid">
-          <section class="work-card review-card" data-review-section-panel="pending">
-            <div class="card-head"><strong>확인 필요</strong><span id="reviewAttentionStatus">대기</span></div>
-            <div id="reviewAttentionList" class="review-list"></div>
-          </section>
-          <section class="work-card review-card" data-review-section-panel="history" hidden>
-            <div class="card-head"><strong>최근 완료</strong><span id="reviewCompletedStatus">기록 확인</span></div>
-            <div id="reviewCompletedList" class="review-list"></div>
-          </section>
-          <section class="work-card review-card" data-review-section-panel="skills" hidden>
-            <div class="card-head"><strong>스킬 후보</strong><span id="reviewSkillStatus">대기</span></div>
-            <div id="reviewSkillList" class="review-list"></div>
-          </section>
-          <section class="work-card review-card" data-review-section-panel="portfolio" hidden>
-            <div class="card-head"><strong>포트폴리오 후보</strong><span id="reviewPortfolioStatus">성과기록</span></div>
-            <div id="reviewPortfolioList" class="review-list"></div>
-          </section>
-          <section class="work-card review-card" data-review-section-panel="history" hidden>
-            <div class="card-head"><strong>자동화 실행</strong><span id="reviewAutomationStatus">트리거 기록</span></div>
-            <div id="reviewAutomationList" class="review-list"></div>
-          </section>
+        <div class="ops-shell review-ops-shell">
+          <div class="ops-list review-board-grid">
+            <section class="work-card review-card" data-review-section-panel="pending" hidden>
+              <div class="card-head"><strong>확인 필요</strong><span id="reviewAttentionStatus">대기</span></div>
+              <div id="reviewAttentionList" class="review-list master-list"></div>
+            </section>
+            <section class="work-card review-card" data-review-section-panel="history" hidden>
+              <div class="card-head"><strong>최근 완료</strong><span id="reviewCompletedStatus">기록 확인</span></div>
+              <div id="reviewCompletedList" class="review-list master-list"></div>
+            </section>
+            <section class="work-card review-card" data-review-section-panel="skills">
+              <div class="card-head"><strong>스킬 후보</strong><span id="reviewSkillStatus">대기</span></div>
+              <div id="reviewSkillList" class="review-list master-list"></div>
+            </section>
+            <section class="work-card review-card" data-review-section-panel="portfolio" hidden>
+              <div class="card-head"><strong>포트폴리오 후보</strong><span id="reviewPortfolioStatus">성과기록</span></div>
+              <div id="reviewPortfolioList" class="review-list master-list"></div>
+            </section>
+            <section class="work-card review-card" data-review-section-panel="history" hidden>
+              <div class="card-head"><strong>자동화 실행</strong><span id="reviewAutomationStatus">트리거 기록</span></div>
+              <div id="reviewAutomationList" class="review-list master-list"></div>
+            </section>
+          </div>
+          <aside id="reviewDetailPanel" class="work-card ops-detail detail-panel">
+            <div class="detail-empty"><strong>항목을 선택하세요</strong><span>왼쪽 리스트에서 검토할 후보를 고르면 상세와 액션이 여기에 표시됩니다.</span></div>
+          </aside>
         </div>
         <section id="reviewEditPanel" class="work-card review-edit-panel" hidden>
           <div class="card-head"><strong>편집 diff 기록</strong><span id="reviewEditTarget">선택 대기</span></div>
@@ -240,70 +245,98 @@
           <div><h1>직원</h1><p>각 직원 카드에서 보유 스킬/도구를 바로 확인합니다.</p></div>
           <div class="page-actions"><button class="mini-action" data-agent-roster-action="add" type="button">직원 추가</button><button class="mini-action" data-agent-roster-action="assign" type="button">작업 배정</button></div>
         </div>
-        <div class="agent-skill-status" id="agentSkillStatus">스킬 관리 준비 중</div>
-        <div class="agent-list" id="agentList"></div>
+        <div class="ops-kpi-row agent-screen-kpis">
+          <article class="metric-card"><span>직원</span><strong id="agentKpiTotal">0명</strong><small>등록된 역할</small></article>
+          <article class="metric-card"><span>Active</span><strong id="agentKpiActive">0명</strong><small>현재 작업 중</small></article>
+          <article class="metric-card"><span>작업량</span><strong id="agentKpiWork">0개</strong><small>누적 작업</small></article>
+        </div>
+        <div class="ops-shell">
+          <div class="ops-list">
+            <div class="agent-skill-status" id="agentSkillStatus">스킬 관리 준비 중</div>
+            <div class="agent-list master-list" id="agentList"></div>
+          </div>
+          <aside id="agentDetailPanel" class="work-card ops-detail detail-panel">
+            <div class="detail-empty"><strong>직원을 선택하세요</strong><span>역할, 엔진, Memory/Soul/Rules/Guardrails가 여기에 표시됩니다.</span></div>
+          </aside>
+        </div>
       </section>
 
       <section id="page-automation" class="page" data-page="automation" hidden aria-hidden="true">
         <div class="page-title-row"><div><h1>자동화</h1><p>예약과 폴더 감시 트리거의 실행 상태를 관리합니다.</p></div></div>
-        <section class="automation-dashboard" id="automationDashboardSummary" aria-label="자동화 상태 요약"></section>
-        <section class="work-card automation-trigger-card">
-          <div class="card-head"><strong>예약/폴더 자동화</strong><span id="automationTriggerStatus">확인 중</span></div>
-          <div class="automation-trigger-list" id="automationTriggerList"></div>
-          <form id="automationTriggerForm" class="automation-trigger-form">
-            <input id="automationTriggerId" type="hidden" />
-            <label>이름<input id="automationTriggerTitle" type="text" aria-label="자동화 트리거 이름" placeholder="예: 매일 오전 트렌드 리서치" autocomplete="off" /></label>
-            <label>종류<select id="automationTriggerType" aria-label="자동화 트리거 종류"><option value="schedule">예약</option><option value="folder_watch">폴더 감시</option></select></label>
-            <label>실행 시간<input id="automationTriggerTime" type="time" aria-label="예약 실행 시간" value="09:00" /></label>
-            <label>감시 폴더<input id="automationTriggerFolder" type="text" aria-label="감시 폴더" placeholder="Vault 상대 경로: 00_Inbox" autocomplete="off" /></label>
-            <label>파일 패턴<input id="automationTriggerPatterns" type="text" aria-label="감시 파일 패턴" placeholder="*.md, *.txt" autocomplete="off" /></label>
-            <label class="wide">실행 메시지<textarea id="automationTriggerMessage" rows="3" aria-label="자동화 실행 메시지" placeholder="/업무 ... {{file}}"></textarea></label>
-            <label class="connection-check"><input id="automationTriggerEnabled" type="checkbox" aria-label="자동화 트리거 활성화" /> 활성화</label>
-            <label class="connection-check"><input id="automationTriggerChannel" type="checkbox" aria-label="채널 발송" /> 결과를 채널로 발송</label>
-            <div class="connection-actions"><button type="submit">저장</button><button id="automationTriggerResetBtn" type="button">새 트리거</button></div>
-          </form>
-        </section>
-        <section class="work-card channel-card">
-          <div class="card-head"><strong>단일 채널 출구</strong><span id="channelStatus">확인 중</span></div>
-          <div id="channelList" class="channel-list"></div>
-          <form id="channelSendForm" class="channel-send-form">
-            <label>수동 발송 메시지<textarea id="channelSendText" rows="3" aria-label="채널 수동 발송 메시지" placeholder="채널 연결 점검 메시지"></textarea></label>
-            <button id="channelSendBtn" type="submit">수동 발송</button>
-          </form>
-        </section>
+        <section class="automation-dashboard ops-kpi-row" id="automationDashboardSummary" aria-label="자동화 상태 요약"></section>
+        <div class="ops-shell">
+          <section class="work-card automation-trigger-card ops-list">
+            <div class="card-head"><strong>예약/폴더 자동화</strong><span id="automationTriggerStatus">확인 중</span></div>
+            <div class="automation-trigger-list master-list" id="automationTriggerList"></div>
+          </section>
+          <aside class="ops-detail">
+            <section class="work-card detail-panel">
+              <div class="card-head"><strong>트리거 상세</strong><span>설정</span></div>
+              <form id="automationTriggerForm" class="automation-trigger-form">
+                <input id="automationTriggerId" type="hidden" />
+                <label>이름<input id="automationTriggerTitle" type="text" aria-label="자동화 트리거 이름" placeholder="예: 매일 오전 트렌드 리서치" autocomplete="off" /></label>
+                <label>종류<select id="automationTriggerType" aria-label="자동화 트리거 종류"><option value="schedule">예약</option><option value="folder_watch">폴더 감시</option></select></label>
+                <label>실행 시간<input id="automationTriggerTime" type="time" aria-label="예약 실행 시간" value="09:00" /></label>
+                <label>감시 폴더<input id="automationTriggerFolder" type="text" aria-label="감시 폴더" placeholder="Vault 상대 경로: 00_Inbox" autocomplete="off" /></label>
+                <label>파일 패턴<input id="automationTriggerPatterns" type="text" aria-label="감시 파일 패턴" placeholder="*.md, *.txt" autocomplete="off" /></label>
+                <label class="wide">실행 메시지<textarea id="automationTriggerMessage" rows="3" aria-label="자동화 실행 메시지" placeholder="/업무 ... {{file}}"></textarea></label>
+                <label class="connection-check"><input id="automationTriggerEnabled" type="checkbox" aria-label="자동화 트리거 활성화" /> 활성화</label>
+                <label class="connection-check"><input id="automationTriggerChannel" type="checkbox" aria-label="채널 발송" /> 결과를 채널로 발송</label>
+                <div class="connection-actions"><button type="submit">저장</button><button id="automationTriggerResetBtn" type="button">새 트리거</button></div>
+              </form>
+            </section>
+            <section class="work-card channel-card detail-panel">
+              <div class="card-head"><strong>단일 채널 출구</strong><span id="channelStatus">확인 중</span></div>
+              <div id="channelList" class="channel-list"></div>
+              <form id="channelSendForm" class="channel-send-form">
+                <label>수동 발송 메시지<textarea id="channelSendText" rows="3" aria-label="채널 수동 발송 메시지" placeholder="채널 연결 점검 메시지"></textarea></label>
+                <button id="channelSendBtn" type="submit">수동 발송</button>
+              </form>
+            </section>
+          </aside>
+        </div>
       </section>
 
       <section id="page-skills" class="page" data-page="skills" hidden aria-hidden="true">
         <div class="page-title-row"><div><h1>스킬</h1><p>승인된 학습 스킬과 직원별 도구 연결 상태를 확인합니다.</p></div></div>
-        <section class="work-card active-skills-card">
-          <div class="card-head"><strong>활성 학습 스킬</strong><span id="activeSkillStatus">확인 중</span></div>
-          <div id="activeSkillList" class="active-skill-list"></div>
-        </section>
-        <section class="work-card tool-settings-card">
-          <div class="card-head"><strong>스킬/도구 연결 상태</strong><span id="skillStatusSummary">확인 중</span></div>
-          <div class="tool-status-list" id="settingsToolStatus"></div>
-        </section>
+        <div class="ops-shell">
+          <section class="work-card active-skills-card ops-list">
+            <div class="card-head"><strong>활성 학습 스킬</strong><span id="activeSkillStatus">확인 중</span></div>
+            <div id="activeSkillList" class="active-skill-list master-list"></div>
+          </section>
+          <section class="work-card tool-settings-card ops-detail detail-panel">
+            <div class="card-head"><strong>스킬/도구 연결 상태</strong><span id="skillStatusSummary">확인 중</span></div>
+            <div class="tool-status-list" id="settingsToolStatus"></div>
+          </section>
+        </div>
       </section>
 
       <section id="page-vault" class="page" data-page="vault" hidden aria-hidden="true">
         <div class="page-title-row"><div><h1>저장소</h1><p>옵시디언 Vault의 최근 문서, 분류, 연결 관계를 확인합니다.</p></div><button id="refreshReportsBtn" class="mini-action" type="button">새로고침</button></div>
-        <section class="work-card vault-graph-card">
+        <section class="work-card vault-graph-card graph-hero">
           <div class="card-head"><strong>옵시디언 그래프</strong><span id="vaultGraphMeta">연결 확인 중</span></div>
-          <div class="vault-graph-shell"><svg id="vaultGraph" viewBox="0 0 720 360" role="img" aria-label="옵시디언 문서 연결 그래프"></svg></div>
+          <div class="vault-graph-shell"><svg id="vaultGraph" viewBox="0 0 960 520" role="img" aria-label="옵시디언 문서 연결 그래프"></svg></div>
         </section>
-        <section class="work-card vault-docs-card">
-          <div class="card-head"><strong>최근 저장 문서</strong><span id="reportCount">0</span></div>
-          <div id="recentReports" class="recent-reports"></div>
-          <div id="vaultExportStatus" class="vault-export-status">활용 대기</div>
-        </section>
-        <section class="work-card portfolio-card">
-          <div class="card-head"><strong>AX/RAG 포트폴리오</strong><span id="portfolioStatus">성과기록 확인 중</span></div>
-          <div id="portfolioList" class="portfolio-list"></div>
-        </section>
-        <section class="work-card quarantine-card">
-          <div class="card-head"><strong>격리 문서</strong><span id="quarantineStatus">확인 중</span></div>
-          <div id="quarantineList" class="quarantine-list"></div>
-        </section>
+        <div class="ops-shell vault-master-detail">
+          <div class="ops-list vault-list-stack">
+            <section class="work-card vault-docs-card">
+              <div class="card-head"><strong>최근 저장 문서</strong><span id="reportCount">0</span></div>
+              <div id="recentReports" class="recent-reports master-list"></div>
+              <div id="vaultExportStatus" class="vault-export-status">활용 대기</div>
+            </section>
+            <section class="work-card portfolio-card">
+              <div class="card-head"><strong>AX/RAG 포트폴리오</strong><span id="portfolioStatus">성과기록 확인 중</span></div>
+              <div id="portfolioList" class="portfolio-list master-list"></div>
+            </section>
+            <section class="work-card quarantine-card">
+              <div class="card-head"><strong>격리 문서</strong><span id="quarantineStatus">확인 중</span></div>
+              <div id="quarantineList" class="quarantine-list master-list"></div>
+            </section>
+          </div>
+          <aside id="vaultGraphDetail" class="work-card ops-detail detail-panel graph-detail-panel">
+            <div class="detail-empty"><strong>그래프 노드를 선택하세요</strong><span>문서 연결, 폴더, 태그 요약이 여기에 표시됩니다.</span></div>
+          </aside>
+        </div>
         <div class="vault-page-grid vault-meta-grid">
           <section class="work-card">
             <div class="card-head"><strong>Vault 통계</strong><span id="vaultPath">경로 확인 중</span></div>

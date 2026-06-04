@@ -108,14 +108,20 @@ const nodes = {
   reviewEditNote: document.getElementById("reviewEditNote"),
   reviewEditSaveBtn: document.getElementById("reviewEditSaveBtn"),
   reviewEditCancelBtn: document.getElementById("reviewEditCancelBtn"),
+  reviewDetailPanel: document.getElementById("reviewDetailPanel"),
   officeSummaryStage: document.getElementById("officeSummaryStage"),
   agentList: document.getElementById("agentList"),
+  agentDetailPanel: document.getElementById("agentDetailPanel"),
+  agentKpiTotal: document.getElementById("agentKpiTotal"),
+  agentKpiActive: document.getElementById("agentKpiActive"),
+  agentKpiWork: document.getElementById("agentKpiWork"),
   agentSkillStatus: document.getElementById("agentSkillStatus"),
   vaultStats: document.getElementById("vaultStats"),
   vaultCategoryCounts: document.getElementById("vaultCategoryCounts"),
   vaultTagCounts: document.getElementById("vaultTagCounts"),
   vaultGraph: document.getElementById("vaultGraph"),
   vaultGraphMeta: document.getElementById("vaultGraphMeta"),
+  vaultGraphDetail: document.getElementById("vaultGraphDetail"),
   recentReports: document.getElementById("recentReports"),
   portfolioStatus: document.getElementById("portfolioStatus"),
   portfolioList: document.getElementById("portfolioList"),
@@ -270,7 +276,7 @@ let skillCandidatesState = { candidates: [] };
 let editingSkillCandidateId = "";
 let reviewEditTarget = null;
 let reviewAutomationItemsState = [];
-let activeReviewSection = "pending";
+let activeReviewSection = "skills";
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
@@ -662,11 +668,47 @@ function agentSkillSummary(skills = []) {
   return { text: `${enabled.length}개 스킬 정상`, tone: "ok" };
 }
 
+function renderAgentDetailPanel(agentId = "") {
+  if (!nodes.agentDetailPanel) return;
+  const agent = agents.find((item) => item.id === agentId) || agents[0];
+  if (!agent) return;
+  const skillMap = new Map((skillsState.agents || []).map((row) => [row.id, row.skills || []]));
+  const countMap = new Map((officeDashboardState.workflow?.agentCounts || []).map((row) => [row.id, Number(row.count || 0)]));
+  const activeIds = new Set(officeDashboardState.workflow?.activeAgentIds || []);
+  const skills = skillMap.get(agent.id) || [];
+  const engine = skillsState.agents?.find((item) => item.id === agent.id)?.engine || { id: "codex", label: "Codex CLI" };
+  const taskCount = countMap.get(agent.id) || 0;
+  const active = activeIds.has(agent.id);
+  const enabledSkills = skills.filter((skill) => skill.enabled !== false && skill.status !== "disabled");
+  nodes.agentDetailPanel.innerHTML = `
+    <div class="detail-head">
+      <span class="detail-kicker">${escapeHtml(active ? "Active" : "대기")}</span>
+      <h2>${escapeHtml(agent.name)}</h2>
+      <p>${escapeHtml(agent.role)} · ${escapeHtml(agent.work)}</p>
+    </div>
+    <div class="agent-profile-blocks detail-profile-blocks">
+      <article><span>Memory</span><strong>${taskCount}개</strong><small>누적 작업량</small></article>
+      <article><span>Soul</span><strong>${escapeHtml(engine.label || engine.id || "Codex")}</strong><small>담당 엔진</small></article>
+      <article><span>Rules</span><strong>${enabledSkills.length}개</strong><small>활성 스킬</small></article>
+      <article><span>Guardrails</span><strong>${skills.filter((skill) => skill.requiresConfirmation).length}개</strong><small>확인 필요 도구</small></article>
+    </div>
+    <div class="detail-section">
+      <strong>스킬</strong>
+      <div class="skill-badges">${enabledSkills.length ? enabledSkills.slice(0, 8).map((skill) => `<span class="skill-badge ${escapeHtml(skill.tone || "muted")}">${escapeHtml(skill.label || skill.id)} <small>${escapeHtml(skill.statusLabel || "")}</small></span>`).join("") : renderSkillBadges([])}</div>
+    </div>
+  `;
+  nodes.agentList?.querySelectorAll(".agent-card").forEach((card) => card.classList.toggle("selected", card.dataset.agentId === agent.id));
+}
+
 function renderAgentsList() {
   if (!nodes.agentList) return;
   const skillMap = new Map((skillsState.agents || []).map((agent) => [agent.id, agent.skills || []]));
   const countMap = new Map((officeDashboardState.workflow?.agentCounts || []).map((agent) => [agent.id, Number(agent.count || 0)]));
   const activeIds = new Set(officeDashboardState.workflow?.activeAgentIds || []);
+  const totalWork = [...countMap.values()].reduce((sum, value) => sum + Number(value || 0), 0);
+  if (nodes.agentKpiTotal) nodes.agentKpiTotal.textContent = `${agents.length}명`;
+  if (nodes.agentKpiActive) nodes.agentKpiActive.textContent = `${activeIds.size}명`;
+  if (nodes.agentKpiWork) nodes.agentKpiWork.textContent = `${totalWork}개`;
   nodes.agentList.innerHTML = agents.map((agent) => {
     const skills = skillMap.get(agent.id) || [];
     const assignedIds = new Set(skills.map((skill) => skill.id));
@@ -714,6 +756,14 @@ function renderAgentsList() {
       </article>
     `;
   }).join("");
+  renderAgentDetailPanel(nodes.agentList.querySelector(".agent-card")?.dataset.agentId || "");
+}
+
+function handleAgentSelect(event) {
+  if (event.target.closest("button, input, select, textarea, summary, label")) return;
+  const card = event.target.closest(".agent-card[data-agent-id]");
+  if (!card || !nodes.agentList?.contains(card)) return;
+  renderAgentDetailPanel(card.dataset.agentId || "");
 }
 
 function handleAgentRosterAction(event) {
@@ -1886,43 +1936,187 @@ function shortGraphLabel(value) {
   return text.length > 16 ? `${text.slice(0, 15)}...` : text;
 }
 
+function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height = 520) {
+  const degree = new Map(graphNodes.map((node) => [node.id, 0]));
+  const validEdges = graphEdges.filter((edge) => degree.has(edge.source) && degree.has(edge.target));
+  for (const edge of validEdges) {
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+  }
+  const cx = width / 2;
+  const cy = height / 2;
+  const nodes = graphNodes.map((node, index) => {
+    const angle = index * 2.399963229728653;
+    const radius = 28 + 12 * Math.sqrt(index + 1);
+    const nodeDegree = degree.get(node.id) || 0;
+    return {
+      ...node,
+      degree: nodeDegree,
+      r: Math.max(6, Math.min(22, 7 + nodeDegree * 2.2 + Number(node.size || 1))),
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0
+    };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const links = validEdges.map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) })).filter((edge) => edge.sourceNode && edge.targetNode);
+  for (let tick = 0; tick < 220; tick += 1) {
+    const alpha = 1 - tick / 220;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist2 = dx * dx + dy * dy;
+        if (dist2 < 1) {
+          dx = (i + 1) * 0.01;
+          dy = (j + 1) * 0.01;
+          dist2 = dx * dx + dy * dy;
+        }
+        const dist = Math.sqrt(dist2);
+        const minDist = a.r + b.r + 10;
+        const repel = Math.min(22, 360 / dist2) * alpha;
+        const rx = (dx / dist) * repel;
+        const ry = (dy / dist) * repel;
+        a.vx -= rx;
+        a.vy -= ry;
+        b.vx += rx;
+        b.vy += ry;
+        if (dist < minDist) {
+          const push = ((minDist - dist) / Math.max(dist, 1)) * 0.07 * alpha;
+          a.vx -= dx * push;
+          a.vy -= dy * push;
+          b.vx += dx * push;
+          b.vy += dy * push;
+        }
+      }
+    }
+    for (const link of links) {
+      const source = link.sourceNode;
+      const target = link.targetNode;
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const desired = 72 + Math.max(0, 4 - Math.min(source.degree, target.degree)) * 8;
+      const pull = (dist - desired) * 0.012 * alpha;
+      const px = (dx / dist) * pull;
+      const py = (dy / dist) * pull;
+      source.vx += px;
+      source.vy += py;
+      target.vx -= px;
+      target.vy -= py;
+    }
+    for (const node of nodes) {
+      node.vx += (cx - node.x) * 0.006 * alpha;
+      node.vy += (cy - node.y) * 0.006 * alpha;
+      node.vx *= 0.82;
+      node.vy *= 0.82;
+      node.x = Math.max(38, Math.min(width - 38, node.x + node.vx));
+      node.y = Math.max(38, Math.min(height - 44, node.y + node.vy));
+    }
+  }
+  return { nodes, links, degree };
+}
+
+function renderVaultGraphDetail(node = null, neighbors = []) {
+  if (!nodes.vaultGraphDetail) return;
+  if (!node) {
+    nodes.vaultGraphDetail.innerHTML = '<div class="detail-empty"><strong>그래프 노드를 선택하세요</strong><span>문서 연결, 폴더, 태그 요약이 여기에 표시됩니다.</span></div>';
+    return;
+  }
+  nodes.vaultGraphDetail.innerHTML = `
+    <div class="detail-head">
+      <span class="detail-kicker">${escapeHtml(node.folder || "Vault")}</span>
+      <h2>${escapeHtml(node.title || node.id)}</h2>
+      <p>${escapeHtml(node.relPath || node.displayPath || "")}</p>
+    </div>
+    <div class="detail-score-row"><b>${Number(node.degree || 0)} 연결</b><span>${neighbors.length ? `${neighbors.length}개 이웃 문서` : "직접 연결 없음"}</span></div>
+    <div class="detail-section">
+      <strong>이웃 문서</strong>
+      ${neighbors.length ? `<div class="detail-chip-list">${neighbors.slice(0, 10).map((item) => `<span>${escapeHtml(shortGraphLabel(item.title || item.id))}</span>`).join("")}</div>` : "<p>연결된 문서가 없습니다.</p>"}
+    </div>
+  `;
+}
+
 function renderVaultGraph(graph = {}) {
   if (!nodes.vaultGraph) return;
   const graphNodes = (graph.nodes || []).slice(0, 28);
   const graphEdges = graph.edges || [];
   if (!graphNodes.length) {
-    nodes.vaultGraph.innerHTML = '<text x="360" y="180" text-anchor="middle" class="graph-empty">표시할 문서가 없습니다.</text>';
+    nodes.vaultGraph.innerHTML = '<text x="480" y="260" text-anchor="middle" class="graph-empty">표시할 문서가 없습니다.</text>';
     if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = "0개 노드";
+    renderVaultGraphDetail(null);
     return;
   }
-  const width = 720;
-  const height = 360;
-  const cx = width / 2;
-  const cy = height / 2;
-  const radiusX = graphNodes.length > 10 ? 260 : 210;
-  const radiusY = graphNodes.length > 10 ? 126 : 106;
-  const positions = new Map(graphNodes.map((node, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, graphNodes.length) - Math.PI / 2;
-    return [node.id, { x: cx + Math.cos(angle) * radiusX, y: cy + Math.sin(angle) * radiusY, node }];
-  }));
-  const lines = graphEdges.filter((edge) => positions.has(edge.source) && positions.has(edge.target)).map((edge) => {
-    const source = positions.get(edge.source);
-    const target = positions.get(edge.target);
+  const width = 960;
+  const height = 520;
+  nodes.vaultGraph.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const layout = forceGraphLayout(graphNodes, graphEdges, width, height);
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  const neighborsById = new Map(layout.nodes.map((node) => [node.id, new Set()]));
+  for (const link of layout.links) {
+    neighborsById.get(link.source)?.add(link.target);
+    neighborsById.get(link.target)?.add(link.source);
+  }
+  const lines = layout.links.map((edge) => {
+    const source = edge.sourceNode;
+    const target = edge.targetNode;
     const reason = (edge.reasonLabels || edge.reasons || []).join(" · ");
-    return `<line x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(reason || "연관 문서")}</title></line>`;
+    return `<line data-source="${escapeHtml(edge.source)}" data-target="${escapeHtml(edge.target)}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(reason || "연관 문서")}</title></line>`;
   }).join("");
-  const dots = [...positions.values()].map(({ x, y, node }) => {
-    const size = Math.min(18, 7 + Number(node.size || 1) * 2);
+  const dots = layout.nodes.map((node) => {
     return `
-      <g class="graph-node" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
+      <g class="graph-node" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">
         <title>${escapeHtml(node.title)} · ${escapeHtml(node.folder || "")}</title>
-        <circle r="${size}" />
-        <text y="${size + 13}" text-anchor="middle">${escapeHtml(shortGraphLabel(node.title))}</text>
+        <circle r="${node.r.toFixed(1)}" />
+        <text y="${(node.r + 15).toFixed(1)}" text-anchor="middle">${escapeHtml(shortGraphLabel(node.title))}</text>
       </g>
     `;
   }).join("");
-  nodes.vaultGraph.innerHTML = `<g class="graph-edges">${lines}</g><g>${dots}</g>`;
-  if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = `${graphNodes.length}개 노드 · ${graphEdges.length}개 연결`;
+  nodes.vaultGraph.innerHTML = `
+    <defs>
+      <filter id="graphGlow" x="-80%" y="-80%" width="260%" height="260%">
+        <feGaussianBlur stdDeviation="4" result="blur" />
+        <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+      </filter>
+    </defs>
+    <g class="graph-edges">${lines}</g><g class="graph-nodes">${dots}</g>
+  `;
+  let selectedNodeId = "";
+  const setFocus = (nodeId = "") => {
+    const focusId = nodeId || selectedNodeId;
+    const neighborIds = neighborsById.get(focusId) || new Set();
+    nodes.vaultGraph.querySelectorAll(".graph-node").forEach((el) => {
+      const id = el.getAttribute("data-node-id") || "";
+      const active = id === focusId || neighborIds.has(id);
+      el.classList.toggle("dim", Boolean(focusId) && !active);
+      el.classList.toggle("is-active", Boolean(focusId) && active);
+      el.classList.toggle("is-selected", Boolean(selectedNodeId) && id === selectedNodeId);
+      el.classList.toggle("is-labeled", Boolean(focusId) && id === focusId);
+    });
+    nodes.vaultGraph.querySelectorAll(".graph-edges line").forEach((el) => {
+      const active = el.getAttribute("data-source") === focusId || el.getAttribute("data-target") === focusId;
+      el.classList.toggle("dim", Boolean(focusId) && !active);
+      el.classList.toggle("is-active", Boolean(focusId) && active);
+    });
+  };
+  nodes.vaultGraph.querySelectorAll(".graph-node").forEach((el) => {
+    const nodeId = el.getAttribute("data-node-id") || "";
+    el.addEventListener("mouseenter", () => setFocus(nodeId));
+    el.addEventListener("mouseleave", () => setFocus(""));
+    el.addEventListener("click", () => {
+      const node = byId.get(nodeId);
+      const neighborIds = [...(neighborsById.get(nodeId) || [])];
+      renderVaultGraphDetail(node, neighborIds.map((id) => byId.get(id)).filter(Boolean));
+      selectedNodeId = nodeId;
+      setFocus(nodeId);
+    });
+  });
+  const highestDegree = [...layout.nodes].sort((a, b) => b.degree - a.degree)[0];
+  if (highestDegree) renderVaultGraphDetail(highestDegree, [...(neighborsById.get(highestDegree.id) || [])].map((id) => byId.get(id)).filter(Boolean));
+  if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = `${layout.nodes.length}개 노드 · ${layout.links.length}개 연결`;
 }
 
 function formatShortTime(value) {
@@ -2145,7 +2339,7 @@ async function loadRecentReports() {
   renderVaultChips(nodes.vaultCategoryCounts, [], "카테고리 확인 중");
   renderVaultChips(nodes.vaultTagCounts, [], "태그 확인 중");
   try {
-    const response = await apiFetch("/api/vault-overview?limit=14", { cache: "no-store" });
+    const response = await apiFetch("/api/vault-overview?limit=28", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if (nodes.reportCount) nodes.reportCount.textContent = `${data.recentDocs?.length || 0} / ${data.totalMarkdown || 0}`;
@@ -2449,6 +2643,8 @@ function setReviewSection(section = "pending") {
       panel.hidden = panel.dataset.reviewSectionPanel !== activeReviewSection;
     });
   }
+  const firstVisibleItem = nodes.reviewPage?.querySelector(`[data-review-section-panel="${CSS.escape(activeReviewSection)}"]:not([hidden]) .review-item[data-review-detail]`);
+  if (firstVisibleItem) renderReviewDetailFromItem(firstVisibleItem);
 }
 
 function renderReviewSummaryLine({ queueSummary = {}, performanceSummary = {}, skillsSummary = {}, decisionCount = 0, attentionCount = 0, automationAttention = 0 } = {}) {
@@ -2458,6 +2654,30 @@ function renderReviewSummaryLine({ queueSummary = {}, performanceSummary = {}, s
   const pending = Number(skillsSummary.pending || 0) + Number(skillsSummary.needsRevision || 0) + Number(queueSummary.attention || attentionCount || 0) + Number(automationAttention || 0);
   const quality = Number(performanceSummary.lastScore || performanceSummary.avgScore || 0);
   nodes.reviewSummaryLine.textContent = `검토 ${reviewed}건 · 수정률 ${revisionRate}% · 승인 대기 ${pending} · 최근 품질 ${quality}점`;
+}
+
+function renderReviewDetailFromItem(item) {
+  if (!nodes.reviewDetailPanel || !item) return;
+  const title = item.dataset.detailTitle || "검토 항목";
+  const meta = item.dataset.detailMeta || "";
+  const score = item.dataset.detailScore || "";
+  const body = item.dataset.detailBody || "";
+  const note = item.dataset.detailNote || "";
+  nodes.reviewDetailPanel.innerHTML = `
+    <div class="detail-head">
+      <span class="detail-kicker">${escapeHtml(item.dataset.reviewDetail || "review")}</span>
+      <h2>${escapeHtml(title)}</h2>
+      ${meta ? `<p>${escapeHtml(meta)}</p>` : ""}
+    </div>
+    <div class="detail-score-row">
+      ${score ? `<b>${escapeHtml(score)}</b>` : ""}
+      <span>처리 액션은 선택 카드의 더보기에서 실행합니다.</span>
+    </div>
+    ${body ? `<div class="detail-section"><strong>요약</strong><p>${escapeHtml(body)}</p></div>` : ""}
+    ${note ? `<div class="detail-section"><strong>검토 기록</strong><p>${escapeHtml(note)}</p></div>` : ""}
+  `;
+  nodes.reviewPage?.querySelectorAll(".review-item.selected").forEach((row) => row.classList.remove("selected"));
+  item.classList.add("selected");
 }
 
 function renderReviewOpsDashboard(summary = {}) {
@@ -2500,7 +2720,7 @@ function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = ne
   const progress = job.lastLog || job.progress || job.detail || "";
   const savedText = job.saved?.ok ? `Vault ${job.saved.relPath || "저장됨"}` : job.saved?.reason || "";
   return `
-    <article class="review-item ${escapeHtml(taskQueueTone(job.status))}">
+    <article class="review-item ${escapeHtml(taskQueueTone(job.status))}" data-review-detail="job" data-detail-title="${escapeHtml(job.title || job.id || "작업")}" data-detail-meta="${escapeHtml([statusLabel, typeLabel, elapsed].filter(Boolean).join(" · "))}" data-detail-score="${trust}점" data-detail-body="${escapeHtml(progress || savedText || "진행 정보 없음")}" data-detail-note="${escapeHtml(decisionLabel || editSummary || "")}">
       <div class="review-item-head">
         <strong>${escapeHtml(job.title || job.id || "작업")}</strong>
         <b class="review-trust ${reviewTrustClass(trust)}">${trust}점</b>
@@ -2516,7 +2736,7 @@ function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = ne
       ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       ${editSummary ? `<small class="review-edit">편집 diff: ${escapeHtml(editSummary)}</small>` : ""}
       <div class="review-actions primary">
-        <button type="button" data-review-job-action="detail" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}">검토하기</button>
+        <button type="button" data-review-detail-button>검토하기</button>
       </div>
       <details class="review-more-actions">
         <summary>더보기</summary>
@@ -2538,7 +2758,7 @@ function reviewSkillCard(candidate = {}, decisionsByKey = new Map()) {
   const draftText = candidate.instructionsPreview || candidate.evidencePreview || candidate.description || candidate.title || "";
   const editSummary = Number(reviewSummary.edited || 0) ? `수정기록 ${Number(reviewSummary.edited || 0)}개` : "";
   return `
-    <article class="review-item skill">
+    <article class="review-item skill" data-review-detail="skill" data-detail-title="${escapeHtml(candidate.title || candidate.id || "스킬 후보")}" data-detail-meta="${escapeHtml([skillCandidateKindLabel(candidate.kind), candidate.statusLabel || "검토 대기", candidate.createdAt ? formatShortTime(candidate.createdAt) : ""].filter(Boolean).join(" · "))}" data-detail-score="${Number(candidate.confidence || 0)}점" data-detail-body="${escapeHtml(candidate.description || candidate.evidencePreview || draftText || "")}" data-detail-note="${escapeHtml(editSummary || candidate.reviewNote || "")}">
       <div class="review-item-head">
         <strong>${escapeHtml(candidate.title || candidate.id || "스킬 후보")}</strong>
         <b class="review-trust info">${Number(candidate.confidence || 0)}점</b>
@@ -2554,7 +2774,7 @@ function reviewSkillCard(candidate = {}, decisionsByKey = new Map()) {
       ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       ${editSummary ? `<small class="review-edit">${escapeHtml(editSummary)}</small>` : ""}
       <div class="review-actions primary">
-        <button type="button" data-review-open="chat">검토하기</button>
+        <button type="button" data-review-detail-button>검토하기</button>
       </div>
       <details class="review-more-actions">
         <summary>더보기</summary>
@@ -2579,7 +2799,7 @@ function reviewPortfolioCard(record = {}, decisionsByKey = new Map()) {
   const decision = decisionsByKey.get(`portfolio:${portfolioId}`);
   const decisionLabel = reviewDecisionLabel(decision);
   return `
-    <article class="review-item portfolio">
+    <article class="review-item portfolio" data-review-detail="portfolio" data-detail-title="${escapeHtml(record.title || "포트폴리오 후보")}" data-detail-meta="${escapeHtml([record.grade || "평가", record.passed ? "통과" : "보완", record.workType || ""].filter(Boolean).join(" · "))}" data-detail-score="${Number(record.score || 0)}점" data-detail-body="${escapeHtml(record.retrospective?.portfolioAngle || assetReview?.reason || record.portfolioRelPath || record.savedRelPath || "")}" data-detail-note="${escapeHtml(decisionLabel || "")}">
       <div class="review-item-head">
         <strong>${escapeHtml(record.title || "포트폴리오 후보")}</strong>
         <b class="review-trust ${reviewTrustClass(record.score || 0)}">${Number(record.score || 0)}점</b>
@@ -2594,7 +2814,7 @@ function reviewPortfolioCard(record = {}, decisionsByKey = new Map()) {
       ${record.portfolioRelPath || record.savedRelPath ? `<small>${escapeHtml(record.portfolioRelPath || record.savedRelPath)}</small>` : ""}
       ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">자산 검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       <div class="review-actions primary">
-        <button type="button" data-review-open="vault">검토하기</button>
+        <button type="button" data-review-detail-button>검토하기</button>
       </div>
       <details class="review-more-actions">
         <summary>더보기</summary>
@@ -2671,7 +2891,7 @@ function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
     ? [item.jobStatusLabel || item.modeLabel || item.intent || "실행 완료", item.jobId ? `작업 ${item.jobId}` : "", item.jobSavedRelPath ? `Vault ${item.jobSavedRelPath}` : "", formatAutomationDuration(item.durationMs)].filter(Boolean).join(" · ")
     : [item.jobStatusLabel || "실패", item.error || item.jobSavedReason || "", item.retryScheduledAt ? `재시도 ${formatTriggerDate(item.retryScheduledAt)}` : "", `${item.attempt || 1}회차`].filter(Boolean).join(" · ");
   return `
-    <article class="review-item automation ${item.ok ? "" : "warn"}">
+    <article class="review-item automation ${item.ok ? "" : "warn"}" data-review-detail="automation" data-detail-title="${escapeHtml(item.triggerTitle || item.triggerId || "자동화 실행")}" data-detail-meta="${escapeHtml([item.ok ? "성공" : "실패", typeLabel, item.ranAt ? formatShortTime(item.ranAt) : ""].filter(Boolean).join(" · "))}" data-detail-score="${trust}점" data-detail-body="${escapeHtml(resultText || item.file || item.error || "")}" data-detail-note="${escapeHtml(decisionLabel || "")}">
       <div class="review-item-head">
         <strong>${escapeHtml(item.triggerTitle || item.triggerId || "자동화 실행")}</strong>
         <b class="review-trust ${reviewTrustClass(trust)}">${trust}점</b>
@@ -2686,7 +2906,7 @@ function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
       ${item.file ? `<small>${escapeHtml(item.file)}</small>` : ""}
       ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       <div class="review-actions primary">
-        <button type="button" data-review-automation-action="detail" data-automation-id="${escapeHtml(item.id || "")}">검토하기</button>
+        <button type="button" data-review-detail-button>검토하기</button>
       </div>
       <details class="review-more-actions">
         <summary>더보기</summary>
@@ -2754,6 +2974,8 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   if (nodes.reviewAutomationStatus) nodes.reviewAutomationStatus.textContent = automationRows.length ? `${automationRows.length}건` : "대기";
   if (nodes.reviewAutomationList) nodes.reviewAutomationList.innerHTML = automationRows.length ? automationRows.slice(0, 8).map((item) => reviewAutomationCard(item, decisionsByKey)).join("") : reviewEmpty("자동화 실행 이력이 없습니다.");
   setReviewSection(activeReviewSection);
+  const firstVisibleItem = nodes.reviewPage?.querySelector(`[data-review-section-panel="${CSS.escape(activeReviewSection)}"]:not([hidden]) .review-item[data-review-detail]`);
+  if (firstVisibleItem) renderReviewDetailFromItem(firstVisibleItem);
 }
 
 async function fetchReviewApiState(pathValue, label) {
@@ -2943,6 +3165,16 @@ async function handleReviewClick(event) {
   const sectionButton = event.target.closest("button[data-review-section]");
   if (sectionButton && nodes.reviewPage?.contains(sectionButton)) {
     setReviewSection(sectionButton.dataset.reviewSection || "pending");
+    return;
+  }
+  const reviewDetailButton = event.target.closest("button[data-review-detail-button]");
+  if (reviewDetailButton && nodes.reviewPage?.contains(reviewDetailButton)) {
+    renderReviewDetailFromItem(reviewDetailButton.closest(".review-item"));
+    return;
+  }
+  const detailItem = event.target.closest(".review-item[data-review-detail]");
+  if (detailItem && nodes.reviewPage?.contains(detailItem) && !event.target.closest("button, summary, textarea, input, select, label")) {
+    renderReviewDetailFromItem(detailItem);
     return;
   }
   const openButton = event.target.closest("button[data-review-open]");
@@ -4322,6 +4554,7 @@ document.addEventListener("click", handleExamplePromptClick);
 if (nodes.runBtn) nodes.runBtn.addEventListener("click", runOfficeTask);
 if (nodes.resetBtn) nodes.resetBtn.addEventListener("click", resetOffice);
 if (nodes.agentList) nodes.agentList.addEventListener("click", handleAgentSkillClick);
+if (nodes.agentList) nodes.agentList.addEventListener("click", handleAgentSelect);
 if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkillChange);
 document.querySelectorAll("[data-agent-roster-action]").forEach((button) => button.addEventListener("click", handleAgentRosterAction));
 if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handleConnectionSubmit);

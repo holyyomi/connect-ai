@@ -1,20 +1,29 @@
 :root {
-  color-scheme: light;
-  --bg: #f6f8f5;
-  --panel: #ffffff;
-  --text: #172016;
-  --dim: #5f6d62;
-  --muted: #7d897f;
-  --bright: #071109;
-  --accent: #167a3e;
-  --warn: #b7791f;
-  --warning: #b7791f;
-  --danger: #c53030;
-  --line: rgba(15,23,42,.12);
-  --soft: #eef5ee;
-  --soft-warn: #fff7e6;
-  --soft-danger: #fff1f1;
-  --shadow: 0 10px 30px rgba(15,23,42,.08);
+  color-scheme: dark;
+  --bg: #060806;
+  --panel: #0d130f;
+  --panel-2: #111a13;
+  --panel-hover: #142018;
+  --text: #e7f8e9;
+  --dim: #8aa08d;
+  --muted: #5d705f;
+  --bright: #ffffff;
+  --accent: #41f27a;
+  --ok: #41f27a;
+  --warn: #ffbf4d;
+  --warning: #ffbf4d;
+  --danger: #ff6b6b;
+  --line: rgba(255,255,255,.09);
+  --line-strong: rgba(65,242,122,.26);
+  --shadow-card: 0 14px 34px rgba(0,0,0,.28);
+  --glow-accent: 0 0 24px rgba(65,242,122,.2);
+  --radius-card: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
 }
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; }
@@ -619,7 +628,261 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .graph-empty { fill: var(--dim); font-size: 13px; }
 .empty { color: var(--dim); font-size: 12px; padding: 10px; }
 
-/* Light office theme */
+/* Unified dark operations system */
+.metric-card, .work-card, .rail-card, .setting-card, .command-box, .office-status-card, .report-panel,
+.focus-card, .kpi-card, .review-summary-card, .review-item, .agent-card, .connection-item,
+.automation-trigger-item, .channel-item, .quarantine-item, .portfolio-item, .report-item,
+.tool-status, .api-diagnostic-row, .rag-search-result, .rag-quality-item, .task-queue-item,
+.office-agent-row, .skill-candidate-item, .active-skill-item, .chat-memory-panel,
+.browser-main, .browser-side, .chat-thread, .vault-stat {
+  border-color: var(--line);
+  border-radius: var(--radius-card);
+  background: rgba(13,19,15,.92);
+  box-shadow: var(--shadow-card);
+}
+.metric-card:hover, .work-card:hover, .review-item:hover, .agent-card:hover,
+.automation-trigger-item:hover, .active-skill-item:hover, .report-item:hover,
+.portfolio-item:hover, .quarantine-item:hover {
+  border-color: rgba(65,242,122,.18);
+  background: var(--panel-hover);
+}
+.ops-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+}
+.agent-screen-kpis { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.ops-shell {
+  display: grid;
+  grid-template-columns: minmax(320px,.92fr) minmax(360px,1.08fr);
+  gap: var(--space-5);
+  align-items: start;
+  margin-top: var(--space-4);
+}
+.ops-list {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  align-content: start;
+}
+.ops-detail {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  align-content: start;
+  position: sticky;
+  top: 18px;
+}
+.detail-panel {
+  min-height: 320px;
+  padding: var(--space-5);
+}
+.detail-empty {
+  display: grid;
+  min-height: 240px;
+  place-content: center;
+  gap: var(--space-2);
+  color: var(--dim);
+  text-align: center;
+}
+.detail-empty strong { color: var(--bright); font-size: 15px; }
+.detail-empty span { color: var(--dim); font-size: 12px; line-height: 1.45; }
+.detail-head {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.detail-kicker {
+  width: fit-content;
+  border: 1px solid rgba(65,242,122,.22);
+  border-radius: 999px;
+  background: rgba(65,242,122,.07);
+  color: var(--accent);
+  padding: 4px 9px;
+  font-size: 10px;
+  font-weight: 900;
+}
+.detail-head h2 {
+  margin: 0;
+  color: var(--bright);
+  font-size: 22px;
+  line-height: 1.25;
+}
+.detail-head p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.detail-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.detail-score-row b {
+  border: 1px solid rgba(65,242,122,.26);
+  border-radius: 999px;
+  background: rgba(65,242,122,.08);
+  color: var(--accent);
+  padding: 6px 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+.detail-score-row span {
+  color: var(--dim);
+  font-size: 12px;
+}
+.detail-section {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+.detail-section strong {
+  color: var(--bright);
+  font-size: 13px;
+}
+.detail-section p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.detail-chip-list, .skill-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.detail-chip-list span {
+  border: 1px solid rgba(65,242,122,.16);
+  border-radius: 999px;
+  background: rgba(65,242,122,.05);
+  color: var(--accent);
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 900;
+}
+.master-list {
+  display: grid;
+  gap: var(--space-2);
+  overflow: visible;
+}
+.review-card { padding: var(--space-4); }
+.review-item {
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease;
+}
+.review-item.selected, .agent-card.selected {
+  border-color: var(--line-strong);
+  background: rgba(65,242,122,.08);
+  box-shadow: var(--shadow-card), var(--glow-accent);
+}
+.review-actions.primary button {
+  min-width: 126px;
+  border-color: rgba(65,242,122,.32);
+  background: rgba(65,242,122,.12);
+}
+.review-more-actions {
+  background: rgba(0,0,0,.16);
+}
+.agent-list {
+  grid-template-columns: 1fr;
+}
+.agent-card {
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.agent-card .agent-detail {
+  margin-top: var(--space-3);
+}
+.detail-profile-blocks {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  margin-top: var(--space-5);
+}
+.automation-dashboard.ops-kpi-row {
+  grid-template-columns: repeat(4,minmax(0,1fr));
+}
+.automation-trigger-card,
+.active-skills-card,
+.tool-settings-card {
+  margin-top: 0;
+}
+.vault-list-stack {
+  gap: var(--space-4);
+}
+.graph-hero {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  background: #050805;
+  border-color: rgba(65,242,122,.16);
+  box-shadow: 0 22px 54px rgba(0,0,0,.36), inset 0 0 0 1px rgba(65,242,122,.035);
+}
+.vault-graph-shell {
+  height: min(62vh, 660px);
+  min-height: 430px;
+  border-color: rgba(65,242,122,.16);
+  background:
+    radial-gradient(circle at 50% 46%, rgba(65,242,122,.1), rgba(65,242,122,.025) 34%, rgba(0,0,0,.06) 68%),
+    #030604;
+}
+.vault-graph-shell svg {
+  overflow: visible;
+}
+.graph-edges line {
+  stroke: rgba(65,242,122,.22);
+  stroke-width: 1.15;
+  transition: opacity .18s ease, stroke .18s ease, stroke-width .18s ease;
+}
+.graph-edges line.dim {
+  opacity: .14;
+}
+.graph-edges line.is-active {
+  stroke: rgba(65,242,122,.72);
+  stroke-width: 1.8;
+}
+.graph-node {
+  cursor: pointer;
+  transition: opacity .18s ease;
+}
+.graph-node circle {
+  fill: rgba(65,242,122,.2);
+  stroke: rgba(65,242,122,.84);
+  stroke-width: 1.4;
+  filter: url(#graphGlow);
+  transition: fill .18s ease, stroke-width .18s ease, r .18s ease;
+}
+.graph-node text {
+  opacity: 0;
+  fill: var(--bright);
+  paint-order: stroke;
+  stroke: rgba(0,0,0,.72);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  font-size: 11px;
+  font-weight: 900;
+  transition: opacity .14s ease;
+}
+.graph-node.dim {
+  opacity: .18;
+}
+.graph-node.is-labeled text {
+  opacity: 1;
+}
+.graph-node.is-active circle,
+.graph-node.is-selected circle {
+  fill: rgba(65,242,122,.36);
+  stroke-width: 2.2;
+}
+.graph-detail-panel {
+  min-height: 360px;
+}
+
+/* Light office theme disabled; dark theme restored.
 .app-shell { background: var(--bg); }
 .sidebar { background: #fff; border-right-color: var(--line); box-shadow: 8px 0 30px rgba(15,23,42,.04); }
 .brand strong { color: var(--accent); }
@@ -740,15 +1003,17 @@ textarea, select, input,
 .focus-card strong, .kpi-card strong { color: var(--bright); }
 .focus-stat-row strong, .vault-stat strong, .review-ops-grid strong,
 .automation-summary-card strong { color: var(--accent); }
+*/
 @media (max-width: 1180px) {
-  .office-kpi-grid, .automation-dashboard { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .office-kpi-grid, .automation-dashboard, .ops-kpi-row, .agent-screen-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .dashboard-focus-grid { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .review-metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .review-ops-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .review-edit-form { grid-template-columns: 1fr; }
   .portfolio-economics-form { grid-template-columns: 1fr; }
-  .office-main, .chat-browser, .dashboard-split, .vault-page-grid, .vault-meta-grid, .review-board-grid { grid-template-columns: 1fr; }
+  .office-main, .chat-browser, .dashboard-split, .vault-page-grid, .vault-meta-grid, .review-board-grid, .ops-shell { grid-template-columns: 1fr; }
+  .ops-detail { position: static; }
   .connection-layout, .connection-candidates, .harness-scope-list, .automation-trigger-form, .profile-form { grid-template-columns: 1fr; }
   .chat-workspace { height: auto; min-height: 0; grid-template-columns: 1fr; }
   .chat-main-workspace { grid-template-rows: auto auto; }
@@ -759,7 +1024,7 @@ textarea, select, input,
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .tabs { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .office-kpi-grid, .agent-profile-blocks, .dashboard-grid, .review-metric-grid, .review-ops-grid, .agent-list, .settings-grid, .vault-stats, .rag-index-stats, .rag-search-row, .agent-metrics, .recent-reports, .api-diagnostic-row, .automation-dashboard, .channel-send-form, .quarantine-item, .automation-trigger-item, .channel-item { grid-template-columns: 1fr; }
+  .office-kpi-grid, .agent-profile-blocks, .detail-profile-blocks, .dashboard-grid, .review-metric-grid, .review-ops-grid, .agent-list, .settings-grid, .vault-stats, .rag-index-stats, .rag-search-row, .agent-metrics, .recent-reports, .api-diagnostic-row, .automation-dashboard, .ops-kpi-row, .agent-screen-kpis, .channel-send-form, .quarantine-item, .automation-trigger-item, .channel-item { grid-template-columns: 1fr; }
   .vault-graph-card .vault-graph-shell { min-height: 320px; height: 380px; }
   .chat-composer { grid-template-columns: 1fr; }
   .main-panel { padding: 12px; }
