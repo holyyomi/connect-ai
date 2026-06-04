@@ -55,6 +55,8 @@ const nodes = {
   agentLayer: document.getElementById("agentLayer"),
   stageEffects: document.getElementById("stageEffects"),
   collabLayer: document.getElementById("collabLayer"),
+  officeZoneBadges: document.getElementById("officeZoneBadges"),
+  officeAgentDetailPanel: document.getElementById("officeAgentDetailPanel"),
   phaseBadge: document.getElementById("phaseBadge"),
   pipeline: document.getElementById("pipeline"),
   activityLog: document.getElementById("activityLog"),
@@ -121,6 +123,7 @@ const nodes = {
   vaultTagCounts: document.getElementById("vaultTagCounts"),
   vaultGraph: document.getElementById("vaultGraph"),
   vaultGraphMeta: document.getElementById("vaultGraphMeta"),
+  vaultGraphLegend: document.getElementById("vaultGraphLegend"),
   vaultGraphDetail: document.getElementById("vaultGraphDetail"),
   recentReports: document.getElementById("recentReports"),
   portfolioStatus: document.getElementById("portfolioStatus"),
@@ -148,6 +151,9 @@ const nodes = {
   profileAvoid: document.getElementById("profileAvoid"),
   profileMemory: document.getElementById("profileMemory"),
   profileUserMemory: document.getElementById("profileUserMemory"),
+  autoRoutingHighCut: document.getElementById("autoRoutingHighCut"),
+  autoRoutingLowCut: document.getElementById("autoRoutingLowCut"),
+  autoRoutingSummary: document.getElementById("autoRoutingSummary"),
   profileReloadBtn: document.getElementById("profileReloadBtn"),
   ragStatus: document.getElementById("ragStatus"),
   ragMeta: document.getElementById("ragMeta"),
@@ -279,6 +285,10 @@ let reviewAutomationItemsState = [];
 let activeReviewSection = "skills";
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
+let latestTaskQueueState = { jobs: [], summary: {} };
+let latestVisualAgentIds = [];
+let latestVisualAgentBubbles = {};
+let selectedOfficeAgentId = "";
 const completedOfficeJobIds = new Set();
 const completedCodexJobIds = new Set();
 const agentPositions = Object.fromEntries(agents.map((agent) => [agent.id, { x: agent.x, y: agent.y }]));
@@ -289,6 +299,14 @@ const phaseMeetingSpots = [
   { youtube: { x: 46, y: 34 }, instagram: { x: 54, y: 34 }, editor: { x: 61, y: 39 } },
   { archivist: { x: 70, y: 69 }, secretary: { x: 65, y: 69 } }
 ];
+const officeZones = [
+  { id: "research", label: "Research", agentIds: ["researcher", "business", "archivist"], x: 22, y: 17 },
+  { id: "studio", label: "Design", agentIds: ["youtube", "instagram", "designer"], x: 65, y: 16 },
+  { id: "build", label: "Build", agentIds: ["developer", "writer", "editor"], x: 43, y: 89 },
+  { id: "ops", label: "Ops", agentIds: ["ceo", "secretary"], x: 50, y: 37 }
+];
+const officeRunningStatuses = new Set(["queued", "running", "retrying", "finalizing"]);
+const officeAttentionStatuses = new Set(["failed", "completed_with_errors", "waiting_question"]);
 const agentActionCopy = {
   ceo: { move: "목표 분해", work: "지휘 중" },
   secretary: { move: "체크리스트", work: "순서 정리" },
@@ -518,6 +536,8 @@ function choreographPhase(phaseIndex, phase) {
 function renderAgents(active = [], bubbles = {}) {
   if (!nodes.agentLayer) return;
   ensureAgentElements();
+  latestVisualAgentIds = Array.isArray(active) ? active : [];
+  latestVisualAgentBubbles = bubbles || {};
   renderStageEffects(active);
   const activeSet = new Set(active);
   agents.forEach((agent) => {
@@ -531,6 +551,220 @@ function renderAgents(active = [], bubbles = {}) {
     el.style.top = `${pos.y}%`;
     setAgentBubble(agent.id, bubbles[agent.id] || "");
   });
+  syncOfficeLiveStage();
+}
+
+function officeJobSubtasks(job = {}) {
+  if (Array.isArray(job.subtasks)) return job.subtasks;
+  if (Array.isArray(job.plan?.subtasks)) return job.plan.subtasks;
+  return [];
+}
+
+function officeJobAllAgentIds(job = {}) {
+  const ids = new Set();
+  [job.agentId, job.currentAgentId].filter(Boolean).forEach((id) => ids.add(id));
+  [job.activeAgentIds, job.currentAgentIds, job.plan?.activeAgentIds].forEach((list) => {
+    if (Array.isArray(list)) list.filter(Boolean).forEach((id) => ids.add(id));
+  });
+  officeJobSubtasks(job).forEach((step) => {
+    if (step.agentId) ids.add(step.agentId);
+  });
+  if (!ids.size && job.type === "codex") ids.add("developer");
+  return Array.from(ids);
+}
+
+function officeJobCurrentAgentIds(job = {}) {
+  const subtasks = officeJobSubtasks(job);
+  const current = currentSubtaskAgentIds(subtasks, job.status);
+  if (current.length) return current;
+  const listed = [job.currentAgentIds, job.activeAgentIds, job.plan?.activeAgentIds]
+    .find((list) => Array.isArray(list) && list.length);
+  if (listed?.length) return listed.filter(Boolean);
+  if (officeRunningStatuses.has(job.status)) return officeJobAllAgentIds(job);
+  return [];
+}
+
+function officeJobNeedsLiveAttention(job = {}) {
+  if (!officeAttentionStatuses.has(job.status)) return false;
+  if (job.status === "waiting_question") return true;
+  if (job.needsAttention === true || job.isActive === true) return true;
+  if (job.id && (job.id === activeOfficeJobId || job.id === activeCodexJobId)) return true;
+  const decisionStatus = String(job.reviewDecision?.status || "");
+  return !job.reviewDecision || ["pending", "needs_review", "needs_revision", "open"].includes(decisionStatus);
+}
+
+function officeJobProgressPercent(job = {}, agentId = "") {
+  const subtasks = officeJobSubtasks(job);
+  if (subtasks.length) {
+    const completed = subtasks.filter((step) => ["completed", "skipped"].includes(step.status)).length;
+    const currentIndex = Math.max(0, subtasks.findIndex((step) => step.agentId === agentId));
+    const base = Math.round((completed / subtasks.length) * 100);
+    return Math.max(12, Math.min(96, base || Math.round(((currentIndex + 0.35) / subtasks.length) * 100)));
+  }
+  if (job.status === "queued") return 16;
+  if (job.status === "retrying") return 58;
+  if (job.status === "finalizing") return 86;
+  if (job.status === "waiting_question") return 100;
+  return officeRunningStatuses.has(job.status) ? 42 : 0;
+}
+
+function officeAgentLiveState(agentId = "") {
+  const jobs = Array.isArray(latestTaskQueueState.jobs) ? latestTaskQueueState.jobs : [];
+  const workflowActiveIds = new Set(officeDashboardState.workflow?.activeAgentIds || []);
+  const countMap = new Map((officeDashboardState.workflow?.agentCounts || []).map((row) => [row.id, Number(row.count || 0)]));
+  const visualActiveIds = new Set(latestVisualAgentIds || []);
+  const currentJob = jobs.find((job) => officeRunningStatuses.has(job.status) && officeJobCurrentAgentIds(job).includes(agentId));
+  const attentionJob = jobs.find((job) => officeJobNeedsLiveAttention(job) && officeJobAllAgentIds(job).includes(agentId));
+  const recentJob = jobs.find((job) => ["completed", "completed_with_errors"].includes(job.status) && officeJobAllAgentIds(job).includes(agentId));
+  const subtasks = officeJobSubtasks(currentJob || attentionJob || {});
+  const currentStep = subtasks.find((step) => step.agentId === agentId && !["completed", "skipped"].includes(step.status))
+    || subtasks.find((step) => step.agentId === agentId);
+  const active = Boolean(currentJob) || workflowActiveIds.has(agentId) || visualActiveIds.has(agentId);
+  const attention = Boolean(attentionJob);
+  const progress = currentJob ? officeJobProgressPercent(currentJob, agentId) : active ? 46 : 0;
+  const jobTitle = currentJob?.title || currentJob?.capsule?.goal || currentJob?.capsule?.normalizedTask || latestOfficeTask;
+  const currentTask = currentStep?.label || currentJob?.progress || jobTitle || latestVisualAgentBubbles[agentId] || "";
+  const recentOutput = recentJob?.saved?.relPath || recentJob?.saved?.path || recentJob?.output?.relPath || recentJob?.title || "";
+  const statusLabel = attention
+    ? officeJobStatusLabel(attentionJob.status)
+    : active
+      ? (currentJob?.statusLabel || officeJobStatusLabel(currentJob?.status || "running"))
+      : "대기";
+  return {
+    active,
+    attention,
+    progress,
+    currentTask,
+    recentOutput,
+    statusLabel,
+    taskCount: countMap.get(agentId) || 0,
+    bubble: attention ? statusLabel : currentTask || latestVisualAgentBubbles[agentId] || statusLabel
+  };
+}
+
+function renderOfficeZoneBadges(stateMap = null) {
+  if (!nodes.officeZoneBadges) return;
+  const states = stateMap || new Map(agents.map((agent) => [agent.id, officeAgentLiveState(agent.id)]));
+  nodes.officeZoneBadges.innerHTML = officeZones.map((zone) => {
+    const activeCount = zone.agentIds.filter((id) => states.get(id)?.active).length;
+    const attentionCount = zone.agentIds.filter((id) => states.get(id)?.attention).length;
+    const count = activeCount + attentionCount;
+    const tone = attentionCount ? "attention" : activeCount ? "active" : "idle";
+    return `
+      <span class="office-zone-badge ${tone}" style="left:${zone.x}%;top:${zone.y}%">
+        <b>${escapeHtml(zone.label)}</b>
+        <em>${count}</em>
+      </span>
+    `;
+  }).join("");
+}
+
+function renderOfficeAgentDetail(agentId = "") {
+  if (!nodes.officeAgentDetailPanel) return;
+  const agent = agents.find((item) => item.id === agentId);
+  if (!agent) {
+    nodes.officeAgentDetailPanel.hidden = true;
+    selectedOfficeAgentId = "";
+    return;
+  }
+  selectedOfficeAgentId = agent.id;
+  const state = officeAgentLiveState(agent.id);
+  const skillRow = skillsState.agents?.find((item) => item.id === agent.id) || {};
+  const skills = skillRow.skills || [];
+  const engine = skillRow.engine || { id: "codex", label: "Codex CLI" };
+  const enabledSkills = skills.filter((skill) => skill.enabled !== false && skill.status !== "disabled");
+  const statusClass = state.attention ? "attention" : state.active ? "active" : "idle";
+  nodes.officeAgentDetailPanel.hidden = false;
+  nodes.officeAgentDetailPanel.innerHTML = `
+    <button class="office-agent-panel-close" type="button" data-office-agent-action="close" aria-label="닫기">x</button>
+    <div class="detail-head">
+      <span class="detail-kicker ${statusClass}">${escapeHtml(state.statusLabel)}</span>
+      <h2>${escapeHtml(agent.name)}</h2>
+      <p>${escapeHtml(agent.role)} · ${escapeHtml(agent.work)}</p>
+    </div>
+    <dl class="office-agent-live-list">
+      <div><dt>현재 작업</dt><dd>${escapeHtml(state.currentTask || "대기 중")}</dd></div>
+      <div><dt>최근 산출물</dt><dd>${escapeHtml(cleanDisplayPath(state.recentOutput) || "기록 없음")}</dd></div>
+    </dl>
+    <div class="agent-profile-blocks office-agent-profile-blocks">
+      <article><span>Memory</span><strong>${state.taskCount}개</strong><small>누적 작업</small></article>
+      <article><span>Soul</span><strong>${escapeHtml(engine.label || engine.id || "Codex")}</strong><small>담당 엔진</small></article>
+      <article><span>Rules</span><strong>${enabledSkills.length}개</strong><small>활성 스킬</small></article>
+      <article><span>Guardrails</span><strong>${skills.filter((skill) => skill.requiresConfirmation).length}개</strong><small>확인 필요</small></article>
+    </div>
+    <div class="office-agent-panel-actions">
+      <button type="button" data-office-agent-action="assign" data-agent-id="${escapeHtml(agent.id)}">작업 배정</button>
+      <button type="button" data-office-agent-action="detail" data-agent-id="${escapeHtml(agent.id)}">상세</button>
+    </div>
+  `;
+  nodes.agentLayer?.querySelectorAll(".agent").forEach((el) => {
+    el.classList.toggle("selected", el.dataset.agentId === agent.id);
+  });
+}
+
+function syncOfficeLiveStage() {
+  if (!nodes.agentLayer) return;
+  ensureAgentElements();
+  const states = new Map();
+  agents.forEach((agent) => {
+    const el = getAgentElement(agent.id);
+    if (!el) return;
+    const state = officeAgentLiveState(agent.id);
+    states.set(agent.id, state);
+    el.dataset.officeState = state.attention ? "attention" : state.active ? "active" : "idle";
+    el.dataset.workCount = String(state.taskCount || 0);
+    el.classList.toggle("desk-active", state.active && !state.attention);
+    el.classList.toggle("desk-attention", state.attention);
+    el.classList.toggle("desk-idle", !state.active && !state.attention);
+    el.classList.toggle("working", state.active && !state.attention);
+    el.classList.toggle("idle", !state.active && !state.attention);
+    let progress = el.querySelector(".agent-progress");
+    if (!progress) {
+      progress = document.createElement("span");
+      progress.className = "agent-progress";
+      progress.innerHTML = "<i></i>";
+      el.append(progress);
+    }
+    progress.hidden = !state.active && !state.attention;
+    const bar = progress.querySelector("i");
+    if (bar) bar.style.width = `${Math.max(8, Math.min(100, state.progress || 0))}%`;
+    setAgentBubble(agent.id, state.active || state.attention ? state.bubble : "");
+  });
+  renderOfficeZoneBadges(states);
+  if (selectedOfficeAgentId && !nodes.officeAgentDetailPanel?.hidden) renderOfficeAgentDetail(selectedOfficeAgentId);
+}
+
+function handleOfficeAgentClick(event) {
+  const el = event.target.closest(".agent[data-agent-id]");
+  if (!el || !nodes.agentLayer?.contains(el)) return;
+  renderOfficeAgentDetail(el.dataset.agentId || "");
+}
+
+function handleOfficeAgentPanelClick(event) {
+  const button = event.target.closest("[data-office-agent-action]");
+  if (!button || !nodes.officeAgentDetailPanel?.contains(button)) return;
+  const action = button.dataset.officeAgentAction || "";
+  const agentId = button.dataset.agentId || selectedOfficeAgentId || "";
+  const agent = agents.find((item) => item.id === agentId);
+  if (action === "close") {
+    nodes.officeAgentDetailPanel.hidden = true;
+    selectedOfficeAgentId = "";
+    nodes.agentLayer?.querySelectorAll(".agent").forEach((el) => el.classList.remove("selected"));
+    return;
+  }
+  if (action === "assign") {
+    switchPage("chat");
+    if (nodes.chatInput) {
+      nodes.chatInput.value = `/업무 @${agent?.name || agentId} `;
+      nodes.chatInput.focus();
+      resizeChatInput();
+    }
+    return;
+  }
+  if (action === "detail") {
+    switchPage("agents");
+    renderAgentDetailPanel(agentId);
+  }
 }
 
 function renderStageEffects(active = []) {
@@ -891,6 +1125,14 @@ function renderProfileState(state = profileState) {
   if (nodes.profileAvoid) nodes.profileAvoid.value = profileListToText(profile.avoid);
   if (nodes.profileMemory) nodes.profileMemory.value = profileListToText(profile.memory);
   if (nodes.profileUserMemory) nodes.profileUserMemory.value = profileListToText(profile.userMemory);
+  const routing = profileState.autoRouting || {};
+  const policy = routing.policy || {};
+  if (nodes.autoRoutingHighCut) nodes.autoRoutingHighCut.value = Number(policy.highCut ?? 75);
+  if (nodes.autoRoutingLowCut) nodes.autoRoutingLowCut.value = Number(policy.lowCut ?? 40);
+  if (nodes.autoRoutingSummary) {
+    const summary = routing.summary || {};
+    nodes.autoRoutingSummary.textContent = `자동저장 >= ${Number(policy.highCut ?? 75)} · 검토 ${Number(policy.lowCut ?? 40)}~${Number(policy.highCut ?? 75) - 1} · 격리 < ${Number(policy.lowCut ?? 40)} · 최근 로그 ${Number(summary.total || 0)}건`;
+  }
 }
 
 async function loadProfileState() {
@@ -928,6 +1170,17 @@ async function saveProfileState(event) {
     });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || "프로필 저장 실패");
+    const routingResponse = await apiFetch("/api/auto-routing", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        highCut: Number(nodes.autoRoutingHighCut?.value || 75),
+        lowCut: Number(nodes.autoRoutingLowCut?.value || 40)
+      })
+    });
+    const routingData = await routingResponse.json();
+    if (!routingResponse.ok || routingData.ok === false) throw new Error(routingData.error || "자동 라우팅 저장 실패");
+    data.autoRouting = routingData;
     renderProfileState(data);
     if (nodes.profileEditStatus) nodes.profileEditStatus.textContent = "저장 완료";
     await refreshState();
@@ -1936,6 +2189,31 @@ function shortGraphLabel(value) {
   return text.length > 16 ? `${text.slice(0, 15)}...` : text;
 }
 
+const vaultGraphPalette = ["#41f27a", "#7dd3fc", "#fbbf24", "#f472b6", "#a78bfa", "#fb7185", "#34d399", "#f97316"];
+
+function vaultGraphGroupKey(node = {}) {
+  const folder = String(node.folder || "").trim();
+  if (folder) return folder;
+  const tags = Array.isArray(node.tags) ? node.tags.filter(Boolean) : [];
+  return tags[0] || "Vault";
+}
+
+function vaultGraphGroupLabel(value = "") {
+  const text = String(value || "Vault");
+  return text.length > 18 ? `${text.slice(0, 17)}...` : text;
+}
+
+function renderVaultGraphLegend(groups = []) {
+  if (!nodes.vaultGraphLegend) return;
+  if (!groups.length) {
+    nodes.vaultGraphLegend.innerHTML = "";
+    return;
+  }
+  nodes.vaultGraphLegend.innerHTML = groups.slice(0, 6).map((group) => `
+    <span><i style="background:${escapeHtml(group.color)}"></i>${escapeHtml(vaultGraphGroupLabel(group.key))}<b>${Number(group.count || 0)}</b></span>
+  `).join("");
+}
+
 function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height = 520) {
   const degree = new Map(graphNodes.map((node) => [node.id, 0]));
   const validEdges = graphEdges.filter((edge) => degree.has(edge.source) && degree.has(edge.target));
@@ -1945,14 +2223,18 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
   }
   const cx = width / 2;
   const cy = height / 2;
+  const degreeValues = [...degree.values()];
+  const minDegree = Math.min(...degreeValues);
+  const maxDegree = Math.max(...degreeValues);
   const nodes = graphNodes.map((node, index) => {
     const angle = index * 2.399963229728653;
-    const radius = 28 + 12 * Math.sqrt(index + 1);
+    const radius = 90 + 22 * Math.sqrt(index + 1);
     const nodeDegree = degree.get(node.id) || 0;
+    const degreeT = maxDegree === minDegree ? 0.45 : (nodeDegree - minDegree) / Math.max(1, maxDegree - minDegree);
     return {
       ...node,
       degree: nodeDegree,
-      r: Math.max(6, Math.min(22, 7 + nodeDegree * 2.2 + Number(node.size || 1))),
+      r: 8 + Math.pow(Math.max(0, degreeT), 0.72) * 20,
       x: cx + Math.cos(angle) * radius,
       y: cy + Math.sin(angle) * radius,
       vx: 0,
@@ -1961,8 +2243,8 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
   });
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const links = validEdges.map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) })).filter((edge) => edge.sourceNode && edge.targetNode);
-  for (let tick = 0; tick < 220; tick += 1) {
-    const alpha = 1 - tick / 220;
+  for (let tick = 0; tick < 420; tick += 1) {
+    const alpha = 1 - tick / 420;
     for (let i = 0; i < nodes.length; i += 1) {
       const a = nodes[i];
       for (let j = i + 1; j < nodes.length; j += 1) {
@@ -1976,8 +2258,8 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
           dist2 = dx * dx + dy * dy;
         }
         const dist = Math.sqrt(dist2);
-        const minDist = a.r + b.r + 10;
-        const repel = Math.min(22, 360 / dist2) * alpha;
+        const minDist = a.r + b.r + 22;
+        const repel = Math.min(68, 2600 / dist2) * alpha;
         const rx = (dx / dist) * repel;
         const ry = (dy / dist) * repel;
         a.vx -= rx;
@@ -1985,7 +2267,7 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
         b.vx += rx;
         b.vy += ry;
         if (dist < minDist) {
-          const push = ((minDist - dist) / Math.max(dist, 1)) * 0.07 * alpha;
+          const push = ((minDist - dist) / Math.max(dist, 1)) * 0.16 * alpha;
           a.vx -= dx * push;
           a.vy -= dy * push;
           b.vx += dx * push;
@@ -1999,8 +2281,8 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
       const dx = target.x - source.x;
       const dy = target.y - source.y;
       const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const desired = 72 + Math.max(0, 4 - Math.min(source.degree, target.degree)) * 8;
-      const pull = (dist - desired) * 0.012 * alpha;
+      const desired = 118 + Math.max(0, 6 - Math.min(source.degree, target.degree)) * 9;
+      const pull = (dist - desired) * 0.0055 * alpha;
       const px = (dx / dist) * pull;
       const py = (dy / dist) * pull;
       source.vx += px;
@@ -2009,12 +2291,47 @@ function forceGraphLayout(graphNodes = [], graphEdges = [], width = 960, height 
       target.vy -= py;
     }
     for (const node of nodes) {
-      node.vx += (cx - node.x) * 0.006 * alpha;
-      node.vy += (cy - node.y) * 0.006 * alpha;
-      node.vx *= 0.82;
-      node.vy *= 0.82;
-      node.x = Math.max(38, Math.min(width - 38, node.x + node.vx));
-      node.y = Math.max(38, Math.min(height - 44, node.y + node.vy));
+      node.vx += (cx - node.x) * 0.0025 * alpha;
+      node.vy += (cy - node.y) * 0.0025 * alpha;
+      node.vx *= 0.84;
+      node.vy *= 0.84;
+      node.x = Math.max(56, Math.min(width - 56, node.x + node.vx));
+      node.y = Math.max(56, Math.min(height - 62, node.y + node.vy));
+    }
+  }
+  if (nodes.length > 1) {
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const maxX = Math.max(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxY = Math.max(...nodes.map((node) => node.y));
+    const currentW = Math.max(1, maxX - minX);
+    const currentH = Math.max(1, maxY - minY);
+    const scale = Math.min(1.55, Math.max(1, Math.min((width * 0.72) / currentW, (height * 0.66) / currentH)));
+    for (const node of nodes) {
+      node.x = cx + (node.x - cx) * scale;
+      node.y = cy + (node.y - cy) * scale;
+      node.x = Math.max(58, Math.min(width - 58, node.x));
+      node.y = Math.max(58, Math.min(height - 64, node.y));
+    }
+    for (let pass = 0; pass < 90; pass += 1) {
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const a = nodes[i];
+          const b = nodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+          const minDist = a.r + b.r + 13;
+          if (dist >= minDist) continue;
+          const push = (minDist - dist) / 2;
+          const px = (dx / dist) * push;
+          const py = (dy / dist) * push;
+          a.x = Math.max(58, Math.min(width - 58, a.x - px));
+          a.y = Math.max(58, Math.min(height - 64, a.y - py));
+          b.x = Math.max(58, Math.min(width - 58, b.x + px));
+          b.y = Math.max(58, Math.min(height - 64, b.y + py));
+        }
+      }
     }
   }
   return { nodes, links, degree };
@@ -2045,13 +2362,14 @@ function renderVaultGraph(graph = {}) {
   const graphNodes = (graph.nodes || []).slice(0, 28);
   const graphEdges = graph.edges || [];
   if (!graphNodes.length) {
-    nodes.vaultGraph.innerHTML = '<text x="480" y="260" text-anchor="middle" class="graph-empty">표시할 문서가 없습니다.</text>';
+    nodes.vaultGraph.innerHTML = '<text x="560" y="320" text-anchor="middle" class="graph-empty">표시할 문서가 없습니다.</text>';
     if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = "0개 노드";
+    renderVaultGraphLegend([]);
     renderVaultGraphDetail(null);
     return;
   }
-  const width = 960;
-  const height = 520;
+  const width = 1120;
+  const height = 640;
   nodes.vaultGraph.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const layout = forceGraphLayout(graphNodes, graphEdges, width, height);
   const byId = new Map(layout.nodes.map((node) => [node.id, node]));
@@ -2060,6 +2378,17 @@ function renderVaultGraph(graph = {}) {
     neighborsById.get(link.source)?.add(link.target);
     neighborsById.get(link.target)?.add(link.source);
   }
+  const groupCounts = new Map();
+  for (const node of layout.nodes) {
+    const key = vaultGraphGroupKey(node);
+    groupCounts.set(key, (groupCounts.get(key) || 0) + 1);
+  }
+  const graphGroups = [...groupCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, count], index) => ({ key, count, color: vaultGraphPalette[index % vaultGraphPalette.length] }));
+  const colorByGroup = new Map(graphGroups.map((group) => [group.key, group.color]));
+  renderVaultGraphLegend(graphGroups);
+  const maxDegree = Math.max(1, ...layout.nodes.map((node) => Number(node.degree || 0)));
   const lines = layout.links.map((edge) => {
     const source = edge.sourceNode;
     const target = edge.targetNode;
@@ -2067,10 +2396,13 @@ function renderVaultGraph(graph = {}) {
     return `<line data-source="${escapeHtml(edge.source)}" data-target="${escapeHtml(edge.target)}" x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}"><title>${escapeHtml(reason || "연관 문서")}</title></line>`;
   }).join("");
   const dots = layout.nodes.map((node) => {
+    const groupKey = vaultGraphGroupKey(node);
+    const color = colorByGroup.get(groupKey) || vaultGraphPalette[0];
+    const hubClass = Number(node.degree || 0) >= Math.max(5, maxDegree * 0.68) ? " is-hub-label" : "";
     return `
-      <g class="graph-node" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">
-        <title>${escapeHtml(node.title)} · ${escapeHtml(node.folder || "")}</title>
-        <circle r="${node.r.toFixed(1)}" />
+      <g class="graph-node${hubClass}" data-node-id="${escapeHtml(node.id)}" data-degree="${Number(node.degree || 0)}" data-group="${escapeHtml(groupKey)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">
+        <title>${escapeHtml(node.title)} · ${escapeHtml(node.folder || "")} · ${Number(node.degree || 0)} 연결</title>
+        <circle r="${node.r.toFixed(1)}" fill="${escapeHtml(color)}" stroke="${escapeHtml(color)}" />
         <text y="${(node.r + 15).toFixed(1)}" text-anchor="middle">${escapeHtml(shortGraphLabel(node.title))}</text>
       </g>
     `;
@@ -2082,18 +2414,56 @@ function renderVaultGraph(graph = {}) {
         <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
       </filter>
     </defs>
-    <g class="graph-edges">${lines}</g><g class="graph-nodes">${dots}</g>
+    <rect class="graph-hit-area" x="0" y="0" width="${width}" height="${height}" />
+    <g class="graph-viewport"><g class="graph-edges">${lines}</g><g class="graph-nodes">${dots}</g></g>
   `;
-  let selectedNodeId = "";
+  const viewport = nodes.vaultGraph.querySelector(".graph-viewport");
+  const graphState = { scale: 1, tx: 0, ty: 0, selectedNodeId: "", hoverNodeId: "", drag: null };
+  const applyTransform = () => {
+    if (viewport) viewport.setAttribute("transform", `translate(${graphState.tx.toFixed(1)} ${graphState.ty.toFixed(1)}) scale(${graphState.scale.toFixed(3)})`);
+    nodes.vaultGraph.classList.toggle("is-zoomed", graphState.scale > 1.22);
+    nodes.vaultGraph.querySelectorAll(".graph-node").forEach((el) => {
+      const degree = Number(el.getAttribute("data-degree") || 0);
+      el.classList.toggle("is-zoom-label", graphState.scale > 1.38 && degree >= 2);
+    });
+  };
+  const svgPoint = (event) => {
+    const rect = nodes.vaultGraph.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * width,
+      y: ((event.clientY - rect.top) / Math.max(1, rect.height)) * height
+    };
+  };
+  const graphPoint = (event) => {
+    const point = svgPoint(event);
+    return {
+      x: (point.x - graphState.tx) / graphState.scale,
+      y: (point.y - graphState.ty) / graphState.scale
+    };
+  };
+  const updateLinesForNode = (nodeId = "") => {
+    const node = byId.get(nodeId);
+    if (!node) return;
+    nodes.vaultGraph.querySelectorAll(".graph-edges line").forEach((line) => {
+      if (line.getAttribute("data-source") === nodeId) {
+        line.setAttribute("x1", node.x.toFixed(1));
+        line.setAttribute("y1", node.y.toFixed(1));
+      }
+      if (line.getAttribute("data-target") === nodeId) {
+        line.setAttribute("x2", node.x.toFixed(1));
+        line.setAttribute("y2", node.y.toFixed(1));
+      }
+    });
+  };
   const setFocus = (nodeId = "") => {
-    const focusId = nodeId || selectedNodeId;
+    const focusId = nodeId || graphState.hoverNodeId || graphState.selectedNodeId;
     const neighborIds = neighborsById.get(focusId) || new Set();
     nodes.vaultGraph.querySelectorAll(".graph-node").forEach((el) => {
       const id = el.getAttribute("data-node-id") || "";
       const active = id === focusId || neighborIds.has(id);
       el.classList.toggle("dim", Boolean(focusId) && !active);
       el.classList.toggle("is-active", Boolean(focusId) && active);
-      el.classList.toggle("is-selected", Boolean(selectedNodeId) && id === selectedNodeId);
+      el.classList.toggle("is-selected", Boolean(graphState.selectedNodeId) && id === graphState.selectedNodeId);
       el.classList.toggle("is-labeled", Boolean(focusId) && id === focusId);
     });
     nodes.vaultGraph.querySelectorAll(".graph-edges line").forEach((el) => {
@@ -2102,21 +2472,86 @@ function renderVaultGraph(graph = {}) {
       el.classList.toggle("is-active", Boolean(focusId) && active);
     });
   };
+  const selectGraphNode = (nodeId = "") => {
+    const node = byId.get(nodeId);
+    if (!node) return;
+    const neighborIds = [...(neighborsById.get(nodeId) || [])];
+    renderVaultGraphDetail(node, neighborIds.map((id) => byId.get(id)).filter(Boolean));
+    graphState.selectedNodeId = nodeId;
+    setFocus(nodeId);
+  };
   nodes.vaultGraph.querySelectorAll(".graph-node").forEach((el) => {
     const nodeId = el.getAttribute("data-node-id") || "";
-    el.addEventListener("mouseenter", () => setFocus(nodeId));
-    el.addEventListener("mouseleave", () => setFocus(""));
-    el.addEventListener("click", () => {
-      const node = byId.get(nodeId);
-      const neighborIds = [...(neighborsById.get(nodeId) || [])];
-      renderVaultGraphDetail(node, neighborIds.map((id) => byId.get(id)).filter(Boolean));
-      selectedNodeId = nodeId;
+    el.addEventListener("mouseenter", () => {
+      graphState.hoverNodeId = nodeId;
       setFocus(nodeId);
     });
+    el.addEventListener("mouseleave", () => {
+      graphState.hoverNodeId = "";
+      setFocus("");
+    });
+    el.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const node = byId.get(nodeId);
+      if (!node) return;
+      const point = graphPoint(event);
+      graphState.drag = { type: "node", nodeId, offsetX: node.x - point.x, offsetY: node.y - point.y };
+      nodes.vaultGraph.setPointerCapture?.(event.pointerId);
+      el.classList.add("is-dragging");
+      selectGraphNode(nodeId);
+    });
+    el.addEventListener("click", () => selectGraphNode(nodeId));
   });
+  nodes.vaultGraph.onwheel = (event) => {
+    event.preventDefault();
+    const point = svgPoint(event);
+    const graphX = (point.x - graphState.tx) / graphState.scale;
+    const graphY = (point.y - graphState.ty) / graphState.scale;
+    const factor = event.deltaY < 0 ? 1.12 : 0.9;
+    const nextScale = Math.max(0.62, Math.min(2.8, graphState.scale * factor));
+    graphState.tx = point.x - graphX * nextScale;
+    graphState.ty = point.y - graphY * nextScale;
+    graphState.scale = nextScale;
+    applyTransform();
+  };
+  nodes.vaultGraph.onpointerdown = (event) => {
+    if (event.target.closest?.(".graph-node")) return;
+    event.preventDefault();
+    graphState.drag = { type: "pan", last: svgPoint(event) };
+    nodes.vaultGraph.setPointerCapture?.(event.pointerId);
+  };
+  nodes.vaultGraph.onpointermove = (event) => {
+    if (!graphState.drag) return;
+    if (graphState.drag.type === "pan") {
+      const point = svgPoint(event);
+      graphState.tx += point.x - graphState.drag.last.x;
+      graphState.ty += point.y - graphState.drag.last.y;
+      graphState.drag.last = point;
+      applyTransform();
+      return;
+    }
+    const node = byId.get(graphState.drag.nodeId);
+    if (!node) return;
+    const point = graphPoint(event);
+    node.x = Math.max(30, Math.min(width - 30, point.x + graphState.drag.offsetX));
+    node.y = Math.max(30, Math.min(height - 30, point.y + graphState.drag.offsetY));
+    const group = [...nodes.vaultGraph.querySelectorAll(".graph-node")].find((el) => el.getAttribute("data-node-id") === graphState.drag.nodeId);
+    if (group) group.setAttribute("transform", `translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})`);
+    updateLinesForNode(graphState.drag.nodeId);
+  };
+  const endDrag = (event) => {
+    if (!graphState.drag) return;
+    nodes.vaultGraph.querySelectorAll(".graph-node.is-dragging").forEach((el) => el.classList.remove("is-dragging"));
+    graphState.drag = null;
+    if (event?.pointerId != null) nodes.vaultGraph.releasePointerCapture?.(event.pointerId);
+  };
+  nodes.vaultGraph.onpointerup = endDrag;
+  nodes.vaultGraph.onpointercancel = endDrag;
   const highestDegree = [...layout.nodes].sort((a, b) => b.degree - a.degree)[0];
   if (highestDegree) renderVaultGraphDetail(highestDegree, [...(neighborsById.get(highestDegree.id) || [])].map((id) => byId.get(id)).filter(Boolean));
-  if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = `${layout.nodes.length}개 노드 · ${layout.links.length}개 연결`;
+  applyTransform();
+  if (nodes.vaultGraphMeta) nodes.vaultGraphMeta.textContent = `${layout.nodes.length}개 노드 · ${layout.links.length}개 연결 · 휠 줌/드래그 이동`;
 }
 
 function formatShortTime(value) {
@@ -2258,6 +2693,7 @@ function updateDashboard(data) {
   renderVaultStats(data.counts || {});
   renderSkillsState(data.skills || skillsState);
   updateDashboardFocus(data);
+  syncOfficeLiveStage();
 }
 
 async function refreshState() {
@@ -4157,6 +4593,7 @@ function startCodexJobPolling(jobId) {
 
 function renderTaskQueue(state = {}) {
   if (!nodes.taskQueueList) return;
+  latestTaskQueueState = state || { jobs: [], summary: {} };
   const jobs = state.jobs || [];
   const visibleJobs = taskQueueDisplayRows(jobs);
   const hiddenClosedJobs = jobs.filter(taskQueueIsClosedHistory).length;
@@ -4174,6 +4611,7 @@ function renderTaskQueue(state = {}) {
   }
   if (!visibleJobs.length) {
     nodes.taskQueueList.innerHTML = '<div class="office-agent-empty">대기 중인 작업이 없습니다.</div>';
+    syncOfficeLiveStage();
     return;
   }
   nodes.taskQueueList.innerHTML = visibleJobs.map((job) => {
@@ -4201,6 +4639,7 @@ function renderTaskQueue(state = {}) {
       </article>
     `;
   }).join("");
+  syncOfficeLiveStage();
 }
 
 async function loadTaskQueue(options = {}) {
@@ -4553,6 +4992,8 @@ document.querySelectorAll("[data-jump]").forEach((btn) => btn.addEventListener("
 document.addEventListener("click", handleExamplePromptClick);
 if (nodes.runBtn) nodes.runBtn.addEventListener("click", runOfficeTask);
 if (nodes.resetBtn) nodes.resetBtn.addEventListener("click", resetOffice);
+if (nodes.agentLayer) nodes.agentLayer.addEventListener("click", handleOfficeAgentClick);
+if (nodes.officeAgentDetailPanel) nodes.officeAgentDetailPanel.addEventListener("click", handleOfficeAgentPanelClick);
 if (nodes.agentList) nodes.agentList.addEventListener("click", handleAgentSkillClick);
 if (nodes.agentList) nodes.agentList.addEventListener("click", handleAgentSelect);
 if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkillChange);

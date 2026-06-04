@@ -22,6 +22,8 @@ const skillCandidateReviewLogPath = path.join(runtimeRoot, "skill-candidate-revi
 const ragIndexPath = path.join(runtimeRoot, "rag-index.json");
 const taskQueueHistoryPath = path.join(runtimeRoot, "task-queue.json");
 const automationTriggerStatePath = path.join(runtimeRoot, "automation-trigger-state.json");
+const autoRoutingConfigPath = path.join(runtimeRoot, "auto-routing-config.json");
+const autoRoutingLogPath = path.join(runtimeRoot, "auto-routing-log.json");
 const performanceLogPath = path.join(runtimeRoot, "performance-log.json");
 const reviewDecisionsPath = path.join(runtimeRoot, "review-decisions.json");
 const economicsAdjustmentsPath = path.join(runtimeRoot, "economics-adjustments.json");
@@ -112,6 +114,12 @@ const profileMemoryPolicy = {
     "새 항목은 한 줄로 압축하고 중복은 정규화 키로 제거한다.",
     "총 2000자 예산을 넘으면 중요도 낮은 항목부터 제외한다."
   ]
+};
+const defaultAutoRoutingPolicy = {
+  highCut: 75,
+  lowCut: 40,
+  logRetentionHours: 24,
+  enabled: true
 };
 const automationTriggerRuntime = {
   initialized: false,
@@ -347,6 +355,148 @@ async function readJson(filePath, fallback) {
 async function writeJsonFile(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function normalizeAutoRoutingPolicy(input = {}) {
+  const highCut = Math.max(1, Math.min(100, Number(input.highCut ?? defaultAutoRoutingPolicy.highCut) || defaultAutoRoutingPolicy.highCut));
+  const lowRaw = Math.max(0, Math.min(99, Number(input.lowCut ?? defaultAutoRoutingPolicy.lowCut) || defaultAutoRoutingPolicy.lowCut));
+  const lowCut = Math.min(lowRaw, highCut - 1);
+  return {
+    enabled: input.enabled !== false,
+    highCut,
+    lowCut,
+    logRetentionHours: Math.max(1, Math.min(168, Number(input.logRetentionHours || defaultAutoRoutingPolicy.logRetentionHours) || defaultAutoRoutingPolicy.logRetentionHours))
+  };
+}
+
+async function readAutoRoutingPolicy() {
+  if (!(await exists(autoRoutingConfigPath))) return normalizeAutoRoutingPolicy(defaultAutoRoutingPolicy);
+  return normalizeAutoRoutingPolicy(await readJson(autoRoutingConfigPath, defaultAutoRoutingPolicy));
+}
+
+async function writeAutoRoutingPolicy(input = {}) {
+  const policy = normalizeAutoRoutingPolicy(input);
+  await writeJsonFile(autoRoutingConfigPath, policy);
+  return policy;
+}
+
+function autoRoutingDecision(confidence = 0, policy = defaultAutoRoutingPolicy) {
+  const score = clampScore(confidence);
+  if (policy.enabled === false) return { band: "review", action: "review", status: "pending", label: "검토", confidence: score };
+  if (score >= policy.highCut) return { band: "high", action: "auto_save", status: "approved", label: "자동 저장", confidence: score };
+  if (score < policy.lowCut) return { band: "low", action: "quarantine", status: "quarantined", label: "격리", confidence: score };
+  return { band: "middle", action: "review", status: "pending", label: "검토", confidence: score };
+}
+
+function scoreAutoRoutingCandidate(input = {}) {
+  const text = String(input.text || input.userText || input.body || "").normalize("NFKC");
+  let score = Number(input.baseConfidence ?? input.confidence ?? 50) || 50;
+  if (text.length >= 80) score += 8;
+  if (text.length >= 360) score += 7;
+  if (text.length < 16) score -= 32;
+  if (input.explicit) score += 14;
+  if (input.durable) score += 8;
+  if (input.sourceCount) score += Math.min(12, Number(input.sourceCount || 0) * 4);
+  if (input.duplicate) score -= 20;
+  if (input.lowValue) score -= 45;
+  if (input.noisy) score -= 24;
+  return clampScore(score);
+}
+
+async function appendAutoRoutingLog(input = {}) {
+  const policy = await readAutoRoutingPolicy();
+  const state = await readJson(autoRoutingLogPath, { records: [] });
+  const now = new Date();
+  const cutoff = now.getTime() - policy.logRetentionHours * 60 * 60 * 1000;
+  const records = Array.isArray(state.records) ? state.records : [];
+  records.unshift({
+    id: input.id || `route-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: input.createdAt || now.toISOString(),
+    targetType: String(input.targetType || "unknown"),
+    targetId: String(input.targetId || ""),
+    targetTitle: compactLine(input.targetTitle || "", 120),
+    action: String(input.action || ""),
+    band: String(input.band || ""),
+    confidence: clampScore(input.confidence || 0),
+    reason: String(input.reason || "").slice(0, 600),
+    reversibleUntil: new Date(now.getTime() + policy.logRetentionHours * 60 * 60 * 1000).toISOString(),
+    relPath: String(input.relPath || "").replace(/\\/g, "/"),
+    candidateId: String(input.candidateId || "")
+  });
+  const next = records
+    .filter((record) => jobTimeValue(record.createdAt) >= cutoff)
+    .slice(0, 500);
+  await writeJsonFile(autoRoutingLogPath, { records: next });
+  return { ok: true, records: next };
+}
+
+async function buildAutoRoutingState() {
+  const policy = await readAutoRoutingPolicy();
+  const log = await readJson(autoRoutingLogPath, { records: [] });
+  const records = Array.isArray(log.records) ? log.records : [];
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    policy,
+    summary: {
+      total: records.length,
+      autoSave: records.filter((record) => record.action === "auto_save").length,
+      review: records.filter((record) => record.action === "review").length,
+      quarantine: records.filter((record) => record.action === "quarantine").length
+    },
+    recent: records.slice(0, 20)
+  };
+}
+
+async function updateAutoRoutingState(input = {}) {
+  const action = String(input.action || "save").trim().toLowerCase();
+  if (action === "reset") await writeAutoRoutingPolicy(defaultAutoRoutingPolicy);
+  else await writeAutoRoutingPolicy({ ...await readAutoRoutingPolicy(), ...input });
+  return buildAutoRoutingState();
+}
+
+async function buildAutoRoutingTestState(input = {}) {
+  const policy = normalizeAutoRoutingPolicy(input.policy || await readAutoRoutingPolicy());
+  const samples = Array.isArray(input.samples) ? input.samples : [input];
+  const results = samples.map((sample, index) => {
+    const row = typeof sample === "string" ? { text: sample } : sample || {};
+    const text = String(row.text || row.message || row.body || "");
+    const lowValue = row.lowValue ?? isTrivialAutoSaveInput(text);
+    const noisy = row.noisy ?? encodingNoiseScore(text) >= 3;
+    const confidence = scoreAutoRoutingCandidate({
+      baseConfidence: row.baseConfidence ?? row.confidence ?? 50,
+      text,
+      explicit: Boolean(row.explicit),
+      durable: row.durable ?? text.length >= 240,
+      sourceCount: row.sourceCount || 0,
+      duplicate: Boolean(row.duplicate),
+      lowValue,
+      noisy
+    });
+    const decision = autoRoutingDecision(confidence, policy);
+    return {
+      id: String(row.id || `sample-${index + 1}`),
+      targetType: String(row.targetType || "test"),
+      textPreview: compactLine(text, 140),
+      lowValue: Boolean(lowValue),
+      noisy: Boolean(noisy),
+      confidence,
+      decision
+    };
+  });
+  return {
+    ok: true,
+    dryRun: true,
+    generatedAt: new Date().toISOString(),
+    policy,
+    summary: {
+      total: results.length,
+      autoSave: results.filter((item) => item.decision.action === "auto_save").length,
+      review: results.filter((item) => item.decision.action === "review").length,
+      quarantine: results.filter((item) => item.decision.action === "quarantine").length
+    },
+    results
+  };
 }
 
 function defaultConnectionsConfig() {
@@ -2203,7 +2353,7 @@ function parseProfileList(value, fallback = []) {
 
 async function buildProfileState() {
   const profile = await readStyleProfile();
-  return { ok: true, generatedAt: new Date().toISOString(), profile, counts: profileMemoryCounts(profile) };
+  return { ok: true, generatedAt: new Date().toISOString(), profile, counts: profileMemoryCounts(profile), autoRouting: await buildAutoRoutingState() };
 }
 
 async function updateProfileState(input = {}) {
@@ -2231,6 +2381,7 @@ async function updateProfileState(input = {}) {
 
 async function buildMemoryState() {
   const profile = await readStyleProfile();
+  const autoRouting = await buildAutoRoutingState();
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -2239,7 +2390,8 @@ async function buildMemoryState() {
     userMemory: profile.userMemory || [],
     count: profileMemoryCounts(profile).total,
     counts: profileMemoryCounts(profile),
-    captureRules: publicAutomationRules()
+    captureRules: publicAutomationRules(),
+    autoRouting
   };
 }
 
@@ -3368,23 +3520,36 @@ function titleFromConversationAsset(turn = {}) {
 }
 
 function classifyVaultSave(task, report, options = {}) {
-  if (options.quality === "verified" || options.rag === true) {
-    return { quality: "verified", rag: true, quarantine: false, reason: "", title: titleFromReport(task, report, options) };
-  }
   const taskText = String(task || "");
   const reportText = stripMarkdownFrontmatter(report);
   const lowValue = isTrivialAutoSaveInput(taskText) || isCommandLikeAssetTitle(taskText) || reportText.length < 420;
   const noisy = encodingNoiseScore(taskText) >= 3;
-  if (options.quarantine === true || lowValue || noisy) {
+  const review = options.assetReview && typeof options.assetReview === "object" ? options.assetReview : null;
+  const confidence = scoreAutoRoutingCandidate({
+    baseConfidence: options.quality === "verified" || options.rag === true ? 82 : review ? Number(review.score || 0) : 58,
+    text: `${taskText}\n${reportText}`,
+    explicit: options.quality === "verified" || options.rag === true,
+    durable: reportText.length >= 700,
+    sourceCount: Array.isArray(options.sources) ? options.sources.length : 0,
+    lowValue,
+    noisy
+  });
+  const route = autoRoutingDecision(confidence, options.autoRoutingPolicy || defaultAutoRoutingPolicy);
+  if (options.quarantine === true || route.action === "quarantine") {
     return {
       quality: "quarantine",
       rag: false,
       quarantine: true,
-      reason: noisy ? "encoding-noisy-title" : lowValue ? "command-or-low-value-autosave" : "requested-quarantine",
+      routing: route,
+      confidence,
+      reason: noisy ? "encoding-noisy-title" : lowValue ? "command-or-low-value-autosave" : "low-confidence-auto-routing",
       title: titleFromReport(task, report, { ...options, title: "검토 필요 산출물" })
     };
   }
-  return { quality: options.quality || "candidate", rag: options.rag === true, quarantine: false, reason: "", title: titleFromReport(task, report, options) };
+  if (route.action === "auto_save") {
+    return { quality: "verified", rag: true, quarantine: false, routing: route, confidence, reason: "", title: titleFromReport(task, report, options) };
+  }
+  return { quality: "candidate", rag: false, quarantine: false, routing: route, confidence, reason: "middle-confidence-review", title: titleFromReport(task, report, options) };
 }
 
 async function saveReportToVault(task, report, assigned, options = {}) {
@@ -3394,7 +3559,8 @@ async function saveReportToVault(task, report, assigned, options = {}) {
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const saveClass = classifyVaultSave(task, report, options);
+  const autoRoutingPolicy = await readAutoRoutingPolicy();
+  const saveClass = classifyVaultSave(task, report, { ...options, autoRoutingPolicy });
   const outDir = saveClass.quarantine
     ? path.join(vaultRoot, "99_Inbox", "YOMI_Quarantine", day)
     : path.join(vaultRoot, "50_Outputs", primaryReportFolder, day);
@@ -3429,6 +3595,15 @@ async function saveReportToVault(task, report, assigned, options = {}) {
     "---"
   ].filter(Boolean).join("\n");
   await writeFile(fullPath, `${frontmatter}\n\n${report}\n`, "utf8");
+  await appendAutoRoutingLog({
+    targetType: "asset",
+    targetTitle: saveClass.title,
+    action: saveClass.routing?.action || (saveClass.quarantine ? "quarantine" : saveClass.rag ? "auto_save" : "review"),
+    band: saveClass.routing?.band || "",
+    confidence: saveClass.confidence || review?.score || 0,
+    reason: saveClass.reason || review?.reason || "",
+    relPath
+  });
   return { ok: true, relPath, fullPath, quality: saveClass.quality, rag: saveClass.rag, quarantine: saveClass.quarantine, reason: saveClass.reason || "", assetReview: review };
 }
 
@@ -4204,6 +4379,7 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
   const items = extractPreferenceMemoryItems(turn.user);
   if (!items.length) return [];
   const state = await readSkillCandidatesState();
+  const policy = await readAutoRoutingPolicy();
   const created = [];
   for (const item of items) {
     const memoryKey = normalizeMemoryKey(item);
@@ -4213,7 +4389,26 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
       continue;
     }
     const decision = memoryItemDecision(item);
-    const autoApply = decision.autoApply;
+    const confidence = scoreAutoRoutingCandidate({
+      baseConfidence: decision.confidence || 50,
+      text: item,
+      explicit: decision.autoApply,
+      durable: decision.keep,
+      lowValue: !decision.keep
+    });
+    const route = autoRoutingDecision(confidence, policy);
+    if (route.action === "quarantine") {
+      await appendAutoRoutingLog({
+        targetType: "memory",
+        targetTitle: item,
+        action: route.action,
+        band: route.band,
+        confidence,
+        reason: decision.reason || "low-confidence-memory"
+      });
+      continue;
+    }
+    const autoApply = route.action === "auto_save";
     const applied = autoApply ? await appendProfileMemory([item]) : { added: [] };
     const now = new Date().toISOString();
     const candidate = normalizeSkillCandidate({
@@ -4222,7 +4417,7 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
       description: autoApply ? "명시적 장기 규칙/선호라 메모리에 자동 반영했습니다." : `${decision.reason}입니다.`,
       instructions: item,
       evidence: turn.user,
-      confidence: decision.confidence || (autoApply ? 96 : 82),
+      confidence,
       agentIds: ["ceo", "secretary", "archivist"],
       status: autoApply ? "approved" : "pending",
       sourceSessionId: session.id,
@@ -4231,6 +4426,16 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
       autoAppliedAt: autoApply && applied.added?.length ? now : ""
     });
     state.candidates.unshift(candidate);
+    await appendAutoRoutingLog({
+      targetType: "memory",
+      targetId: candidate.id,
+      targetTitle: candidate.title,
+      action: route.action,
+      band: route.band,
+      confidence,
+      reason: decision.reason || route.label,
+      candidateId: candidate.id
+    });
     created.push(candidate);
   }
   await writeSkillCandidatesState(state);
@@ -4239,16 +4444,38 @@ async function createMemoryCandidatesFromTurn({ session, turn }) {
 
 async function createSkillCandidateFromTurn({ session, turn, assessment }) {
   const state = await readSkillCandidatesState();
+  const policy = await readAutoRoutingPolicy();
   const sourceKey = `${session.id}:${turn.id}`;
   const existing = state.candidates.find((candidate) => candidate.kind !== "memory" && `${candidate.sourceSessionId}:${candidate.sourceTurnId}` === sourceKey);
   if (existing) return existing;
   const title = compactLine(turn.user.replace(/스킬로|만들어|기억|저장/gi, " ").trim(), 38) || "대화 기반 스킬";
+  const skillSignals = learningSignals(turn.user, turn.assistant);
+  const confidence = scoreAutoRoutingCandidate({
+    baseConfidence: assessment?.shouldSkill ? 78 : 58,
+    text: `${turn.user}\n${turn.assistant}`,
+    explicit: skillSignals.explicitSkill,
+    durable: assessment?.shouldSkill || skillSignals.reusableProcedure,
+    sourceCount: Array.isArray(turn.sources) ? turn.sources.length : 0,
+    lowValue: isLowValueConversation(turn.user)
+  });
+  const route = autoRoutingDecision(confidence, policy);
+  if (route.action === "quarantine") {
+    await appendAutoRoutingLog({
+      targetType: "skill",
+      targetTitle: title,
+      action: route.action,
+      band: route.band,
+      confidence,
+      reason: assessment?.reason || "low-confidence-skill"
+    });
+    return null;
+  }
   const candidate = normalizeSkillCandidate({
     kind: "skill",
     title,
     description: assessment.reason,
     evidence: turn.user,
-    confidence: 78,
+    confidence,
     instructions: [
       "이 스킬은 사용자의 대화에서 추출한 반복 가능한 업무 방식이다.",
       "사용자 입력의 의도, 선호, 금지 조건을 먼저 확인하고 그 기준을 이후 산출물에 적용한다.",
@@ -4262,10 +4489,24 @@ async function createSkillCandidateFromTurn({ session, turn, assessment }) {
     ].join("\n"),
     agentIds: candidateAgentsFromText(`${turn.user}\n${turn.assistant}`),
     sourceSessionId: session.id,
-    sourceTurnId: turn.id
+    sourceTurnId: turn.id,
+    status: route.action === "auto_save" ? "approved" : "pending"
   });
   state.candidates.unshift(candidate);
   await writeSkillCandidatesState(state);
+  await appendAutoRoutingLog({
+    targetType: "skill",
+    targetId: candidate.id,
+    targetTitle: candidate.title,
+    action: route.action,
+    band: route.band,
+    confidence,
+    reason: assessment?.reason || route.label,
+    candidateId: candidate.id
+  });
+  if (route.action === "auto_save") {
+    return (await applySkillCandidate(candidate.id, { reviewStatus: "approved", reviewNote: "auto-routing-high-confidence" })).candidate;
+  }
   return candidate;
 }
 
@@ -4506,11 +4747,44 @@ async function recordConversationTurn({ message, result, sessionId = "" }) {
       displayPath: source.displayPath || ""
     })) : []
   };
-  if (assessment.shouldSave) turn.capture = await saveConversationMemoryToVault({ session, turn, assessment });
+  const routePolicy = await readAutoRoutingPolicy();
+  const captureSignals = learningSignals(turn.user, turn.assistant);
+  const captureConfidence = scoreAutoRoutingCandidate({
+    baseConfidence: assessment.shouldSave ? 72 : 34,
+    text: `${turn.user}\n${turn.assistant}`,
+    explicit: captureSignals.explicitSave,
+    durable: assessment.shouldSave,
+    sourceCount: turn.sources.length,
+    lowValue: isLowValueConversation(turn.user)
+  });
+  const captureRoute = autoRoutingDecision(captureConfidence, routePolicy);
+  if (assessment.shouldSave && captureRoute.action === "auto_save") {
+    turn.capture = await saveConversationMemoryToVault({ session, turn, assessment });
+    await appendAutoRoutingLog({
+      targetType: "conversation",
+      targetId: turn.id,
+      targetTitle: session.title || compactLine(turn.user, 80),
+      action: captureRoute.action,
+      band: captureRoute.band,
+      confidence: captureConfidence,
+      reason: assessment.reason,
+      relPath: turn.capture?.relPath || ""
+    });
+  } else {
+    await appendAutoRoutingLog({
+      targetType: "conversation",
+      targetId: turn.id,
+      targetTitle: session.title || compactLine(turn.user, 80),
+      action: captureRoute.action,
+      band: captureRoute.band,
+      confidence: captureConfidence,
+      reason: assessment.reason
+    });
+  }
   const memoryCandidates = await createMemoryCandidatesFromTurn({ session, turn });
   if (assessment.shouldSkill) {
     const candidate = await createSkillCandidateFromTurn({ session, turn, assessment });
-    turn.skillCandidateIds = [candidate.id];
+    if (candidate?.id) turn.skillCandidateIds = [candidate.id];
   }
   turn.skillCandidateIds = [...new Set([...turn.skillCandidateIds, ...memoryCandidates.map((candidate) => candidate.id)])];
   turn.learning = {
@@ -4518,7 +4792,9 @@ async function recordConversationTurn({ message, result, sessionId = "" }) {
       type: assessment.learningType || "skip",
       reason: assessment.reason,
       shouldSave: Boolean(assessment.shouldSave),
-      shouldSkill: Boolean(assessment.shouldSkill)
+      shouldSkill: Boolean(assessment.shouldSkill),
+      routing: captureRoute,
+      confidence: captureConfidence
     },
     memoryCandidateIds: memoryCandidates.map((candidate) => candidate.id),
     autoAppliedMemoryIds: memoryCandidates.filter((candidate) => candidate.autoAppliedAt).map((candidate) => candidate.id)
@@ -8712,6 +8988,23 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       try {
         return sendJson(response, 200, await updateMemoryState(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/auto-routing") return sendJson(response, 200, await buildAutoRoutingState());
+    if (request.method === "POST" && url.pathname === "/api/auto-routing/test") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await buildAutoRoutingTestState(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if ((request.method === "POST" || request.method === "PUT") && url.pathname === "/api/auto-routing") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateAutoRoutingState(body));
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }

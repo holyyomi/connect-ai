@@ -127,6 +127,8 @@
                 </svg>
                 <div id="collabLayer" class="collab-layer" aria-hidden="true"></div>
                 <div id="agentLayer" class="agent-layer"></div>
+                <div id="officeZoneBadges" class="office-zone-badges" aria-label="구역별 처리 건수"></div>
+                <aside id="officeAgentDetailPanel" class="office-agent-detail-panel" hidden></aside>
                 <div id="phaseBadge" class="phase-badge">대기 중</div>
               </div>
             </div>
@@ -315,7 +317,11 @@
         <div class="page-title-row"><div><h1>저장소</h1><p>옵시디언 Vault의 최근 문서, 분류, 연결 관계를 확인합니다.</p></div><button id="refreshReportsBtn" class="mini-action" type="button">새로고침</button></div>
         <section class="work-card vault-graph-card graph-hero">
           <div class="card-head"><strong>옵시디언 그래프</strong><span id="vaultGraphMeta">연결 확인 중</span></div>
-          <div class="vault-graph-shell"><svg id="vaultGraph" viewBox="0 0 960 520" role="img" aria-label="옵시디언 문서 연결 그래프"></svg></div>
+          <div class="vault-graph-tools">
+            <div id="vaultGraphLegend" class="graph-legend" aria-label="그래프 색상 범례"></div>
+            <span>휠: 줌 · 빈 곳 드래그: 이동 · 노드 드래그: 위치 조정</span>
+          </div>
+          <div class="vault-graph-shell"><svg id="vaultGraph" viewBox="0 0 1120 640" role="img" aria-label="옵시디언 문서 연결 그래프"></svg></div>
         </section>
         <div class="ops-shell vault-master-detail">
           <div class="ops-list vault-list-stack">
@@ -380,6 +386,9 @@
             <label>피할 것<textarea id="profileAvoid" rows="4" aria-label="피할 표현과 방식"></textarea></label>
             <label>MEMORY 작업/환경 기억<textarea id="profileMemory" rows="4" aria-label="MEMORY 작업/환경 기억"></textarea></label>
             <label>USER 기억<textarea id="profileUserMemory" rows="4" aria-label="USER 기억"></textarea></label>
+            <label>자동 저장 컷<input id="autoRoutingHighCut" type="number" min="1" max="100" step="1" aria-label="자동 저장 confidence 컷" /></label>
+            <label>격리 컷<input id="autoRoutingLowCut" type="number" min="0" max="99" step="1" aria-label="자동 격리 confidence 컷" /></label>
+            <div class="auto-routing-summary wide" id="autoRoutingSummary">자동 라우팅 기준 확인 중</div>
             <div class="profile-actions"><button type="submit">저장</button><button id="profileReloadBtn" type="button">다시 불러오기</button></div>
           </form>
         </section>

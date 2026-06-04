@@ -190,6 +190,47 @@ button { cursor: pointer; }
 .agent.working img, .agent.working .agent-fallback { animation: work-bob .9s ease-in-out infinite; }
 .agent.working .agent-sprite-sheet { animation: agent-idle 2.25s steps(1, end) infinite, work-bob .9s ease-in-out infinite; }
 .agent.walking.working .agent-sprite-sheet { animation: agent-idle .68s steps(1, end) infinite; }
+.office-zone-badges { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.office-zone-badge { position: absolute; display: inline-flex; min-width: 88px; align-items: center; justify-content: space-between; gap: 8px; transform: translate(-50%,-50%); border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(3,8,8,.68); box-shadow: 0 10px 24px rgba(0,0,0,.32), 0 0 18px rgba(65,242,122,.08); color: var(--dim); padding: 5px 8px; font-size: 9px; font-weight: 900; backdrop-filter: blur(7px); }
+.office-zone-badge b { color: inherit; font-size: 9px; letter-spacing: 0; }
+.office-zone-badge em { display: grid; min-width: 20px; height: 20px; place-items: center; border-radius: 50%; background: rgba(255,255,255,.08); color: var(--dim); font-style: normal; font-family: Consolas, monospace; }
+.office-zone-badge.active { border-color: rgba(65,242,122,.32); color: var(--accent); background: rgba(9,26,15,.78); }
+.office-zone-badge.active em { background: rgba(65,242,122,.16); color: var(--accent); }
+.office-zone-badge.attention { border-color: rgba(255,107,107,.38); color: var(--danger); background: rgba(31,8,10,.78); }
+.office-zone-badge.attention em { background: rgba(255,107,107,.18); color: var(--danger); }
+.agent { cursor: pointer; isolation: isolate; }
+.agent::before { content: ""; position: absolute; left: 50%; top: 46px; z-index: -1; width: 68px; height: 22px; transform: translateX(-50%); border-radius: 50%; background: radial-gradient(circle, rgba(65,242,122,.28), rgba(65,242,122,0) 72%); opacity: 0; transition: opacity .25s, background .25s; }
+.agent.desk-idle { opacity: .58; filter: grayscale(.24) drop-shadow(0 5px 7px rgba(0,0,0,.7)); }
+.agent.desk-active { z-index: 4; opacity: 1; filter: drop-shadow(0 9px 13px rgba(0,0,0,.9)) drop-shadow(0 0 10px rgba(65,242,122,.25)); }
+.agent.desk-active::before { opacity: 1; animation: desk-light-pulse 2.6s ease-in-out infinite; }
+.agent.desk-attention { z-index: 5; opacity: 1; filter: drop-shadow(0 9px 13px rgba(0,0,0,.9)) drop-shadow(0 0 12px rgba(255,107,107,.3)); }
+.agent.desk-attention::before { background: radial-gradient(circle, rgba(255,107,107,.34), rgba(255,107,107,0) 72%); opacity: 1; }
+.agent.desk-attention .ag-led { background: var(--danger); opacity: 1; box-shadow: 0 0 11px var(--danger); }
+.agent.selected strong { border-color: rgba(117,255,215,.6); box-shadow: 0 0 0 1px rgba(117,255,215,.16), 0 0 16px rgba(117,255,215,.16); }
+.agent-progress { position: absolute; left: 50%; top: -8px; width: 52px; height: 4px; transform: translateX(-50%); overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(0,0,0,.58); box-shadow: 0 5px 14px rgba(0,0,0,.32); }
+.agent-progress i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, rgba(65,242,122,.75), rgba(117,255,215,.95)); transition: width .28s ease; }
+.agent.desk-attention .agent-progress i { background: linear-gradient(90deg, rgba(255,107,107,.7), rgba(255,191,77,.95)); }
+.office-agent-detail-panel { position: absolute; top: 14px; right: 14px; bottom: 14px; z-index: 7; display: grid; width: min(306px,36%); align-content: start; gap: 12px; overflow: auto; border: 1px solid rgba(117,255,215,.2); border-radius: 10px; background: rgba(3,8,8,.84); box-shadow: 0 22px 46px rgba(0,0,0,.46), 0 0 22px rgba(65,242,122,.08); padding: 14px; backdrop-filter: blur(12px); }
+.office-agent-detail-panel[hidden] { display: none; }
+.office-agent-panel-close { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; background: rgba(255,255,255,.05); color: var(--dim); font-weight: 900; cursor: pointer; }
+.office-agent-detail-panel .detail-head { padding-right: 28px; }
+.office-agent-detail-panel .detail-head h2 { margin: 6px 0 5px; color: var(--bright); font-size: 18px; line-height: 1.15; }
+.office-agent-detail-panel .detail-head p { margin: 0; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.detail-kicker.active { border-color: rgba(65,242,122,.28); color: var(--accent); background: rgba(65,242,122,.08); }
+.detail-kicker.attention { border-color: rgba(255,107,107,.3); color: var(--danger); background: rgba(255,107,107,.08); }
+.office-agent-live-list { display: grid; gap: 8px; margin: 0; }
+.office-agent-live-list div { display: grid; gap: 4px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: rgba(255,255,255,.035); padding: 8px; }
+.office-agent-live-list dt { color: var(--dim); font-size: 9px; font-weight: 900; text-transform: uppercase; }
+.office-agent-live-list dd { margin: 0; color: var(--text); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.office-agent-profile-blocks { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.office-agent-profile-blocks article { padding: 8px; }
+.office-agent-panel-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.office-agent-panel-actions button { min-height: 32px; border: 1px solid rgba(65,242,122,.25); border-radius: 8px; background: rgba(65,242,122,.09); color: var(--accent); font-weight: 900; cursor: pointer; }
+.office-agent-panel-actions button:hover { border-color: rgba(65,242,122,.4); background: rgba(65,242,122,.14); }
+@keyframes desk-light-pulse {
+  0%, 100% { opacity: .68; transform: translateX(-50%) scale(.96); }
+  50% { opacity: 1; transform: translateX(-50%) scale(1.06); }
+}
 @keyframes agent-idle {
   0%, 19.99% { background-position: 0 0; }
   20%, 39.99% { background-position: 33.333% 0; }
@@ -790,6 +831,17 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
 .review-more-actions {
   background: rgba(0,0,0,.16);
 }
+.auto-routing-summary {
+  min-height: 38px;
+  border: 1px solid rgba(65,242,122,.16);
+  border-radius: var(--radius-card);
+  background: rgba(65,242,122,.045);
+  color: var(--dim);
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.45;
+}
 .agent-list {
   grid-template-columns: 1fr;
 }
@@ -822,39 +874,93 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
   border-color: rgba(65,242,122,.16);
   box-shadow: 0 22px 54px rgba(0,0,0,.36), inset 0 0 0 1px rgba(65,242,122,.035);
 }
+.vault-graph-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+.vault-graph-tools > span {
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 800;
+}
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 26px;
+  align-items: center;
+}
+.graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 900;
+}
+.graph-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 10px currentColor;
+}
+.graph-legend b {
+  color: var(--dim);
+  font-family: Consolas, monospace;
+  font-size: 10px;
+}
 .vault-graph-shell {
   height: min(62vh, 660px);
-  min-height: 430px;
+  min-height: 520px;
   border-color: rgba(65,242,122,.16);
   background:
-    radial-gradient(circle at 50% 46%, rgba(65,242,122,.1), rgba(65,242,122,.025) 34%, rgba(0,0,0,.06) 68%),
+    radial-gradient(circle at 50% 46%, rgba(125,211,252,.075), rgba(65,242,122,.026) 34%, rgba(0,0,0,.06) 68%),
     #030604;
+  cursor: grab;
 }
 .vault-graph-shell svg {
-  overflow: visible;
+  overflow: hidden;
+  touch-action: none;
+}
+.graph-hit-area {
+  fill: transparent;
+  pointer-events: all;
+}
+.graph-viewport {
+  transform-origin: 0 0;
 }
 .graph-edges line {
-  stroke: rgba(65,242,122,.22);
-  stroke-width: 1.15;
+  stroke: rgba(218,255,230,.24);
+  stroke-width: .85;
+  stroke-linecap: round;
   transition: opacity .18s ease, stroke .18s ease, stroke-width .18s ease;
 }
 .graph-edges line.dim {
-  opacity: .14;
+  opacity: .08;
 }
 .graph-edges line.is-active {
-  stroke: rgba(65,242,122,.72);
-  stroke-width: 1.8;
+  stroke: rgba(255,255,255,.62);
+  stroke-width: 1.35;
 }
 .graph-node {
   cursor: pointer;
-  transition: opacity .18s ease;
+  transition: opacity .18s ease, filter .18s ease;
 }
 .graph-node circle {
-  fill: rgba(65,242,122,.2);
-  stroke: rgba(65,242,122,.84);
-  stroke-width: 1.4;
+  fill-opacity: .2;
+  stroke-opacity: .9;
+  stroke-width: 1.45;
   filter: url(#graphGlow);
-  transition: fill .18s ease, stroke-width .18s ease, r .18s ease;
+  transition: fill-opacity .18s ease, stroke-width .18s ease;
 }
 .graph-node text {
   opacity: 0;
@@ -868,15 +974,27 @@ textarea, select { width: 100%; border: 1px solid rgba(255,255,255,.1); border-r
   transition: opacity .14s ease;
 }
 .graph-node.dim {
-  opacity: .18;
+  opacity: .16;
 }
-.graph-node.is-labeled text {
+.graph-node.is-labeled text,
+.graph-node.is-hub-label text,
+.graph-node.is-zoom-label text {
   opacity: 1;
 }
 .graph-node.is-active circle,
 .graph-node.is-selected circle {
-  fill: rgba(65,242,122,.36);
+  fill-opacity: .38;
   stroke-width: 2.2;
+}
+.graph-node.is-selected {
+  filter: drop-shadow(0 0 12px rgba(255,255,255,.18));
+}
+.graph-node.is-dragging circle {
+  fill-opacity: .52;
+  stroke-width: 2.6;
+}
+.vault-graph-shell:has(.graph-node.is-dragging) {
+  cursor: grabbing;
 }
 .graph-detail-panel {
   min-height: 360px;
@@ -1026,6 +1144,8 @@ textarea, select, input,
   .tabs { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .office-kpi-grid, .agent-profile-blocks, .detail-profile-blocks, .dashboard-grid, .review-metric-grid, .review-ops-grid, .agent-list, .settings-grid, .vault-stats, .rag-index-stats, .rag-search-row, .agent-metrics, .recent-reports, .api-diagnostic-row, .automation-dashboard, .ops-kpi-row, .agent-screen-kpis, .channel-send-form, .quarantine-item, .automation-trigger-item, .channel-item { grid-template-columns: 1fr; }
   .vault-graph-card .vault-graph-shell { min-height: 320px; height: 380px; }
+  .office-agent-detail-panel { left: 10px; right: 10px; top: auto; bottom: 10px; width: auto; max-height: 58%; }
+  .office-zone-badge { min-width: 68px; padding: 4px 6px; }
   .chat-composer { grid-template-columns: 1fr; }
   .main-panel { padding: 12px; }
   .page-title-row { align-items: flex-start; flex-direction: column; }
