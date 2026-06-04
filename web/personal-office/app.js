@@ -70,6 +70,8 @@ const nodes = {
   reviewPage: document.getElementById("page-review"),
   reviewStatus: document.getElementById("reviewStatus"),
   reviewRefreshBtn: document.getElementById("reviewRefreshBtn"),
+  reviewSummaryLine: document.getElementById("reviewSummaryLine"),
+  reviewSectionTabs: document.getElementById("reviewSectionTabs"),
   reviewQueueCount: document.getElementById("reviewQueueCount"),
   reviewQueueMeta: document.getElementById("reviewQueueMeta"),
   reviewActiveCount: document.getElementById("reviewActiveCount"),
@@ -117,8 +119,14 @@ const nodes = {
   recentReports: document.getElementById("recentReports"),
   portfolioStatus: document.getElementById("portfolioStatus"),
   portfolioList: document.getElementById("portfolioList"),
+  quarantineStatus: document.getElementById("quarantineStatus"),
+  quarantineList: document.getElementById("quarantineList"),
   vaultExportStatus: document.getElementById("vaultExportStatus"),
   refreshReportsBtn: document.getElementById("refreshReportsBtn"),
+  badgeReview: document.getElementById("badgeReview"),
+  badgeAutomation: document.getElementById("badgeAutomation"),
+  badgeSkills: document.getElementById("badgeSkills"),
+  badgeMemory: document.getElementById("badgeMemory"),
   serverStatus: document.getElementById("serverStatus"),
   aiStatus: document.getElementById("aiStatus"),
   codexStatus: document.getElementById("codexStatus"),
@@ -162,6 +170,10 @@ const nodes = {
   dashboardEconomicsMeta: document.getElementById("dashboardEconomicsMeta"),
   dashboardAttention: document.getElementById("dashboardAttention"),
   dashboardAttentionMeta: document.getElementById("dashboardAttentionMeta"),
+  dashboardActiveAgents: document.getElementById("dashboardActiveAgents"),
+  dashboardRunningWork: document.getElementById("dashboardRunningWork"),
+  dashboardPendingApprovals: document.getElementById("dashboardPendingApprovals"),
+  dashboardRecentQuality: document.getElementById("dashboardRecentQuality"),
   dashboardReportCount: document.getElementById("dashboardReportCount"),
   dashboardCaptureCount: document.getElementById("dashboardCaptureCount"),
   dashboardCodexMode: document.getElementById("dashboardCodexMode"),
@@ -177,6 +189,8 @@ const nodes = {
   settingsVaultPath: document.getElementById("settingsVaultPath"),
   settingsToolStatus: document.getElementById("settingsToolStatus"),
   skillStatusSummary: document.getElementById("skillStatusSummary"),
+  activeSkillStatus: document.getElementById("activeSkillStatus"),
+  activeSkillList: document.getElementById("activeSkillList"),
   connectionStatus: document.getElementById("connectionStatus"),
   connectionList: document.getElementById("connectionList"),
   connectionForm: document.getElementById("connectionForm"),
@@ -190,6 +204,7 @@ const nodes = {
   connectionEnabled: document.getElementById("connectionEnabled"),
   connectionResetBtn: document.getElementById("connectionResetBtn"),
   connectionCandidates: document.getElementById("connectionCandidates"),
+  automationDashboardSummary: document.getElementById("automationDashboardSummary"),
   automationTriggerSummary: document.getElementById("automationTriggerSummary"),
   automationTriggerStatus: document.getElementById("automationTriggerStatus"),
   automationTriggerList: document.getElementById("automationTriggerList"),
@@ -202,7 +217,13 @@ const nodes = {
   automationTriggerPatterns: document.getElementById("automationTriggerPatterns"),
   automationTriggerMessage: document.getElementById("automationTriggerMessage"),
   automationTriggerEnabled: document.getElementById("automationTriggerEnabled"),
+  automationTriggerChannel: document.getElementById("automationTriggerChannel"),
   automationTriggerResetBtn: document.getElementById("automationTriggerResetBtn"),
+  channelStatus: document.getElementById("channelStatus"),
+  channelList: document.getElementById("channelList"),
+  channelSendForm: document.getElementById("channelSendForm"),
+  channelSendText: document.getElementById("channelSendText"),
+  channelSendBtn: document.getElementById("channelSendBtn"),
   harnessScopeList: document.getElementById("harnessScopeList"),
   braveKeyGuide: document.getElementById("braveKeyGuide"),
   braveKeyStatus: document.getElementById("braveKeyStatus"),
@@ -231,9 +252,12 @@ const nodes = {
 let phaseTimer = null;
 let officeEndTimer = null;
 let officeMoveTimers = [];
+let officeDashboardState = {};
 let skillsState = { agents: [], tools: [] };
 let connectionsState = { connections: [], candidates: [] };
 let automationTriggersState = { triggers: [], summary: {} };
+let channelsState = { channels: [], summary: {} };
+let quarantineState = { documents: [], summary: {} };
 let latestOfficeTask = "";
 let skillUpdateBusy = false;
 let officeJobPollTimer = null;
@@ -246,6 +270,7 @@ let skillCandidatesState = { candidates: [] };
 let editingSkillCandidateId = "";
 let reviewEditTarget = null;
 let reviewAutomationItemsState = [];
+let activeReviewSection = "pending";
 let profileState = { profile: null };
 let taskQueueLoadedOnce = false;
 const completedOfficeJobIds = new Set();
@@ -291,9 +316,11 @@ function cleanDisplayPath(value) {
   return String(value || "").replace(/^50_Outputs\/Web Office\//, "50_Outputs/기존 업무 보고서/");
 }
 
-function switchPage(page) {
+function switchPage(page, options = {}) {
+  const focus = String(options.focus || "");
   document.querySelectorAll(".app-tab").forEach((tab) => {
-    const active = tab.dataset.page === page;
+    const tabFocus = String(tab.dataset.focus || "");
+    const active = tab.dataset.page === page && (focus ? tabFocus === focus : !tabFocus);
     tab.classList.toggle("active", active);
     if (active) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
@@ -304,6 +331,8 @@ function switchPage(page) {
     section.hidden = !active;
     section.setAttribute("aria-hidden", active ? "false" : "true");
   });
+  const scrollTarget = options.scrollTarget ? document.getElementById(options.scrollTarget) : null;
+  if (scrollTarget) window.setTimeout(() => scrollTarget.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
 }
 
 function addLog(text, agentId = "ceo", type = "") {
@@ -636,6 +665,8 @@ function agentSkillSummary(skills = []) {
 function renderAgentsList() {
   if (!nodes.agentList) return;
   const skillMap = new Map((skillsState.agents || []).map((agent) => [agent.id, agent.skills || []]));
+  const countMap = new Map((officeDashboardState.workflow?.agentCounts || []).map((agent) => [agent.id, Number(agent.count || 0)]));
+  const activeIds = new Set(officeDashboardState.workflow?.activeAgentIds || []);
   nodes.agentList.innerHTML = agents.map((agent) => {
     const skills = skillMap.get(agent.id) || [];
     const assignedIds = new Set(skills.map((skill) => skill.id));
@@ -643,6 +674,9 @@ function renderAgentsList() {
     const portrait = `/assets/pixel/characters/${agent.id}_portrait.png`;
     const summary = agentSkillSummary(skills);
     const engine = skillsState.agents?.find((item) => item.id === agent.id)?.engine || { id: "codex", label: "Codex CLI" };
+    const taskCount = countMap.get(agent.id) || 0;
+    const active = activeIds.has(agent.id);
+    const enabledSkills = skills.filter((skill) => skill.enabled !== false && skill.status !== "disabled");
     return `
       <article class="agent-card" data-agent-id="${escapeHtml(agent.id)}">
         <div class="agent-card-head">
@@ -653,20 +687,50 @@ function renderAgentsList() {
             <small>${escapeHtml(agent.roleShort || agent.role)}</small>
           </div>
         </div>
-        <p>${escapeHtml(agent.work)}</p>
-        <label class="agent-engine-row">
-          <span>담당 엔진</span>
-          <select data-agent-engine-select="${escapeHtml(agent.id)}">${renderEngineOptions(engine.id || "codex")}</select>
-        </label>
-        <div class="agent-skill-summary ${escapeHtml(summary.tone)}">${escapeHtml(summary.text)}</div>
-        <div class="agent-skill-list">${skills.length ? skills.map((skill) => renderAgentSkillItem(agent.id, skill)).join("") : renderSkillBadges([])}</div>
-        <div class="agent-skill-controls">
-          <select data-agent-tool-select="${escapeHtml(agent.id)}" ${hasOptions ? "" : "disabled"}>${renderToolOptions(agent.id, assignedIds)}</select>
-          <button class="mini-action" type="button" data-skill-action="add" data-agent-id="${escapeHtml(agent.id)}" ${hasOptions ? "" : "disabled"}>추가</button>
+        <div class="agent-roster-meta">
+          <b class="agent-state ${active ? "active" : ""}">${active ? "Active" : "대기"}</b>
+          <span>${taskCount}개 작업</span>
         </div>
+        <details class="agent-detail">
+          <summary>상세</summary>
+          <p>${escapeHtml(agent.work)}</p>
+          <div class="agent-profile-blocks">
+            <article><span>Memory</span><strong>${taskCount}개</strong><small>누적 작업량</small></article>
+            <article><span>Soul</span><strong>${escapeHtml(engine.label || engine.id || "Codex")}</strong><small>담당 엔진</small></article>
+            <article><span>Rules</span><strong>${enabledSkills.length}개</strong><small>활성 스킬</small></article>
+            <article><span>Guardrails</span><strong>${skills.filter((skill) => skill.requiresConfirmation).length}개</strong><small>확인 필요 도구</small></article>
+          </div>
+          <label class="agent-engine-row">
+            <span>담당 엔진</span>
+            <select data-agent-engine-select="${escapeHtml(agent.id)}">${renderEngineOptions(engine.id || "codex")}</select>
+          </label>
+          <div class="agent-skill-summary ${escapeHtml(summary.tone)}">${escapeHtml(summary.text)}</div>
+          <div class="agent-skill-list">${skills.length ? skills.map((skill) => renderAgentSkillItem(agent.id, skill)).join("") : renderSkillBadges([])}</div>
+          <div class="agent-skill-controls">
+            <select data-agent-tool-select="${escapeHtml(agent.id)}" ${hasOptions ? "" : "disabled"}>${renderToolOptions(agent.id, assignedIds)}</select>
+            <button class="mini-action" type="button" data-skill-action="add" data-agent-id="${escapeHtml(agent.id)}" ${hasOptions ? "" : "disabled"}>추가</button>
+          </div>
+        </details>
       </article>
     `;
   }).join("");
+}
+
+function handleAgentRosterAction(event) {
+  const button = event.target.closest("[data-agent-roster-action]");
+  if (!button) return;
+  const action = button.dataset.agentRosterAction || "";
+  if (action === "assign") {
+    switchPage("chat");
+    if (nodes.chatInput) {
+      nodes.chatInput.value = "/업무 ";
+      nodes.chatInput.focus();
+    }
+    return;
+  }
+  if (action === "add") {
+    setAgentSkillStatus("직원 추가는 specialistRoles 데이터 모델 확장 후 활성화합니다. 현재는 작업 배정을 먼저 사용하세요.", "warn");
+  }
 }
 
 function renderToolStatus(container, tools = []) {
@@ -713,6 +777,40 @@ function renderSkillsState(state = skillsState) {
     return acc;
   }, {});
   if (nodes.skillStatusSummary) nodes.skillStatusSummary.textContent = `정상 ${counts.normal || 0} · 키 필요 ${counts.key_required || 0} · 미연결 ${counts.disconnected || 0}`;
+}
+
+function renderActiveSkillsState(state = {}) {
+  const skills = Array.isArray(state.skills) ? state.skills : [];
+  const summary = state.summary || {};
+  if (nodes.activeSkillStatus) nodes.activeSkillStatus.textContent = `${Number(summary.active || skills.length || 0)}개 활성 · 재사용 ${Number(summary.totalReuse || 0)}회`;
+  if (!nodes.activeSkillList) return;
+  if (!skills.length) {
+    nodes.activeSkillList.innerHTML = '<div class="empty">승인된 학습 스킬이 없습니다.</div>';
+    return;
+  }
+  nodes.activeSkillList.innerHTML = skills.map((skill) => `
+    <article class="active-skill-item">
+      <div><strong>${escapeHtml(skill.label || skill.id)}</strong><span>${escapeHtml((skill.agents || []).join(", ") || "담당 미지정")}</span></div>
+      <b>${Number(skill.reuseCount || 0)}회</b>
+      <small>${skill.lastUsedAt ? `최근 ${escapeHtml(formatShortTime(skill.lastUsedAt))}` : "아직 재사용 없음"}</small>
+      ${skill.instructionsPreview ? `<p>${escapeHtml(skill.instructionsPreview)}</p>` : ""}
+    </article>
+  `).join("");
+}
+
+async function loadActiveSkills() {
+  if (!nodes.activeSkillList && !nodes.activeSkillStatus) return null;
+  try {
+    const response = await apiFetch("/api/skills", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderActiveSkillsState(data);
+    return data;
+  } catch (error) {
+    if (nodes.activeSkillStatus) nodes.activeSkillStatus.textContent = "로드 실패";
+    if (nodes.activeSkillList) nodes.activeSkillList.innerHTML = `<div class="empty">활성 스킬 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
 }
 
 function profileListToText(value = []) {
@@ -1063,13 +1161,14 @@ function renderAutomationTriggerCard(trigger) {
     : trigger.lastResult?.jobId
       ? `작업: ${trigger.lastResult.jobId}`
       : trigger.lastResult?.modeLabel || "";
+  const channelText = trigger.sendToChannel ? "채널 발송 켜짐" : "";
   return `
     <article class="automation-trigger-item ${escapeHtml(trigger.status || "")}">
       <div>
         <strong>${escapeHtml(trigger.title || trigger.id)}</strong>
         <span>${escapeHtml(typeLabel)} · ${escapeHtml(trigger.statusLabel || trigger.status || "대기")}</span>
         <small>${escapeHtml(trigger.detail || "")}</small>
-        <small>${escapeHtml([nextText, lastText, resultText].filter(Boolean).join(" · "))}</small>
+        <small>${escapeHtml([nextText, lastText, resultText, channelText].filter(Boolean).join(" · "))}</small>
         <small>${escapeHtml([retryText, retryPolicyText].filter(Boolean).join(" · "))}</small>
         ${renderAutomationReadiness(trigger.readiness)}
         ${renderAutomationTriggerHistory(trigger.history || [])}
@@ -1085,10 +1184,33 @@ function renderAutomationTriggerCard(trigger) {
   `;
 }
 
+function renderAutomationDashboardSummary(summary = {}, triggers = []) {
+  if (!nodes.automationDashboardSummary) return;
+  const nextRuns = triggers
+    .filter((trigger) => trigger.enabled && trigger.nextRunAt)
+    .sort((a, b) => new Date(a.nextRunAt).getTime() - new Date(b.nextRunAt).getTime())
+    .slice(0, 2)
+    .map((trigger) => `${trigger.title || trigger.id} ${formatTriggerDate(trigger.nextRunAt)}`)
+    .join(" · ");
+  nodes.automationDashboardSummary.innerHTML = [
+    ["실행 중", Number(summary.running || 0), "running"],
+    ["재시도", Number(summary.retrying || 0), "retrying"],
+    ["실패", Number(summary.failed || 0), "failed"],
+    ["주의", Number(summary.attention || summary.readinessBlocked || 0), "attention"]
+  ].map(([label, value, tone]) => `
+    <article class="automation-summary-card ${value ? tone : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value}</strong>
+      <small>${tone === "attention" && nextRuns ? escapeHtml(nextRuns) : value ? "상태 확인 필요" : "정상"}</small>
+    </article>
+  `).join("");
+}
+
 function renderAutomationTriggersState(state = automationTriggersState) {
   automationTriggersState = state || { triggers: [], summary: {} };
   const triggers = automationTriggersState.triggers || [];
   const summary = automationTriggersState.summary || {};
+  renderAutomationDashboardSummary(summary, triggers);
   if (nodes.automationTriggerSummary) {
     nodes.automationTriggerSummary.textContent = summary.running
       ? `${summary.running}개 실행`
@@ -1160,6 +1282,7 @@ function resetAutomationTriggerForm() {
   nodes.automationTriggerPatterns.value = "*.md";
   nodes.automationTriggerMessage.value = "";
   nodes.automationTriggerEnabled.checked = false;
+  if (nodes.automationTriggerChannel) nodes.automationTriggerChannel.checked = false;
   nodes.automationTriggerForm.classList.remove("editing");
 }
 
@@ -1173,6 +1296,7 @@ function fillAutomationTriggerForm(trigger) {
   nodes.automationTriggerPatterns.value = (trigger.watch?.patterns || ["*.md"]).join(", ");
   nodes.automationTriggerMessage.value = trigger.message || "";
   nodes.automationTriggerEnabled.checked = trigger.enabled === true;
+  if (nodes.automationTriggerChannel) nodes.automationTriggerChannel.checked = trigger.sendToChannel === true;
   nodes.automationTriggerForm.classList.add("editing");
   nodes.automationTriggerTitle.focus();
 }
@@ -1221,6 +1345,7 @@ async function handleAutomationTriggerSubmit(event) {
         title: nodes.automationTriggerTitle.value,
         type: nodes.automationTriggerType.value,
         enabled: nodes.automationTriggerEnabled.checked,
+        sendToChannel: nodes.automationTriggerChannel?.checked === true,
         message: nodes.automationTriggerMessage.value,
         schedule: { kind: "daily", time: nodes.automationTriggerTime.value || "09:00" },
         watch: {
@@ -1269,6 +1394,77 @@ async function handleAutomationTriggerClick(event) {
     if (nodes.automationTriggerStatus) nodes.automationTriggerStatus.textContent = `실행 실패: ${error.message}`;
   } finally {
     button.disabled = false;
+  }
+}
+
+function renderChannelsState(state = channelsState) {
+  channelsState = state || { channels: [], summary: {} };
+  const channels = Array.isArray(channelsState.channels) ? channelsState.channels : [];
+  const connected = channels.filter((channel) => channel.connected);
+  if (nodes.channelStatus) {
+    nodes.channelStatus.textContent = connected.length
+      ? `${connected.length}개 연결됨`
+      : channels.length ? "끊김" : "미등록";
+  }
+  if (nodes.channelSendBtn) nodes.channelSendBtn.disabled = !connected.length;
+  if (!nodes.channelList) return;
+  if (!channels.length) {
+    nodes.channelList.innerHTML = '<div class="empty">등록된 채널이 없습니다.</div>';
+    return;
+  }
+  nodes.channelList.innerHTML = channels.map((channel) => `
+    <article class="channel-item ${escapeHtml(channel.tone || "muted")}">
+      <div>
+        <strong>${escapeHtml(channel.name || channel.id)}</strong>
+        <span>${escapeHtml(channel.connected ? "연결됨" : "끊김")}${channel.maskedIdentifier ? ` · ${escapeHtml(channel.maskedIdentifier)}` : ""}</span>
+        <small>${escapeHtml(channel.detail || "")}</small>
+      </div>
+      <b>${escapeHtml(channel.statusLabel || channel.status || "")}</b>
+    </article>
+  `).join("");
+}
+
+async function loadChannelsState() {
+  if (!nodes.channelList) return null;
+  try {
+    if (nodes.channelStatus) nodes.channelStatus.textContent = "확인 중";
+    const response = await apiFetch("/api/channels", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderChannelsState(data);
+    return data;
+  } catch (error) {
+    if (nodes.channelStatus) nodes.channelStatus.textContent = "로드 실패";
+    nodes.channelList.innerHTML = `<div class="empty">채널 상태 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
+async function handleChannelSend(event) {
+  event.preventDefault();
+  const channel = (channelsState.channels || []).find((item) => item.connected);
+  const text = (nodes.channelSendText?.value || "").trim() || "YOMI Office 채널 연결 점검";
+  if (!channel?.id) {
+    if (nodes.channelStatus) nodes.channelStatus.textContent = "연결된 채널 없음";
+    return;
+  }
+  if (nodes.channelSendBtn) nodes.channelSendBtn.disabled = true;
+  try {
+    if (nodes.channelStatus) nodes.channelStatus.textContent = "발송 중";
+    const response = await apiFetch(`/api/channels/${encodeURIComponent(channel.id)}/send`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    if (nodes.channelStatus) nodes.channelStatus.textContent = "발송 성공";
+    if (nodes.channelSendText) nodes.channelSendText.value = "";
+    await loadChannelsState();
+  } catch (error) {
+    if (nodes.channelStatus) nodes.channelStatus.textContent = `발송 실패: ${error.message}`;
+  } finally {
+    if (nodes.channelSendBtn) nodes.channelSendBtn.disabled = !(channelsState.channels || []).some((item) => item.connected);
   }
 }
 
@@ -1393,6 +1589,96 @@ function handleRagQualityClick(event) {
   const button = event.target.closest("button[data-rag-quality-action]");
   if (!button || !nodes.ragQualityList?.contains(button)) return;
   updateRagQualityAction(button.dataset.ragQualityAction || "", button.dataset.relPath || "", button);
+}
+
+function quarantineReasonLabel(reason = "") {
+  return ({
+    "command-or-low-value-autosave": "명령형/저가치 자동 저장",
+    "requested-quarantine": "요청 격리",
+    "encoding-noisy-title": "깨진 제목 의심",
+    "manual-review": "수동 검토",
+    "quality quarantine": "격리 품질"
+  })[reason] || reason || "격리";
+}
+
+function renderQuarantineState(state = quarantineState) {
+  quarantineState = state || { documents: [], summary: {} };
+  const docs = Array.isArray(quarantineState.documents) ? quarantineState.documents : [];
+  const summary = quarantineState.summary || {};
+  if (nodes.quarantineStatus) {
+    nodes.quarantineStatus.textContent = quarantineState.connected === false
+      ? "Vault 대기"
+      : docs.length
+        ? `${Number(summary.total || docs.length)}건`
+        : "비어 있음";
+  }
+  if (!nodes.quarantineList) return;
+  if (!docs.length) {
+    nodes.quarantineList.innerHTML = '<div class="empty">격리 문서가 없습니다.</div>';
+    return;
+  }
+  nodes.quarantineList.innerHTML = docs.slice(0, 12).map((doc) => `
+    <article class="quarantine-item">
+      <div>
+        <strong>${escapeHtml(doc.title || "격리 문서")}</strong>
+        <span>품질 ${Number(doc.qualityScore || 0)}점 · ${escapeHtml(quarantineReasonLabel(doc.reason))}</span>
+        <small>${escapeHtml(doc.displayPath || doc.relPath || "")}</small>
+      </div>
+      <div class="quarantine-actions">
+        <button type="button" data-quarantine-action="promote" data-rel-path="${escapeHtml(doc.relPath || "")}">승격</button>
+        <button type="button" data-quarantine-action="discard" data-rel-path="${escapeHtml(doc.relPath || "")}">보관</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+async function loadQuarantineState() {
+  if (!nodes.quarantineList) return null;
+  try {
+    if (nodes.quarantineStatus) nodes.quarantineStatus.textContent = "확인 중";
+    const response = await apiFetch("/api/quarantine?limit=30", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderQuarantineState(data);
+    return data;
+  } catch (error) {
+    if (nodes.quarantineStatus) nodes.quarantineStatus.textContent = "로드 실패";
+    nodes.quarantineList.innerHTML = `<div class="empty">격리 문서 로드 실패: ${escapeHtml(error.message)}</div>`;
+    return null;
+  }
+}
+
+async function updateQuarantineAction(action, relPath, button) {
+  if (!action || !relPath) return;
+  const confirmed = window.confirm(action === "promote"
+    ? "이 격리 문서를 RAG 포함 문서로 승격하고 50_Outputs로 이동합니다. 진행할까요?"
+    : "이 격리 문서를 삭제하지 않고 archived:true로 보관 폴더에 이동합니다. 진행할까요?");
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  try {
+    if (nodes.quarantineStatus) nodes.quarantineStatus.textContent = action === "promote" ? "승격 중" : "보관 중";
+    const response = await apiFetch("/api/quarantine", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, relPath, reason: "archived-from-quarantine-ui", limit: 30 })
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+    renderQuarantineState(data.state || {});
+    if (data.rag) renderRagState(data.rag);
+    if (nodes.quarantineStatus) nodes.quarantineStatus.textContent = data.needsReindex ? "처리 완료 · 인덱스 갱신 필요" : "처리 완료";
+    await loadRagExclusions();
+  } catch (error) {
+    if (nodes.quarantineStatus) nodes.quarantineStatus.textContent = `처리 실패: ${error.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function handleQuarantineClick(event) {
+  const button = event.target.closest("button[data-quarantine-action]");
+  if (!button || !nodes.quarantineList?.contains(button)) return;
+  updateQuarantineAction(button.dataset.quarantineAction || "", button.dataset.relPath || "", button);
 }
 
 function renderApiDiagnostics(rows = []) {
@@ -1671,6 +1957,29 @@ function economicsInputValue(value) {
   return value == null || value === "" ? "" : String(Math.round(Number(value || 0)));
 }
 
+function setNavBadge(node, value) {
+  if (!node) return;
+  const count = Number(value || 0);
+  node.hidden = count <= 0;
+  node.textContent = count > 99 ? "99+" : String(count);
+}
+
+function updateNavigationBadges(data = {}) {
+  const badges = data.badges || {};
+  setNavBadge(nodes.badgeReview, badges.reviewPending);
+  setNavBadge(nodes.badgeAutomation, Number(badges.automationAttention || 0) + Number(badges.automationRunning || 0));
+  setNavBadge(nodes.badgeSkills, badges.activeSkills);
+  setNavBadge(nodes.badgeMemory, badges.memoryCount);
+}
+
+function updateDashboardKpis(data = {}) {
+  const kpis = data.kpis || {};
+  if (nodes.dashboardActiveAgents) nodes.dashboardActiveAgents.textContent = `${Number(kpis.activeAgents || 0)}명`;
+  if (nodes.dashboardRunningWork) nodes.dashboardRunningWork.textContent = `${Number(kpis.runningWork || 0)}건`;
+  if (nodes.dashboardPendingApprovals) nodes.dashboardPendingApprovals.textContent = `${Number(kpis.pendingApprovals || 0)}개`;
+  if (nodes.dashboardRecentQuality) nodes.dashboardRecentQuality.textContent = `${Number(kpis.recentQualityScore || 0)}점`;
+}
+
 function updateDashboardFocus(data) {
   const current = data.workflow?.current || {};
   const currentActive = ["running", "evaluating"].includes(current.status);
@@ -1722,7 +2031,10 @@ function updateDashboardFocus(data) {
 }
 
 function updateDashboard(data) {
+  officeDashboardState = data || {};
   if (nodes.serverStatus) nodes.serverStatus.textContent = "서버 정상";
+  updateDashboardKpis(data);
+  updateNavigationBadges(data);
   if (nodes.dashboardReportCount) nodes.dashboardReportCount.textContent = data.counts?.webOfficeReports ?? 0;
   if (nodes.dashboardCaptureCount) nodes.dashboardCaptureCount.textContent = data.counts?.autoCaptures ?? 0;
   if (nodes.dashboardCodexMode) nodes.dashboardCodexMode.textContent = data.codex?.available ? "정상" : "대기";
@@ -2051,8 +2363,20 @@ function reviewDecisionStats(decisionRows = []) {
   };
 }
 
-function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recordsByJobId = new Map(), decisionsByKey = new Map()) {
+function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recordsByJobId = new Map(), decisionsByKey = new Map(), skillReviewSummary = {}) {
   const stats = reviewDecisionStats(decisionRows);
+  const skillReviewTotal = Number(skillReviewSummary.reviewTotal || 0);
+  if (skillReviewTotal) {
+    stats.total += skillReviewTotal;
+    stats.approved += Number(skillReviewSummary.reviewApproved || 0);
+    stats.rejected += Number(skillReviewSummary.reviewRejected || 0);
+    stats.needsRevision += Number(skillReviewSummary.reviewNeedsRevision || 0);
+    stats.edited += Number(skillReviewSummary.reviewDiffs || 0);
+    stats.resolved += skillReviewTotal;
+    stats.revisionLike += Number(skillReviewSummary.reviewRevisionLike || 0);
+    stats.approvalRate = stats.resolved ? Math.round((stats.approved / stats.resolved) * 100) : null;
+    stats.revisionRate = stats.resolved ? Math.round((stats.revisionLike / stats.resolved) * 100) : null;
+  }
   const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status));
   const trustRows = completedJobs.map((job) => {
     const record = recordsByJobId.get(job.id);
@@ -2068,7 +2392,7 @@ function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recor
     return item.trust >= 86 && highPerformance && approvedOrUnreviewed && !blocked;
   });
   let ladder = "수동";
-  let ladderMeta = "검수 기록 대기";
+  let ladderMeta = "검토 기록 대기";
   let recommendation = "먼저 5건 이상을 승인/반려/수정필요로 남겨 기준 데이터를 만드세요.";
   const revisionRate = stats.revisionRate ?? 0;
   if (stats.resolved >= 15 && stats.approved >= 10 && revisionRate <= 5 && avgPerformance >= 90 && autoCandidates.length >= 5) {
@@ -2078,13 +2402,13 @@ function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recor
   } else if (stats.resolved >= 8 && stats.approved >= 5 && revisionRate <= 15 && avgPerformance >= 82 && autoCandidates.length >= 2) {
     ladder = "조건부 자동";
     ladderMeta = `승인 ${stats.approved}건 · 후보 ${autoCandidates.length}건`;
-    recommendation = "고신뢰 작업은 일괄 승인 후보로 묶고, 저신뢰 작업만 요미 검수로 에스컬레이션하세요.";
+    recommendation = "고신뢰 작업은 일괄 승인 후보로 묶고, 저신뢰 작업만 요미 검토로 에스컬레이션하세요.";
   } else if (stats.resolved >= 2 || records.length) {
     ladder = "감독";
-    ladderMeta = stats.resolved ? `검수 ${stats.resolved}건 · 수정률 ${revisionRate}%` : `성과기록 ${records.length}건`;
+    ladderMeta = stats.resolved ? `검토 ${stats.resolved}건 · 수정률 ${revisionRate}%` : `성과기록 ${records.length}건`;
     recommendation = revisionRate >= 30
       ? "수정률이 높습니다. 직원 프롬프트나 완료 기준을 먼저 보강하고 자동화 승급은 막아두세요."
-      : "검수 기록을 계속 쌓으면서 반복 성공 패턴만 스킬 후보로 승격하세요.";
+      : "검토 기록을 계속 쌓으면서 반복 성공 패턴만 스킬 후보로 승격하세요.";
   }
   if (stats.edited < 3) {
     recommendation = stats.resolved
@@ -2106,22 +2430,47 @@ function buildReviewOpsSummary(jobs = [], records = [], decisionRows = [], recor
       : "승인/반려 기록 대기",
     hermesFuel: stats.edited,
     hermesMeta: stats.edited ? `편집 diff ${stats.edited}개 저장됨` : "초안-최종본 diff 대기",
-    opsStatus: `검수 ${stats.resolved}건 · 성과 ${records.length}건`,
+    opsStatus: `검토 ${stats.resolved}건 · 성과 ${records.length}건`,
     recommendation
   };
+}
+
+function setReviewSection(section = "pending") {
+  activeReviewSection = ["pending", "skills", "portfolio", "history"].includes(section) ? section : "pending";
+  if (nodes.reviewSectionTabs) {
+    nodes.reviewSectionTabs.querySelectorAll("[data-review-section]").forEach((button) => {
+      const active = button.dataset.reviewSection === activeReviewSection;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  }
+  if (nodes.reviewPage) {
+    nodes.reviewPage.querySelectorAll("[data-review-section-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.reviewSectionPanel !== activeReviewSection;
+    });
+  }
+}
+
+function renderReviewSummaryLine({ queueSummary = {}, performanceSummary = {}, skillsSummary = {}, decisionCount = 0, attentionCount = 0, automationAttention = 0 } = {}) {
+  if (!nodes.reviewSummaryLine) return;
+  const reviewed = Number(skillsSummary.reviewTotal || decisionCount || 0);
+  const revisionRate = Number(skillsSummary.reviewRevisionRate ?? 0);
+  const pending = Number(skillsSummary.pending || 0) + Number(skillsSummary.needsRevision || 0) + Number(queueSummary.attention || attentionCount || 0) + Number(automationAttention || 0);
+  const quality = Number(performanceSummary.lastScore || performanceSummary.avgScore || 0);
+  nodes.reviewSummaryLine.textContent = `검토 ${reviewed}건 · 수정률 ${revisionRate}% · 승인 대기 ${pending} · 최근 품질 ${quality}점`;
 }
 
 function renderReviewOpsDashboard(summary = {}) {
   if (nodes.reviewOpsStatus) nodes.reviewOpsStatus.textContent = summary.opsStatus || "신뢰도 계산 대기";
   if (nodes.reviewTrustLadder) nodes.reviewTrustLadder.textContent = summary.ladder || "수동";
-  if (nodes.reviewTrustLadderMeta) nodes.reviewTrustLadderMeta.textContent = summary.ladderMeta || "검수 기록 대기";
+  if (nodes.reviewTrustLadderMeta) nodes.reviewTrustLadderMeta.textContent = summary.ladderMeta || "검토 기록 대기";
   if (nodes.reviewAutoCandidateCount) nodes.reviewAutoCandidateCount.textContent = `${Number(summary.autoCandidateCount || 0)}건`;
   if (nodes.reviewAutoCandidateMeta) nodes.reviewAutoCandidateMeta.textContent = summary.autoCandidateMeta || "승급 후보 없음";
   if (nodes.reviewRevisionRate) nodes.reviewRevisionRate.textContent = `${Number(summary.revisionRate || 0)}%`;
   if (nodes.reviewRevisionMeta) nodes.reviewRevisionMeta.textContent = summary.revisionMeta || "승인/반려 기록 대기";
   if (nodes.reviewHermesFuel) nodes.reviewHermesFuel.textContent = `${Number(summary.hermesFuel || 0)}개`;
   if (nodes.reviewHermesMeta) nodes.reviewHermesMeta.textContent = summary.hermesMeta || "편집 diff 대기";
-  if (nodes.reviewOpsRecommendation) nodes.reviewOpsRecommendation.textContent = summary.recommendation || "검수 기록이 쌓이면 다음 자동화 승급 기준을 제안합니다.";
+  if (nodes.reviewOpsRecommendation) nodes.reviewOpsRecommendation.textContent = summary.recommendation || "검토 기록이 쌓이면 다음 자동화 승급 기준을 제안합니다.";
 }
 
 function reviewDecisionLabel(decision = null) {
@@ -2164,15 +2513,20 @@ function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = ne
       </div>
       ${progress ? `<p>${escapeHtml(progress)}</p>` : ""}
       ${savedText ? `<small>${escapeHtml(savedText)}</small>` : ""}
-      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
       ${editSummary ? `<small class="review-edit">편집 diff: ${escapeHtml(editSummary)}</small>` : ""}
-      <div class="review-actions">
-        <button type="button" data-review-job-action="detail" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}">상세</button>
-        <button type="button" data-review-job-action="approve" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">승인</button>
-        <button type="button" data-review-job-action="reject" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">반려</button>
-        <button type="button" data-review-job-action="revision" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">수정필요</button>
-        <button type="button" data-review-job-action="edit-diff" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}" data-job-draft="${escapeHtml(progress || job.title || "")}">수정기록</button>
+      <div class="review-actions primary">
+        <button type="button" data-review-job-action="detail" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}">검토하기</button>
       </div>
+      <details class="review-more-actions">
+        <summary>더보기</summary>
+        <div class="review-actions">
+          <button type="button" data-review-job-action="approve" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">승인</button>
+          <button type="button" data-review-job-action="revision" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">수정필요</button>
+          <button type="button" data-review-job-action="edit-diff" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}" data-job-draft="${escapeHtml(progress || job.title || "")}">수정기록</button>
+          <button type="button" data-review-job-action="reject" data-job-type="${escapeHtml(job.type || "")}" data-job-id="${escapeHtml(job.id || "")}" data-job-title="${escapeHtml(job.title || "")}">반려</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2180,6 +2534,9 @@ function reviewJobCard(job = {}, recordsByJobId = new Map(), decisionsByKey = ne
 function reviewSkillCard(candidate = {}, decisionsByKey = new Map()) {
   const decision = decisionsByKey.get(`skill:${candidate.id || ""}`);
   const decisionLabel = reviewDecisionLabel(decision);
+  const reviewSummary = candidate.reviewSummary || {};
+  const draftText = candidate.instructionsPreview || candidate.evidencePreview || candidate.description || candidate.title || "";
+  const editSummary = Number(reviewSummary.edited || 0) ? `수정기록 ${Number(reviewSummary.edited || 0)}개` : "";
   return `
     <article class="review-item skill">
       <div class="review-item-head">
@@ -2193,12 +2550,21 @@ function reviewSkillCard(candidate = {}, decisionsByKey = new Map()) {
       </div>
       ${candidate.description ? `<p>${escapeHtml(candidate.description)}</p>` : ""}
       ${candidate.evidencePreview ? `<small>${escapeHtml(candidate.evidencePreview)}</small>` : ""}
-      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
-      <div class="review-actions">
-        <button type="button" data-review-open="chat">대화 패널</button>
-        <button type="button" data-review-skill-action="approve" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
-        <button type="button" data-review-skill-action="dismiss" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">숨김</button>
+      ${candidate.reviewNote ? `<small class="review-decision ${escapeHtml(candidate.reviewStatus || "")}">후보 검토: ${escapeHtml(skillCandidateStatusText(candidate.reviewStatus || candidate.status))}${candidate.reviewNote ? ` · ${escapeHtml(candidate.reviewNote)}` : ""}</small>` : ""}
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
+      ${editSummary ? `<small class="review-edit">${escapeHtml(editSummary)}</small>` : ""}
+      <div class="review-actions primary">
+        <button type="button" data-review-open="chat">검토하기</button>
       </div>
+      <details class="review-more-actions">
+        <summary>더보기</summary>
+        <div class="review-actions">
+          <button type="button" data-review-skill-action="approve" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
+          <button type="button" data-review-skill-action="revision" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">수정필요</button>
+          <button type="button" data-review-skill-action="edit-diff" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}" data-job-type="skill" data-job-id="${escapeHtml(candidate.id || "")}" data-job-title="${escapeHtml(candidate.title || "")}" data-job-draft="${escapeHtml(draftText)}">수정기록</button>
+          <button type="button" data-review-skill-action="dismiss" data-candidate-id="${escapeHtml(candidate.id || "")}" data-candidate-title="${escapeHtml(candidate.title || "")}">반려</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2226,13 +2592,18 @@ function reviewPortfolioCard(record = {}, decisionsByKey = new Map()) {
       ${record.retrospective?.portfolioAngle ? `<p>${escapeHtml(record.retrospective.portfolioAngle)}</p>` : ""}
       ${assetReview?.reason ? `<small>${escapeHtml(assetReview.reason)}</small>` : ""}
       ${record.portfolioRelPath || record.savedRelPath ? `<small>${escapeHtml(record.portfolioRelPath || record.savedRelPath)}</small>` : ""}
-      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">자산 검수: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
-      <div class="review-actions">
-        <button type="button" data-review-open="vault">저장소</button>
-        <button type="button" data-review-portfolio-action="approve" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">자산 승인</button>
-        <button type="button" data-review-portfolio-action="revision" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">보완 필요</button>
-        <button type="button" data-review-portfolio-action="reject" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">반려</button>
+      ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">자산 검토: ${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
+      <div class="review-actions primary">
+        <button type="button" data-review-open="vault">검토하기</button>
       </div>
+      <details class="review-more-actions">
+        <summary>더보기</summary>
+        <div class="review-actions">
+          <button type="button" data-review-portfolio-action="approve" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">자산 승인</button>
+          <button type="button" data-review-portfolio-action="revision" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">보완 필요</button>
+          <button type="button" data-review-portfolio-action="reject" data-record-id="${escapeHtml(portfolioId)}" data-job-id="${escapeHtml(record.jobId || "")}" data-record-title="${escapeHtml(record.title || "")}">반려</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2288,7 +2659,7 @@ function automationReviewItems(automation = {}) {
 
 function automationReviewDecisionLabel(decision = null) {
   const label = reviewDecisionLabel(decision);
-  return label ? `자동화 검수: ${label}` : "";
+  return label ? `자동화 검토: ${label}` : "";
 }
 
 function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
@@ -2314,12 +2685,17 @@ function reviewAutomationCard(item = {}, decisionsByKey = new Map()) {
       ${resultText ? `<p>${escapeHtml(resultText)}</p>` : ""}
       ${item.file ? `<small>${escapeHtml(item.file)}</small>` : ""}
       ${decisionLabel ? `<small class="review-decision ${escapeHtml(decision.status || "")}">${escapeHtml(decisionLabel)}${decision.note ? ` · ${escapeHtml(decision.note)}` : ""}</small>` : ""}
-      <div class="review-actions">
-        <button type="button" data-review-automation-action="detail" data-automation-id="${escapeHtml(item.id || "")}">상세</button>
-        <button type="button" data-review-automation-action="approve" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">승인</button>
-        <button type="button" data-review-automation-action="revision" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">보완 필요</button>
-        <button type="button" data-review-automation-action="reject" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">반려</button>
+      <div class="review-actions primary">
+        <button type="button" data-review-automation-action="detail" data-automation-id="${escapeHtml(item.id || "")}">검토하기</button>
       </div>
+      <details class="review-more-actions">
+        <summary>더보기</summary>
+        <div class="review-actions">
+          <button type="button" data-review-automation-action="approve" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">승인</button>
+          <button type="button" data-review-automation-action="revision" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">보완 필요</button>
+          <button type="button" data-review-automation-action="reject" data-automation-id="${escapeHtml(item.id || "")}" data-automation-title="${escapeHtml(item.triggerTitle || "")}">반려</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2340,12 +2716,21 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
     return item.ok === false && !reviewDecisionClosesAttention(decision);
   });
   const completedJobs = jobs.filter((job) => ["completed", "completed_with_errors"].includes(job.status)).slice(0, 8);
-  const pendingSkills = candidates.filter((candidate) => candidate.status === "pending").slice(0, 8);
+  const pendingSkills = candidates.filter((candidate) => ["pending", "needs_revision"].includes(candidate.status)).slice(0, 8);
   const portfolioRecords = records.filter((record) => record.portfolioCandidate || record.portfolioRelPath).slice(0, 8);
   const queueSummary = queue.summary || {};
   const performanceSummary = performance.summary || {};
   const skillsSummary = skills.summary || {};
-  renderReviewOpsDashboard(buildReviewOpsSummary(jobs, records, decisionRows, recordsByJobId, decisionsByKey));
+  const opsSummary = buildReviewOpsSummary(jobs, records, decisionRows, recordsByJobId, decisionsByKey, skillsSummary);
+  renderReviewOpsDashboard(opsSummary);
+  renderReviewSummaryLine({
+    queueSummary,
+    performanceSummary,
+    skillsSummary,
+    decisionCount: decisionRows.length,
+    attentionCount: attentionJobs.length,
+    automationAttention: automationAttention.length
+  });
 
   if (nodes.reviewQueueCount) nodes.reviewQueueCount.textContent = `${Number(queueSummary.attention || attentionJobs.length || 0) + automationAttention.length}건`;
   if (nodes.reviewQueueMeta) nodes.reviewQueueMeta.textContent = attentionJobs.length || automationAttention.length
@@ -2355,8 +2740,8 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   if (nodes.reviewActiveMeta) nodes.reviewActiveMeta.textContent = queueSummary.latestUpdatedAt ? `최근 ${formatShortTime(queueSummary.latestUpdatedAt)}` : "실행 대기";
   if (nodes.reviewQualityScore) nodes.reviewQualityScore.textContent = performanceSummary.lastScore ? `${performanceSummary.lastScore}점` : `${performanceSummary.avgScore || 0}점`;
   if (nodes.reviewQualityMeta) nodes.reviewQualityMeta.textContent = performanceSummary.total ? `평균 ${performanceSummary.avgScore || 0}점 · 통과 ${performanceSummary.passedCount || 0}/${performanceSummary.total}` : "성과기록 대기";
-  if (nodes.reviewSkillCount) nodes.reviewSkillCount.textContent = `${Number(skillsSummary.pending || pendingSkills.length || 0)}개`;
-  if (nodes.reviewSkillMeta) nodes.reviewSkillMeta.textContent = skillsSummary.approved ? `적용 ${skillsSummary.approved}개` : "검토 대기 없음";
+  if (nodes.reviewSkillCount) nodes.reviewSkillCount.textContent = `${Number(skillsSummary.pending || 0) + Number(skillsSummary.needsRevision || 0) || pendingSkills.length || 0}개`;
+  if (nodes.reviewSkillMeta) nodes.reviewSkillMeta.textContent = skillsSummary.approved ? `적용 ${skillsSummary.approved}개 · 수정필요 ${skillsSummary.needsRevision || 0}` : "검토 대기 없음";
 
   if (nodes.reviewAttentionStatus) nodes.reviewAttentionStatus.textContent = attentionJobs.length ? `${attentionJobs.length}건` : "정상";
   if (nodes.reviewAttentionList) nodes.reviewAttentionList.innerHTML = attentionJobs.length ? attentionJobs.map((job) => reviewJobCard(job, recordsByJobId, decisionsByKey)).join("") : reviewEmpty("확인 필요한 작업이 없습니다.");
@@ -2368,6 +2753,7 @@ function renderReviewInbox({ queue = {}, performance = {}, skills = {}, decision
   if (nodes.reviewPortfolioList) nodes.reviewPortfolioList.innerHTML = portfolioRecords.length ? portfolioRecords.map((record) => reviewPortfolioCard(record, decisionsByKey)).join("") : reviewEmpty("포트폴리오 후보가 없습니다.");
   if (nodes.reviewAutomationStatus) nodes.reviewAutomationStatus.textContent = automationRows.length ? `${automationRows.length}건` : "대기";
   if (nodes.reviewAutomationList) nodes.reviewAutomationList.innerHTML = automationRows.length ? automationRows.slice(0, 8).map((item) => reviewAutomationCard(item, decisionsByKey)).join("") : reviewEmpty("자동화 실행 이력이 없습니다.");
+  setReviewSection(activeReviewSection);
 }
 
 async function fetchReviewApiState(pathValue, label) {
@@ -2383,12 +2769,12 @@ async function fetchReviewApiState(pathValue, label) {
 
 async function loadReviewInbox() {
   if (!nodes.reviewStatus) return null;
-  nodes.reviewStatus.textContent = "검수함 불러오는 중";
+  nodes.reviewStatus.textContent = "검토 불러오는 중";
   const [queue, performance, skills, decisions, automation] = await Promise.all([
     fetchReviewApiState("/api/task-queue?limit=30", "작업 큐").catch((error) => ({ ok: false, error: error.message, jobs: [], summary: {} })),
     fetchReviewApiState("/api/performance-log?limit=20", "성과기록").catch((error) => ({ ok: false, error: error.message, records: [], summary: {} })),
     fetchReviewApiState("/api/skill-candidates", "스킬 후보").catch((error) => ({ ok: false, error: error.message, candidates: [], summary: {} })),
-    fetchReviewApiState("/api/review-decisions", "검수 결정").catch((error) => ({ ok: false, error: error.message, decisions: [], summary: {} })),
+    fetchReviewApiState("/api/review-decisions", "검토 결정").catch((error) => ({ ok: false, error: error.message, decisions: [], summary: {} })),
     fetchReviewApiState("/api/automation-triggers", "자동화").catch((error) => ({ ok: false, error: error.message, triggers: [], summary: {} }))
   ]);
   renderReviewInbox({ queue, performance, skills, decisions, automation });
@@ -2399,11 +2785,11 @@ async function loadReviewInbox() {
 
 function showReviewJobDetail(job = {}) {
   const logs = Array.isArray(job.logs) ? job.logs.slice(-6).map((log) => `- ${formatShortTime(log.createdAt)} · ${log.actor || "system"} · ${log.message || ""}`) : [];
-  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "검수 상세";
+  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "검토 상세";
   if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${job.type === "codex" ? "Codex" : "직원 실행"} · ${job.statusLabel || officeJobStatusLabel(job.status)}`;
   if (nodes.chatResultPreview) {
     nodes.chatResultPreview.textContent = [
-      "# 검수함 작업 상세",
+      "# 검토 작업 상세",
       "",
       `- 작업 ID: ${job.id || ""}`,
       `- 유형: ${job.type === "codex" ? "Codex" : "직원 실행"}`,
@@ -2423,13 +2809,13 @@ function showReviewJobDetail(job = {}) {
 }
 
 function showAutomationReviewDetail(item = {}) {
-  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "자동화 검수 상세";
+  if (nodes.chatResultMode) nodes.chatResultMode.textContent = "자동화 검토 상세";
   if (nodes.chatRunMeta) nodes.chatRunMeta.textContent = `${item.triggerTitle || item.triggerId || "자동화"} · ${item.ok ? "성공" : "실패"}`;
   if (nodes.chatResultPreview) {
     nodes.chatResultPreview.textContent = [
       "# 자동화 실행 상세",
       "",
-      `- 검수 ID: ${item.id || ""}`,
+      `- 검토 ID: ${item.id || ""}`,
       `- 트리거: ${item.triggerTitle || item.triggerId || ""}`,
       `- 유형: ${item.triggerType === "folder_watch" ? "폴더 감시" : "예약"}`,
       `- 이벤트: ${item.event || ""}`,
@@ -2462,6 +2848,17 @@ async function saveReviewDecision(payload = {}) {
 
 async function saveSkillCandidateAction(payload = {}) {
   const response = await apiFetch("/api/skill-candidates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+async function saveSkillCandidateReview(candidateId, payload = {}) {
+  const response = await apiFetch(`/api/skill-candidates/${encodeURIComponent(candidateId)}/review`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -2510,15 +2907,27 @@ async function submitReviewEditPanel(event) {
   if (nodes.reviewStatus) nodes.reviewStatus.textContent = "수정 diff 저장 중";
   if (nodes.reviewEditSaveBtn) nodes.reviewEditSaveBtn.disabled = true;
   try {
-    await saveReviewDecision({
-      action: "save_edit",
-      type: reviewEditTarget.type,
-      id: reviewEditTarget.id,
-      targetTitle: reviewEditTarget.targetTitle,
-      draftText,
-      finalText,
-      note
-    });
+    if (reviewEditTarget.type === "skill") {
+      await saveSkillCandidateReview(reviewEditTarget.id, {
+        action: "save_edit",
+        targetTitle: reviewEditTarget.targetTitle,
+        draftText,
+        finalText,
+        note
+      });
+      await loadSkillCandidates();
+      await loadActiveSkills();
+    } else {
+      await saveReviewDecision({
+        action: "save_edit",
+        type: reviewEditTarget.type,
+        id: reviewEditTarget.id,
+        targetTitle: reviewEditTarget.targetTitle,
+        draftText,
+        finalText,
+        note
+      });
+    }
     closeReviewEditPanel();
     await loadReviewInbox();
     return true;
@@ -2531,6 +2940,11 @@ async function submitReviewEditPanel(event) {
 }
 
 async function handleReviewClick(event) {
+  const sectionButton = event.target.closest("button[data-review-section]");
+  if (sectionButton && nodes.reviewPage?.contains(sectionButton)) {
+    setReviewSection(sectionButton.dataset.reviewSection || "pending");
+    return;
+  }
   const openButton = event.target.closest("button[data-review-open]");
   if (openButton && nodes.reviewPage?.contains(openButton)) {
     const requested = openButton.dataset.reviewOpen || "chat";
@@ -2550,11 +2964,11 @@ async function handleReviewClick(event) {
     }
     automationButton.disabled = true;
     try {
-      if (!id) throw new Error("자동화 검수 ID가 없습니다");
+      if (!id) throw new Error("자동화 검토 ID가 없습니다");
       const needsNote = action !== "approve";
       const note = needsNote ? window.prompt(action === "reject" ? "자동화 결과 반려 이유를 적어주세요." : "보완할 부분을 적어주세요.", "") : "";
       if (needsNote && note === null) return;
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "자동화 검수 저장 중";
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "자동화 검토 저장 중";
       await saveReviewDecision({
         action,
         type: "automation",
@@ -2563,9 +2977,9 @@ async function handleReviewClick(event) {
         note: note || ""
       });
       await loadReviewInbox();
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "자동화 결과 승인 저장 완료" : "자동화 검수 저장 완료";
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "자동화 결과 승인 저장 완료" : "자동화 검토 저장 완료";
     } catch (error) {
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `자동화 검수 실패: ${error.message}`;
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `자동화 검토 실패: ${error.message}`;
     } finally {
       automationButton.disabled = false;
     }
@@ -2576,23 +2990,25 @@ async function handleReviewClick(event) {
     const action = skillButton.dataset.reviewSkillAction || "";
     const id = skillButton.dataset.candidateId || "";
     const title = skillButton.dataset.candidateTitle || id;
+    if (action === "edit-diff") {
+      openReviewEditPanel(skillButton);
+      return;
+    }
     skillButton.disabled = true;
     try {
       if (!id) throw new Error("스킬 후보 ID가 없습니다");
-      const data = await saveSkillCandidateAction({ action: action === "dismiss" ? "dismiss" : "approve", id });
+      const needsNote = action !== "approve";
+      const note = needsNote ? window.prompt(action === "dismiss" ? "스킬 후보 반려 이유를 적어주세요." : "수정이 필요한 부분을 적어주세요.", "") : "";
+      if (needsNote && note === null) return;
+      const reviewAction = action === "dismiss" ? "reject" : action;
+      const data = await saveSkillCandidateReview(id, { action: reviewAction, targetTitle: title, note: note || "" });
       if (data.skills) renderSkillsState(data.skills);
       if (data.profile) renderProfileState(data.profile);
-      await saveReviewDecision({
-        action: action === "dismiss" ? "reject" : "approve",
-        type: "skill",
-        id,
-        targetTitle: title,
-        note: action === "dismiss" ? "검수함에서 숨김 처리" : ""
-      });
+      await loadActiveSkills();
       await loadSkillCandidates();
       await loadReviewInbox();
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "dismiss" ? "스킬 후보 숨김 완료" : "스킬 적용 완료";
-      if (action !== "dismiss") addChatMessage("assistant", "검수함에서 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI Office", "스킬 적용");
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "스킬 적용 완료" : "스킬 후보 검토 저장 완료";
+      if (action === "approve") addChatMessage("assistant", "검토에서 스킬 후보를 직원 스킬에 적용했습니다.", "YOMI Office", "스킬 적용");
     } catch (error) {
       if (nodes.reviewStatus) nodes.reviewStatus.textContent = `스킬 후보 처리 실패: ${error.message}`;
     } finally {
@@ -2611,7 +3027,7 @@ async function handleReviewClick(event) {
       const needsNote = action !== "approve";
       const note = needsNote ? window.prompt(action === "reject" ? "포트폴리오 반려 이유를 적어주세요." : "보완할 부분을 적어주세요.", "") : "";
       if (needsNote && note === null) return;
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "포트폴리오 검수 저장 중";
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "포트폴리오 검토 저장 중";
       await saveReviewDecision({
         action,
         type: "portfolio",
@@ -2620,9 +3036,9 @@ async function handleReviewClick(event) {
         note: note || ""
       });
       await loadReviewInbox();
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "포트폴리오 승인 저장 완료" : "포트폴리오 검수 저장 완료";
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = action === "approve" ? "포트폴리오 승인 저장 완료" : "포트폴리오 검토 저장 완료";
     } catch (error) {
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `포트폴리오 검수 실패: ${error.message}`;
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = `포트폴리오 검토 실패: ${error.message}`;
     } finally {
       portfolioButton.disabled = false;
     }
@@ -2642,7 +3058,7 @@ async function handleReviewClick(event) {
       const needsNote = action !== "approve";
       const note = needsNote ? window.prompt(action === "reject" ? "반려 이유를 남겨주세요." : "수정이 필요한 부분을 남겨주세요.", "") : "";
       if (needsNote && note === null) return;
-      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "검수 결정 저장 중";
+      if (nodes.reviewStatus) nodes.reviewStatus.textContent = "검토 결정 저장 중";
       await saveReviewDecision({
         action,
         status,
@@ -2844,6 +3260,16 @@ function skillCandidateKindLabel(kind = "") {
   return "스킬";
 }
 
+function skillCandidateStatusText(status = "") {
+  return {
+    pending: "검토 대기",
+    approved: "적용됨",
+    dismissed: "숨김",
+    rejected: "반려",
+    needs_revision: "수정 필요"
+  }[status] || status || "검토 대기";
+}
+
 function renderSkillCandidateAgentPicker(candidate = {}) {
   const selected = new Set(candidate.agentIds || []);
   return agents.map((agent) => `
@@ -2887,6 +3313,7 @@ function renderSkillCandidates(state = skillCandidatesState) {
   skillCandidatesState = state || { candidates: [] };
   if (!nodes.skillCandidateList) return;
   const candidates = (skillCandidatesState.candidates || []).filter((candidate) => candidate.status !== "dismissed").slice(0, 12);
+  const visibleCandidates = candidates.slice(0, 3);
   const pending = candidates.filter((candidate) => candidate.status === "pending");
   const approved = candidates.filter((candidate) => candidate.status === "approved").length;
   if (nodes.skillCandidateStatus) nodes.skillCandidateStatus.textContent = pending.length ? `${pending.length}개 검토 · 적용 ${approved}개` : approved ? `적용 ${approved}개` : "대기";
@@ -2894,7 +3321,8 @@ function renderSkillCandidates(state = skillCandidatesState) {
     nodes.skillCandidateList.innerHTML = '<div class="empty">스킬 후보 없음</div>';
     return;
   }
-  nodes.skillCandidateList.innerHTML = candidates.map((candidate) => `
+  nodes.skillCandidateList.innerHTML = [
+    visibleCandidates.map((candidate) => `
     <article class="skill-candidate-item ${escapeHtml(candidate.status || "")}">
       <div class="skill-candidate-head">
         <strong>${escapeHtml(candidate.title || candidate.id)}</strong>
@@ -2916,11 +3344,15 @@ function renderSkillCandidates(state = skillCandidatesState) {
         ${candidate.status === "approved" ? `<b>적용됨</b>` : `
           <button type="button" data-skill-candidate-action="edit" data-candidate-id="${escapeHtml(candidate.id)}">${editingSkillCandidateId === candidate.id ? "수정 중" : "수정"}</button>
           <button type="button" data-skill-candidate-action="approve" data-candidate-id="${escapeHtml(candidate.id)}">${candidate.kind === "memory" ? "메모리 적용" : "스킬 적용"}</button>
-          <button type="button" data-skill-candidate-action="dismiss" data-candidate-id="${escapeHtml(candidate.id)}">숨김</button>
+          <button type="button" data-skill-candidate-action="dismiss" data-candidate-id="${escapeHtml(candidate.id)}">반려</button>
         `}
       </div>
     </article>
-  `).join("");
+  `).join(""),
+    candidates.length > visibleCandidates.length
+      ? `<div class="skill-candidate-more"><span>나머지 ${candidates.length - visibleCandidates.length}개는 검토 탭에서 처리합니다.</span><button type="button" data-skill-candidate-action="review">전체 보기</button></div>`
+      : ""
+  ].filter(Boolean).join("");
 }
 
 async function loadSkillCandidates() {
@@ -2943,6 +3375,11 @@ async function handleSkillCandidateClick(event) {
   if (!button || !nodes.skillCandidateList?.contains(button)) return;
   const action = button.dataset.skillCandidateAction || "";
   const id = button.dataset.candidateId || "";
+  if (action === "review") {
+    setReviewSection("skills");
+    switchPage("review");
+    return;
+  }
   if (action === "edit") {
     editingSkillCandidateId = editingSkillCandidateId === id ? "" : id;
     renderSkillCandidates();
@@ -2963,9 +3400,12 @@ async function handleSkillCandidateClick(event) {
       payload.instructions = editor?.querySelector('[data-skill-candidate-field="instructions"]')?.value || "";
       payload.agentIds = [...(editor?.querySelectorAll("[data-skill-candidate-agent]:checked") || [])].map((input) => input.dataset.skillCandidateAgent);
     }
-    const data = await saveSkillCandidateAction(payload);
+    const data = ["approve", "dismiss"].includes(action)
+      ? await saveSkillCandidateReview(id, { action: action === "dismiss" ? "reject" : "approve", targetTitle: button.closest(".skill-candidate-item")?.querySelector("strong")?.textContent || id, note: action === "dismiss" ? "대화 패널에서 숨김 처리" : "" })
+      : await saveSkillCandidateAction(payload);
     if (data.skills) renderSkillsState(data.skills);
     if (data.profile) renderProfileState(data.profile);
+    await loadActiveSkills();
     if (action === "update") editingSkillCandidateId = "";
     await loadSkillCandidates();
     if (action === "approve") {
@@ -3520,7 +3960,7 @@ function renderTaskQueue(state = {}) {
           <b>${escapeHtml(job.statusLabel || officeJobStatusLabel(job.status))}</b>
           <p>${escapeHtml(job.progress || job.detail || "")}</p>
           <small>${escapeHtml([formatShortTime(job.updatedAt || job.completedAt || job.createdAt), elapsed].filter(Boolean).join(" · "))}</small>
-          ${decisionLabel ? `<small class="task-queue-review ${escapeHtml(job.reviewDecision.status || "")}">검수: ${escapeHtml(decisionLabel)}${job.reviewDecision.editSummary ? ` · ${escapeHtml(job.reviewDecision.editSummary)}` : ""}</small>` : ""}
+          ${decisionLabel ? `<small class="task-queue-review ${escapeHtml(job.reviewDecision.status || "")}">검토: ${escapeHtml(decisionLabel)}${job.reviewDecision.editSummary ? ` · ${escapeHtml(job.reviewDecision.editSummary)}` : ""}</small>` : ""}
         </button>
         <div class="task-queue-actions">
           ${running ? `<button type="button" data-task-queue-action="cancel" data-job-type="${escapeHtml(job.type)}" data-job-id="${escapeHtml(job.id)}">취소</button>` : ""}
@@ -3825,6 +4265,7 @@ async function submitChat(event) {
     updateChatResultPanel(data, message);
     await loadChatSessions(activeChatSessionId);
     await loadSkillCandidates();
+    await loadActiveSkills();
     if ((data.intent === "office" && !data.officePlan) || data.intent === "codex") {
       await refreshState();
       await loadRecentReports();
@@ -3875,13 +4316,14 @@ function initializeStaticCopy() {
   if (nodes.connectionMcpServer) nodes.connectionMcpServer.placeholder = "예: context7, tavily, exa";
 }
 
-document.querySelectorAll(".app-tab").forEach((tab) => tab.addEventListener("click", () => switchPage(tab.dataset.page)));
+document.querySelectorAll(".app-tab").forEach((tab) => tab.addEventListener("click", () => switchPage(tab.dataset.page, { focus: tab.dataset.focus || "", scrollTarget: tab.dataset.scrollTarget || "" })));
 document.querySelectorAll("[data-jump]").forEach((btn) => btn.addEventListener("click", () => switchPage(btn.dataset.jump)));
 document.addEventListener("click", handleExamplePromptClick);
 if (nodes.runBtn) nodes.runBtn.addEventListener("click", runOfficeTask);
 if (nodes.resetBtn) nodes.resetBtn.addEventListener("click", resetOffice);
 if (nodes.agentList) nodes.agentList.addEventListener("click", handleAgentSkillClick);
 if (nodes.agentList) nodes.agentList.addEventListener("change", handleAgentSkillChange);
+document.querySelectorAll("[data-agent-roster-action]").forEach((button) => button.addEventListener("click", handleAgentRosterAction));
 if (nodes.connectionForm) nodes.connectionForm.addEventListener("submit", handleConnectionSubmit);
 if (nodes.connectionResetBtn) nodes.connectionResetBtn.addEventListener("click", resetConnectionForm);
 if (nodes.connectionList) nodes.connectionList.addEventListener("click", handleConnectionClick);
@@ -3890,6 +4332,7 @@ if (nodes.profileReloadBtn) nodes.profileReloadBtn.addEventListener("click", loa
 if (nodes.ragReindexBtn) nodes.ragReindexBtn.addEventListener("click", handleRagReindex);
 if (nodes.ragQualityRefreshBtn) nodes.ragQualityRefreshBtn.addEventListener("click", loadRagExclusions);
 if (nodes.ragQualityList) nodes.ragQualityList.addEventListener("click", handleRagQualityClick);
+if (nodes.quarantineList) nodes.quarantineList.addEventListener("click", handleQuarantineClick);
 if (nodes.ragSearchBtn) nodes.ragSearchBtn.addEventListener("click", handleRagSearch);
 if (nodes.ragSearchInput) nodes.ragSearchInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing) return;
@@ -3899,6 +4342,7 @@ if (nodes.ragSearchInput) nodes.ragSearchInput.addEventListener("keydown", (even
 if (nodes.automationTriggerForm) nodes.automationTriggerForm.addEventListener("submit", handleAutomationTriggerSubmit);
 if (nodes.automationTriggerResetBtn) nodes.automationTriggerResetBtn.addEventListener("click", resetAutomationTriggerForm);
 if (nodes.automationTriggerList) nodes.automationTriggerList.addEventListener("click", handleAutomationTriggerClick);
+if (nodes.channelSendForm) nodes.channelSendForm.addEventListener("submit", handleChannelSend);
 if (nodes.taskQueueList) nodes.taskQueueList.addEventListener("click", handleTaskQueueClick);
 if (nodes.reviewPage) nodes.reviewPage.addEventListener("click", handleReviewClick);
 if (nodes.reviewRefreshBtn) nodes.reviewRefreshBtn.addEventListener("click", loadReviewInbox);
@@ -3933,13 +4377,17 @@ loadRecentReports();
 loadPerformanceLog();
 loadConnectionsState();
 loadAutomationTriggersState();
+loadChannelsState();
 loadChatSessions();
 loadSkillCandidates();
+loadActiveSkills();
 loadTaskQueue({ resume: true });
 loadReviewInbox();
 loadRagExclusions();
+loadQuarantineState();
 runApiDiagnostics();
 setInterval(refreshState, 15000);
 setInterval(loadAutomationTriggersState, 10000);
+setInterval(loadChannelsState, 30000);
 setInterval(() => loadTaskQueue({ resume: false }), 5000);
 setInterval(loadReviewInbox, 8000);

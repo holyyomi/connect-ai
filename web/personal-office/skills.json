@@ -3,7 +3,8 @@
     "ceo": [
       "planner",
       "vault_search",
-      "file_read"
+      "file_read",
+      "memory-research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서"
     ],
     "secretary": [
       "checklist_ticket",
@@ -17,13 +18,15 @@
       "vault_search",
       "exa_search",
       "firecrawl_extract",
-      "tavily_search"
+      "tavily_search",
+      "memory-research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서"
     ],
     "business": [
       "codex_research",
       "data_analysis",
       "notebook_analysis",
-      "planner"
+      "planner",
+      "memory-research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서"
     ],
     "developer": [
       "file_read",
@@ -69,15 +72,15 @@
     "archivist": [
       "vault_search",
       "file_write",
-      "tagging_rag"
+      "tagging_rag",
+      "memory-research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서"
     ]
   },
   "agentDisabledSkills": {
     "developer": [
       "file_write",
       "git"
-    ],
-    "archivist": []
+    ]
   },
   "tools": {
     "planner": {
@@ -379,6 +382,58 @@
       "type": "classification",
       "provider": "internal",
       "description": "저장 결과를 태그, 카테고리, RAG 후보로 분류합니다."
+    },
+    "memory-research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서": {
+      "label": "research: 오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인...",
+      "enabled": true,
+      "type": "workflow_skill",
+      "provider": "yomi-learning",
+      "description": "성과 77점 작업에서 추출한 재사용 워크플로우 후보입니다.",
+      "instructions": "이 워크플로우 후보는 완료된 직원 실행에서 자동 추출되었습니다.\n같은 유형의 업무가 들어오면 목표 질문, 자료 기준, 직원 분배, 검수/회고 순서를 재사용합니다.\n적용 범위가 맞지 않으면 이 후보를 사용하지 않고 새 계획을 세웁니다.\n\n## Goal\n오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인사이트,... 작업을 직원별 산출물로 나누고 최종 보고 가능한 형태로 정리한다.\n\n## Completion Criteria\n- 요청의 목표와 완료 기준이 한 문장으로 확인된다.\n- 직원별 산출물이 최종 보고서로 합쳐질 수 있다.\n- 근거, 리스크, 활용 포인트가 분리된다.\n\n## Material Needs\n- 기존 Vault/RAG에서 관련 문서 top-k를 먼저 찾는다.\n- 사용자가 자료를 모르면 AI가 참고 키워드와 필요한 재료 목록을 먼저 제안한다.\n- 출처가 있는 자료와 사용자의 고정 선호를 분리해 반영한다.\n- 최신 자료, 비교 사례, 리스크 근거, 반대 사례\n- 검색 키워드 후보와 신뢰도 기준\n\n## Staffing Pattern\n- 리서치 서아: 자료 수집\n- 전략 도윤: 판단 프레임\n\n## Review Rule\n성과기록과 회고를 남기고, 재사용 가치가 있으면 Vault와 스킬 후보로 승격합니다.",
+      "sourceCandidateId": "skill-mpyqefr9-ikx2r",
+      "sourceSessionId": "",
+      "sourceTurnId": "",
+      "sourceJobId": "mpyqbnu0-csb4mh",
+      "sourceRelPath": "50_Outputs/YOMI Office/2026-06-04/2026-06-04T00-02-42-1-리서치-서아-자료-수집.md",
+      "workflowKey": "research-오늘-기준-ai-개인업무-자동화-트렌드를-조사해서-핵심-인사이트",
+      "scope": {
+        "workType": "research",
+        "taskPattern": "오늘 기준 AI 개인업무 자동화 트렌드를 조사해서 핵심 인사이트, 실행 아이디어, 저장할 키워드로 정리해줘",
+        "outputType": "orchestration-workflow",
+        "appliesWhen": [
+          "research 유형의 요청이고 목표/완료 기준이 유사할 때",
+          "직원 분배, 근거 수집, 검수, Vault 자산화 흐름을 반복 사용할 때"
+        ],
+        "excludes": [
+          "단순 잡담이나 일회성 짧은 질문",
+          "같은 키워드만 있고 산출물 형식과 완료 기준이 다른 작업"
+        ],
+        "specificity": "scoped"
+      },
+      "hierarchy": {
+        "level": "procedure",
+        "parent": "research-assetization-principle",
+        "principle": "목표 정의, 자료 기준, 직원 분배, 검수/회고, 자산화 순서를 재사용하되 작업 유형 범위를 벗어나면 적용하지 않는다.",
+        "procedureRelPath": "50_Outputs/YOMI Office/2026-06-04/2026-06-04T00-02-42-1-리서치-서아-자료-수집.md"
+      },
+      "antiOverfit": {
+        "minimumEvidence": 2,
+        "rules": [
+          "사용자 원문이나 특정 파일명만으로 적용하지 않는다.",
+          "workType, 완료 기준, 산출물 형태가 함께 맞을 때만 적용한다.",
+          "구체 절차는 원본 Vault 산출물을 참조하고 상위 원칙은 짧게 유지한다."
+        ]
+      },
+      "sourceType": "orchestration",
+      "sourceJobIds": [
+        "mpyqbnu0-csb4mh"
+      ],
+      "sourceRelPaths": [
+        "50_Outputs/YOMI Office/2026-06-04/2026-06-04T00-02-42-1-리서치-서아-자료-수집.md"
+      ],
+      "uses": 1,
+      "reuseCount": 1,
+      "lastUsedAt": "2026-06-04T00:39:49.632Z"
     }
   }
 }

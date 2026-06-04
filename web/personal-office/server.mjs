@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ const styleProfilePath = path.join(webRoot, "style-profile.json");
 const runtimeRoot = path.join(webRoot, "runtime");
 const chatSessionsPath = path.join(runtimeRoot, "chat-sessions.json");
 const skillCandidatesPath = path.join(runtimeRoot, "skill-candidates.json");
+const skillCandidateReviewLogPath = path.join(runtimeRoot, "skill-candidate-review-log.json");
 const ragIndexPath = path.join(runtimeRoot, "rag-index.json");
 const taskQueueHistoryPath = path.join(runtimeRoot, "task-queue.json");
 const automationTriggerStatePath = path.join(runtimeRoot, "automation-trigger-state.json");
@@ -747,6 +748,142 @@ async function buildConnectionsState() {
     candidates: config.candidates,
     harnessScopes: config.harnessScopes
   };
+}
+
+function pickEnv(names = []) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) return { name, value: String(value) };
+  }
+  return { name: names[0] || "", value: "" };
+}
+
+function maskIdentifier(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 4) return "••••";
+  return `${text.slice(0, Math.min(2, text.length - 4))}••••${text.slice(-4)}`;
+}
+
+function telegramChannelConfig() {
+  const token = pickEnv(["YOMI_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"]);
+  const chat = pickEnv(["YOMI_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID"]);
+  const thread = pickEnv(["YOMI_TELEGRAM_THREAD_ID", "TELEGRAM_THREAD_ID"]);
+  const missing = [
+    token.value ? "" : token.name,
+    chat.value ? "" : chat.name
+  ].filter(Boolean);
+  return {
+    id: "telegram",
+    name: "Telegram",
+    provider: "telegram",
+    tokenEnvName: token.name,
+    token: token.value,
+    chatEnvName: chat.name,
+    chatId: chat.value,
+    threadEnvName: thread.name,
+    threadId: thread.value,
+    missing,
+    connected: Boolean(token.value && chat.value)
+  };
+}
+
+function publicTelegramChannel() {
+  const config = telegramChannelConfig();
+  const status = config.connected ? "connected" : "key_required";
+  const meta = config.connected
+    ? { label: "연결됨", tone: "ok" }
+    : { label: "키 필요", tone: "warn" };
+  return {
+    id: config.id,
+    name: config.name,
+    provider: config.provider,
+    connected: config.connected,
+    status,
+    statusLabel: meta.label,
+    tone: meta.tone,
+    maskedIdentifier: maskIdentifier(config.chatId),
+    supportsSend: config.connected,
+    requiredEnv: [
+      { name: config.tokenEnvName, present: Boolean(config.token), masked: config.token ? "••••••••" : "" },
+      { name: config.chatEnvName, present: Boolean(config.chatId), masked: config.chatId ? maskIdentifier(config.chatId) : "" }
+    ],
+    detail: config.connected
+      ? `환경변수 확인됨 · chat ${maskIdentifier(config.chatId)}`
+      : `${config.missing.join(", ")} 환경변수가 필요합니다. 값은 .env 또는 OS 환경변수에만 둡니다.`
+  };
+}
+
+async function buildChannelsState() {
+  const channels = [publicTelegramChannel()];
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    secretsStored: false,
+    secretPolicy: "채널 토큰은 환경변수/.env에서만 읽고 API 응답에는 포함하지 않습니다.",
+    summary: {
+      total: channels.length,
+      connected: channels.filter((channel) => channel.connected).length,
+      attention: channels.filter((channel) => !channel.connected).length
+    },
+    channels
+  };
+}
+
+async function sendTelegramChannelMessage(text = "") {
+  const config = telegramChannelConfig();
+  if (!config.connected) throw new Error(`${config.missing.join(", ")} 환경변수가 필요합니다.`);
+  const body = {
+    chat_id: config.chatId,
+    text: String(text || "").trim().slice(0, 3900) || "YOMI Office",
+    disable_web_page_preview: true
+  };
+  if (config.threadId) body.message_thread_id = /^\d+$/.test(config.threadId) ? Number(config.threadId) : config.threadId;
+  const result = await fetchJson(`https://api.telegram.org/bot${config.token}/sendMessage`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }, 15000);
+  if (result.ok === false) throw new Error(result.description || "Telegram sendMessage failed");
+  return {
+    ok: true,
+    provider: "telegram",
+    messageId: result.result?.message_id || "",
+    chat: maskIdentifier(config.chatId)
+  };
+}
+
+async function sendChannelMessage(channelId = "", input = {}) {
+  const id = String(channelId || "").trim().toLowerCase();
+  if (id !== "telegram") throw new Error("지원하지 않는 채널입니다.");
+  const text = String(input.text || input.message || "").trim();
+  if (!text) throw new Error("발송할 메시지가 없습니다.");
+  const sent = await sendTelegramChannelMessage(text);
+  return {
+    ok: true,
+    sentAt: new Date().toISOString(),
+    channel: publicTelegramChannel(),
+    result: sent
+  };
+}
+
+async function sendAutomationChannelUpdate(trigger = {}, result = {}) {
+  if (trigger.sendToChannel !== true) return null;
+  const statusText = result.ok ? "성공" : "실패";
+  const text = [
+    `[YOMI Office 자동화] ${trigger.title || trigger.id || "트리거"}`,
+    `상태: ${statusText}`,
+    result.jobId ? `작업: ${result.jobId}` : "",
+    result.event ? `이벤트: ${result.event}` : "",
+    result.file ? `파일: ${result.file}` : "",
+    result.error ? `오류: ${result.error}` : "",
+    result.ranAt ? `시간: ${result.ranAt}` : ""
+  ].filter(Boolean).join("\n");
+  try {
+    return await sendChannelMessage("telegram", { text });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function updateConnectionsConfig(input = {}) {
@@ -1756,6 +1893,136 @@ async function updateRagExclusionState(input = {}) {
   };
 }
 
+function quarantineQualityScore(content = "", gate = {}) {
+  const meta = parseMarkdownFrontmatter(content);
+  const explicit = Number(meta.quality_score || meta.score || 0);
+  if (explicit > 0) return clampScore(explicit);
+  let score = 35;
+  const length = stripMarkdownFrontmatter(content).trim().length;
+  if (length >= 1200) score += 20;
+  else if (length >= 500) score += 12;
+  else if (length < 120) score -= 15;
+  if (gate.quality === "quarantine") score -= 8;
+  if (gate.reason) score -= 5;
+  if (trueLike(meta.rag) || trueLike(meta.verified)) score += 15;
+  return clampScore(score);
+}
+
+function archiveMarkdownContent(relPath, content, reason = "discarded-from-quarantine") {
+  const now = new Date().toISOString();
+  const meta = parseMarkdownFrontmatter(content);
+  const tags = Array.isArray(meta.tags) ? meta.tags : extractMarkdownTags(content);
+  return buildMarkdownWithFrontmatter(content, {
+    title: meta.title || markdownTitle(content, reportTitleFromPath(relPath)),
+    updated: now,
+    reviewed: now,
+    quality: "archived",
+    rag: false,
+    verified: false,
+    archived: true,
+    archive_reason: reason,
+    quarantine_reason: meta.quarantine_reason || reason,
+    tags: [...new Set([...cleanRagTags(tags, "quarantine"), "archived"])].slice(0, 30)
+  });
+}
+
+async function uniqueVaultDestination(baseDir, fileName) {
+  await mkdir(baseDir, { recursive: true });
+  const parsed = path.parse(fileName);
+  let candidate = path.join(baseDir, fileName);
+  let index = 2;
+  while (await exists(candidate)) {
+    candidate = path.join(baseDir, `${parsed.name}-${index}${parsed.ext || ".md"}`);
+    index += 1;
+  }
+  return candidate;
+}
+
+async function buildQuarantineState(limit = 30) {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) return { ok: true, connected: false, generatedAt: new Date().toISOString(), documents: [], summary: { total: 0, archived: 0 } };
+  const quarantineRoot = path.join(vaultRoot, "99_Inbox", "YOMI_Quarantine");
+  const files = await collectMarkdownFiles(quarantineRoot, vaultRoot);
+  const documents = [];
+  let archived = 0;
+  for (const file of files) {
+    if (isSensitiveVaultPath(file.relPath)) continue;
+    const content = await readFile(file.fullPath, "utf8").catch(() => "");
+    const meta = parseMarkdownFrontmatter(content);
+    if (trueLike(meta.archived)) {
+      archived += 1;
+      continue;
+    }
+    const gate = ragQualityGate(file.relPath, content);
+    documents.push({
+      title: gate.title || markdownTitle(content, reportTitleFromPath(file.relPath)),
+      relPath: file.relPath,
+      displayPath: displayReportPath(file.relPath),
+      quality: gate.quality || meta.quality || "quarantine",
+      qualityScore: quarantineQualityScore(content, gate),
+      reason: meta.quarantine_reason || gate.reason || "quarantine folder",
+      rag: trueLike(meta.rag),
+      archived: false,
+      updatedAt: new Date(file.mtimeMs).toISOString()
+    });
+  }
+  documents.sort((a, b) => jobTimeValue(b.updatedAt) - jobTimeValue(a.updatedAt));
+  return {
+    ok: true,
+    connected: true,
+    generatedAt: new Date().toISOString(),
+    path: quarantineRoot,
+    summary: { total: documents.length, archived },
+    documents: documents.slice(0, Math.max(1, Math.min(100, Number(limit) || 30)))
+  };
+}
+
+async function resolveQuarantineDocument(relPath = "") {
+  const vaultRoot = await findVaultRoot();
+  if (!vaultRoot) throw new Error("Vault 경로를 찾을 수 없습니다");
+  const cleanRelPath = String(relPath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!cleanRelPath.startsWith("99_Inbox/YOMI_Quarantine/")) throw new Error("격리 폴더 문서만 처리할 수 있습니다");
+  const fullPath = resolveInside(vaultRoot, cleanRelPath);
+  if (!fullPath || !(await exists(fullPath))) throw new Error("격리 문서를 찾을 수 없습니다");
+  const content = await readFile(fullPath, "utf8");
+  return { vaultRoot, relPath: cleanRelPath, fullPath, content };
+}
+
+async function updateQuarantineState(input = {}) {
+  const action = String(input.action || "").trim().toLowerCase();
+  if (!["promote", "discard"].includes(action)) throw new Error("Unknown quarantine action");
+  const doc = await resolveQuarantineDocument(input.relPath);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const before = ragQualityGate(doc.relPath, doc.content);
+  const nextContent = action === "promote"
+    ? updateRagQualityContent(doc.relPath, doc.content, "promote")
+    : archiveMarkdownContent(doc.relPath, doc.content, input.reason || "discarded-from-quarantine");
+  const targetRelDir = action === "promote"
+    ? path.join("50_Outputs", primaryReportFolder, "Quarantine Promoted", todayKey)
+    : path.join("99_Inbox", "_archive", "YOMI_Quarantine", todayKey);
+  const targetDir = path.join(doc.vaultRoot, targetRelDir);
+  const targetPath = await uniqueVaultDestination(targetDir, path.basename(doc.fullPath));
+  const targetRelPath = path.relative(doc.vaultRoot, targetPath).replace(/\\/g, "/");
+  const after = ragQualityGate(targetRelPath, nextContent);
+  if (input.dryRun === true) {
+    return { ok: true, dryRun: true, action, relPath: doc.relPath, targetRelPath, before, after };
+  }
+  await writeFile(doc.fullPath, nextContent, "utf8");
+  await rename(doc.fullPath, targetPath);
+  ragRuntime.dirty = true;
+  return {
+    ok: true,
+    action,
+    relPath: doc.relPath,
+    targetRelPath,
+    before: { include: before.include, reason: before.reason, quality: before.quality },
+    after: { include: after.include, reason: after.reason, quality: after.quality },
+    needsReindex: true,
+    state: await buildQuarantineState(Number(input.limit || 30)),
+    rag: await buildRagStatus()
+  };
+}
+
 function classifyProfileMemoryBucket(value = "") {
   const text = String(value || "").normalize("NFKC");
   if (/(말투|어조|톤|스타일|형식|포맷|답변\s*방식|보고\s*방식|간결|자세히|한국어|존댓말|반말|칭찬|이모지|선호|싫어|좋아|원해|원함|필요없|물어봐|묻고|사소한\s*요청|중요한\s*업무)/i.test(text)) {
@@ -1957,8 +2224,9 @@ async function updateProfileState(input = {}) {
       memory: memoryBuckets.memory,
       userMemory: memoryBuckets.userMemory
     });
-  if (input.dryRun === true) return { ok: true, dryRun: true, profile: next };
-  return { ok: true, profile: await writeStyleProfile(next) };
+  if (input.dryRun === true) return { ok: true, dryRun: true, profile: next, counts: profileMemoryCounts(next) };
+  const profile = await writeStyleProfile(next);
+  return { ok: true, profile, counts: profileMemoryCounts(profile) };
 }
 
 async function buildMemoryState() {
@@ -2066,7 +2334,24 @@ function learnedSkillScore(skill, query = "") {
   return score;
 }
 
-async function learnedSkillsForContext(query = "", limit = 4) {
+function skillScopeMatchScore(tool = {}, query = "") {
+  const scope = tool.scope && typeof tool.scope === "object" ? tool.scope : {};
+  const queryTokens = contextTokenSet(query);
+  const tokenOverlap = (value = "") => {
+    const tokens = contextTokenSet(value);
+    let score = 0;
+    for (const token of tokens) if (queryTokens.has(token)) score += 1;
+    return score;
+  };
+  const excludes = normalizeStringList(scope.excludes || [], 12);
+  if (excludes.some((rule) => tokenOverlap(rule) >= 2 || String(query || "").includes(rule))) return -1000;
+  const appliesWhen = normalizeStringList(scope.appliesWhen || [], 12);
+  const appliesScore = appliesWhen.reduce((sum, rule) => sum + tokenOverlap(rule), 0);
+  const workTypeScore = scope.workType && String(query || "").toLowerCase().includes(String(scope.workType).toLowerCase()) ? 2 : 0;
+  return appliesScore + workTypeScore;
+}
+
+async function learnedSkillsForContext(query = "", limit = 4, options = {}) {
   const config = normalizeSkillsConfig(await readJson(skillsConfigPath, { agentSkills: {}, tools: {} }));
   const assignedAgentsByTool = new Map();
   for (const [agentId, skillIds] of Object.entries(config.agentSkills || {})) {
@@ -2075,9 +2360,11 @@ async function learnedSkillsForContext(query = "", limit = 4) {
       assignedAgentsByTool.get(toolId).push(resolveAgent(agentId)?.name || agentId);
     }
   }
-  return Object.entries(config.tools || {})
+  const selected = Object.entries(config.tools || {})
     .filter(([, tool]) => tool?.provider === "yomi-learning" && tool.enabled !== false && String(tool.instructions || "").trim())
-    .map(([id, tool]) => ({
+    .map(([id, tool]) => {
+      const scopeScore = skillScopeMatchScore(tool, query);
+      return {
       id,
       label: tool.label || id,
       description: tool.description || "",
@@ -2085,10 +2372,31 @@ async function learnedSkillsForContext(query = "", limit = 4) {
       type: tool.type || "",
       agents: assignedAgentsByTool.get(id) || [],
       sourceCandidateId: tool.sourceCandidateId || "",
-      score: learnedSkillScore({ label: tool.label || id, description: tool.description || "", instructions: tool.instructions || "" }, query)
-    }))
+      scope: tool.scope || null,
+      reuseCount: Number(tool.reuseCount || 0),
+      lastUsedAt: String(tool.lastUsedAt || ""),
+      score: learnedSkillScore({ label: tool.label || id, description: tool.description || "", instructions: tool.instructions || "" }, query) + scopeScore
+    };
+    })
+    .filter((skill) => skill.score > -500)
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "ko"))
     .slice(0, Math.max(0, Math.min(8, Number(limit) || 4)));
+  if (options.recordUse === true && selected.length) {
+    const now = new Date().toISOString();
+    for (const skill of selected) {
+      if (!config.tools[skill.id]) continue;
+      config.tools[skill.id] = {
+        ...config.tools[skill.id],
+        reuseCount: Number(config.tools[skill.id].reuseCount || 0) + 1,
+        lastUsedAt: now
+      };
+      skill.reuseCount = Number(config.tools[skill.id].reuseCount || 0);
+      skill.lastUsedAt = now;
+    }
+    pruneSkillsConfig(config);
+    await writeJsonFile(skillsConfigPath, config);
+  }
+  return selected;
 }
 
 function formatLearnedSkillsPrompt(skills = []) {
@@ -2289,7 +2597,7 @@ function attachContextToOrchestrationJob(job, context, query = "") {
 
 async function buildPersonalContext(query, options = {}) {
   const profile = await readStyleProfile();
-  const learnedSkills = await learnedSkillsForContext(query, options.skillLimit || 4);
+  const learnedSkills = await learnedSkillsForContext(query, options.skillLimit || 4, { recordUse: options.recordSkillUse === true });
   const rag = await searchRagIndex(query, options.limit || 4);
   const fallbackSearch = rag.results?.length ? null : await searchVaultMarkdown(query, options.limit || 4);
   const search = rag.results?.length ? rag : fallbackSearch;
@@ -2495,6 +2803,9 @@ async function buildSkillsState() {
       allowedPaths: Array.isArray(toolConfig.allowedPaths) ? toolConfig.allowedPaths : [],
       blockedPaths: Array.isArray(toolConfig.blockedPaths) ? toolConfig.blockedPaths : [],
       requiresConfirmation: Boolean(toolConfig.requiresConfirmation),
+      reuseCount: Number(toolConfig.reuseCount || 0),
+      lastUsedAt: String(toolConfig.lastUsedAt || ""),
+      sourceCandidateId: String(toolConfig.sourceCandidateId || ""),
       enabled: toolConfig?.enabled !== false,
       status,
       statusLabel: meta.label,
@@ -2527,6 +2838,43 @@ async function buildSkillsState() {
     agents,
     tools: Object.values(tools),
     raw: { agentSkills, agentDisabledSkills, agentEngines, tools: toolsConfig }
+  };
+}
+
+async function buildActiveSkillsState() {
+  const state = await buildSkillsState();
+  const activeSkills = (state.tools || [])
+    .filter((tool) => tool.provider === "yomi-learning" && tool.enabled !== false)
+    .map((tool) => {
+      const raw = state.raw?.tools?.[tool.id] || {};
+      const agentIds = (state.agents || []).filter((agent) => (agent.skills || []).some((skill) => skill.id === tool.id && skill.enabled !== false)).map((agent) => agent.id);
+      return {
+        id: tool.id,
+        label: tool.label,
+        type: tool.type,
+        provider: tool.provider,
+        description: raw.description || "",
+        instructionsPreview: compactLine(raw.instructions || "", 240),
+        sourceCandidateId: tool.sourceCandidateId || raw.sourceCandidateId || "",
+        scope: raw.scope || null,
+        agents: agentIds.map((id) => resolveAgent(id)?.name || id),
+        agentIds,
+        reuseCount: Number(raw.reuseCount || 0),
+        lastUsedAt: String(raw.lastUsedAt || ""),
+        status: tool.status,
+        statusLabel: tool.statusLabel
+      };
+    })
+    .sort((a, b) => Number(b.reuseCount || 0) - Number(a.reuseCount || 0) || a.label.localeCompare(b.label, "ko"));
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      active: activeSkills.length,
+      reused: activeSkills.filter((skill) => Number(skill.reuseCount || 0) > 0).length,
+      totalReuse: activeSkills.reduce((sum, skill) => sum + Number(skill.reuseCount || 0), 0)
+    },
+    skills: activeSkills
   };
 }
 
@@ -2616,9 +2964,14 @@ async function detectLocalLlm() {
 
 function publicWorkflowRuntime() {
   const performance = readPerformanceLogSync();
+  const activeAgentIds = [...new Set([...orchestrationJobs.values()].flatMap((job) => {
+    if (finalJobStatuses.has(job.status)) return [];
+    return (job.subtasks || []).filter((step) => ["queued", "running", "retrying"].includes(step.status)).map((step) => step.agentId).filter(Boolean);
+  }))];
   return {
     runCount: workflowRuntime.runCount,
     agentCounts: specialistRoles.map((agent) => ({ id: agent.id, name: agent.name, role: agent.role, count: workflowRuntime.agentTaskCounts[agent.id] || 0 })),
+    activeAgentIds,
     statusCounts: { ...workflowRuntime.statusCounts },
     recentErrors: workflowRuntime.recentErrors.slice(0, 6),
     current: workflowRuntime.current,
@@ -2630,6 +2983,12 @@ async function buildOfficeState() {
   const vaultRoot = await findVaultRoot();
   const styleProfile = await readStyleProfile();
   const rag = await buildRagStatus();
+  const skillsState = await buildSkillsState();
+  const skillCandidateState = await buildSkillCandidatesState();
+  const activeSkillCount = (skillsState.tools || []).filter((tool) => tool.provider === "yomi-learning" && tool.enabled !== false).length;
+  const taskQueue = buildTaskQueueState(50);
+  const automationState = await buildAutomationTriggersState();
+  const performance = performanceSummary(readPerformanceLogSync().records);
   const reportDirs = vaultRoot ? reportFolderNames.map((folderName) => path.join(vaultRoot, "50_Outputs", folderName)) : [];
   const latest = (vaultRoot ? await Promise.all(reportDirs.map((dir) => latestMarkdownFile(dir))) : []).filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null;
   const counts = { autoCaptures: 0, knowledgeDrafts: 0, autoDigests: 0, dailyReviews: 0, webOfficeReports: 0 };
@@ -2661,7 +3020,27 @@ async function buildOfficeState() {
       options: Object.values(cliEngines)
     },
     workflow: publicWorkflowRuntime(),
-    skills: await buildSkillsState(),
+    skills: skillsState,
+    kpis: {
+      activeAgents: specialistRoles.length,
+      runningWork: Number(taskQueue.summary?.active || 0) + Number(automationState.summary?.running || 0) + (workflowRuntime.current ? 1 : 0),
+      pendingApprovals: Number(skillCandidateState.summary?.pending || 0),
+      recentQualityScore: Number(performance.lastScore || performance.avgScore || 0)
+    },
+    badges: {
+      reviewPending: Number(skillCandidateState.summary?.pending || 0) + Number(taskQueue.summary?.attention || 0) + Number(automationState.summary?.attention || 0),
+      activeSkills: activeSkillCount,
+      memoryCount: profileMemoryCounts(styleProfile).total,
+      automationAttention: Number(automationState.summary?.attention || 0),
+      automationRunning: Number(automationState.summary?.running || 0)
+    },
+    review: {
+      skillCandidates: skillCandidateState.summary,
+      quality: performance
+    },
+    automation: {
+      summary: automationState.summary
+    },
     context: {
       autoRag: true,
       styleProfile: {
@@ -3513,6 +3892,10 @@ function defaultSkillCandidatesState() {
   return { candidates: [] };
 }
 
+function defaultSkillCandidateReviewLogState() {
+  return { records: [] };
+}
+
 function skillCandidateWorkTypeFromTitle(title = "") {
   const prefix = String(title || "").match(/^([a-z_]+)\s*:/i)?.[1]?.toLowerCase() || "";
   return ["code", "vault", "video", "social", "design", "research", "strategy", "writing", "general_work"].includes(prefix) ? prefix : "";
@@ -3603,7 +3986,12 @@ function normalizeSkillCandidate(input = {}) {
     createdAt: String(input.createdAt || new Date().toISOString()),
     updatedAt: String(input.updatedAt || input.createdAt || new Date().toISOString()),
     appliedAt: String(input.appliedAt || ""),
-    autoAppliedAt: String(input.autoAppliedAt || "")
+    autoAppliedAt: String(input.autoAppliedAt || ""),
+    reviewStatus: String(input.reviewStatus || ""),
+    reviewNote: String(input.reviewNote || "").slice(0, 1200),
+    reviewedAt: String(input.reviewedAt || ""),
+    reviewCount: Math.max(0, Number(input.reviewCount || 0) || 0),
+    reviewDiffCount: Math.max(0, Number(input.reviewDiffCount || 0) || 0)
   };
 }
 
@@ -3654,6 +4042,103 @@ async function writeSkillCandidatesState(state) {
     .slice(0, 120);
   await writeJsonFile(skillCandidatesPath, normalized);
   return normalized;
+}
+
+function skillCandidateReviewStatusFromAction(action = "") {
+  const value = String(action || "").trim().toLowerCase();
+  if (["approve", "approved"].includes(value)) return "approved";
+  if (["reject", "rejected", "dismiss"].includes(value)) return "rejected";
+  if (["revision", "needs_revision", "save_edit", "edit", "record_edit"].includes(value)) return "needs_revision";
+  return "pending";
+}
+
+function skillCandidateStatusFromReviewStatus(status = "") {
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "needs_revision") return "needs_revision";
+  return "pending";
+}
+
+function normalizeSkillCandidateReviewRecord(input = {}) {
+  const candidateId = String(input.candidateId || input.id || "").trim();
+  const action = String(input.action || "review").trim().toLowerCase();
+  const status = skillCandidateReviewStatusFromAction(input.status || action);
+  const now = String(input.createdAt || new Date().toISOString());
+  const edit = normalizeReviewEdit({
+    draftText: input.draftText ?? input.draft ?? input.beforeText,
+    finalText: input.finalText ?? input.final ?? input.afterText,
+    note: input.note || input.reason || ""
+  });
+  return {
+    id: String(input.recordId || input.reviewId || `scr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`),
+    candidateId,
+    action: action || status,
+    status,
+    targetTitle: compactLine(input.targetTitle || input.title || "", 120),
+    reason: String(input.reason || input.note || "").trim().slice(0, 1200),
+    draftText: edit?.draftText || "",
+    finalText: edit?.finalText || "",
+    diff: edit?.diff || null,
+    edit,
+    createdAt: now,
+    timestamp: now
+  };
+}
+
+function normalizeSkillCandidateReviewLogState(input = {}) {
+  const records = Array.isArray(input.records) ? input.records : [];
+  return { records: records.map(normalizeSkillCandidateReviewRecord).filter((record) => record.candidateId) };
+}
+
+async function readSkillCandidateReviewLogState() {
+  if (!(await exists(skillCandidateReviewLogPath))) return defaultSkillCandidateReviewLogState();
+  return normalizeSkillCandidateReviewLogState(await readJson(skillCandidateReviewLogPath, defaultSkillCandidateReviewLogState()));
+}
+
+async function writeSkillCandidateReviewLogState(state) {
+  const normalized = normalizeSkillCandidateReviewLogState(state);
+  normalized.records = normalized.records
+    .sort((a, b) => jobTimeValue(b.createdAt || b.timestamp) - jobTimeValue(a.createdAt || a.timestamp))
+    .slice(0, 500);
+  await writeJsonFile(skillCandidateReviewLogPath, normalized);
+  return normalized;
+}
+
+function skillCandidateReviewSummary(records = []) {
+  const rows = Array.isArray(records) ? records : [];
+  const total = rows.length;
+  const approved = rows.filter((record) => record.status === "approved").length;
+  const rejected = rows.filter((record) => record.status === "rejected").length;
+  const needsRevision = rows.filter((record) => record.status === "needs_revision").length;
+  const edited = rows.filter((record) => record.diff?.changed || record.edit?.diff?.changed).length;
+  const needsRevisionWithoutEdit = rows.filter((record) => record.status === "needs_revision" && !(record.diff?.changed || record.edit?.diff?.changed)).length;
+  const revisionLike = needsRevisionWithoutEdit + edited;
+  return {
+    total,
+    approved,
+    rejected,
+    needsRevision,
+    edited,
+    revisionLike,
+    revisionRate: total ? Math.round((revisionLike / total) * 100) : 0,
+    lastReviewedAt: rows[0]?.createdAt || rows[0]?.timestamp || ""
+  };
+}
+
+function skillCandidateReviewSummaryMap(records = []) {
+  const grouped = new Map();
+  for (const record of records) {
+    if (!grouped.has(record.candidateId)) grouped.set(record.candidateId, []);
+    grouped.get(record.candidateId).push(record);
+  }
+  return new Map([...grouped.entries()].map(([candidateId, rows]) => [candidateId, skillCandidateReviewSummary(rows)]));
+}
+
+async function buildSkillCandidateReviewState(candidateId = "") {
+  const id = String(candidateId || "").trim();
+  const state = await readSkillCandidateReviewLogState();
+  const records = state.records.filter((record) => record.candidateId === id);
+  return { ok: true, candidateId: id, summary: skillCandidateReviewSummary(records), records };
 }
 
 function candidateAgentsFromText(text = "") {
@@ -3788,16 +4273,23 @@ function skillCandidateStatusLabel(status = "") {
   return {
     pending: "검토 대기",
     approved: "적용됨",
-    dismissed: "숨김"
+    dismissed: "숨김",
+    rejected: "반려",
+    needs_revision: "수정 필요"
   }[status] || status || "검토 대기";
 }
 
-function publicSkillCandidate(candidate, sessionsById = new Map()) {
+function publicSkillCandidate(candidate, sessionsById = new Map(), reviewSummary = null) {
   const session = sessionsById.get(candidate.sourceSessionId);
   const turn = session?.turns?.find((item) => item.id === candidate.sourceTurnId) || null;
   return {
     ...candidate,
     statusLabel: skillCandidateStatusLabel(candidate.status),
+    reviewSummary: reviewSummary || {
+      total: candidate.reviewCount || 0,
+      edited: candidate.reviewDiffCount || 0,
+      lastReviewedAt: candidate.reviewedAt || ""
+    },
     agentNames: (candidate.agentIds || []).map((id) => resolveAgent(id)?.name || id),
     evidencePreview: compactLine(candidate.evidence || turn?.user || "", 160),
     instructionsPreview: compactLine(candidate.instructions || "", 220),
@@ -3814,6 +4306,9 @@ function publicSkillCandidate(candidate, sessionsById = new Map()) {
 
 async function buildSkillCandidatesState() {
   const state = await readSkillCandidatesState();
+  const reviewLog = await readSkillCandidateReviewLogState();
+  const reviewSummaries = skillCandidateReviewSummaryMap(reviewLog.records);
+  const reviewSummary = skillCandidateReviewSummary(reviewLog.records);
   const sessions = await readChatSessionsState();
   const sessionsById = new Map(sessions.sessions.map((session) => [session.id, session]));
   return {
@@ -3823,13 +4318,23 @@ async function buildSkillCandidatesState() {
       total: state.candidates.length,
       pending: state.candidates.filter((candidate) => candidate.status === "pending").length,
       approved: state.candidates.filter((candidate) => candidate.status === "approved").length,
-      memory: state.candidates.filter((candidate) => candidate.kind === "memory").length
+      rejected: state.candidates.filter((candidate) => candidate.status === "rejected").length,
+      needsRevision: state.candidates.filter((candidate) => candidate.status === "needs_revision").length,
+      memory: state.candidates.filter((candidate) => candidate.kind === "memory").length,
+      reviewTotal: reviewSummary.total,
+      reviewApproved: reviewSummary.approved,
+      reviewRejected: reviewSummary.rejected,
+      reviewNeedsRevision: reviewSummary.needsRevision,
+      reviewDiffs: reviewSummary.edited,
+      reviewRevisionLike: reviewSummary.revisionLike,
+      reviewRevisionRate: reviewSummary.revisionRate
     },
-    candidates: state.candidates.map((candidate) => publicSkillCandidate(candidate, sessionsById))
+    reviewLog: reviewSummary,
+    candidates: state.candidates.map((candidate) => publicSkillCandidate(candidate, sessionsById, reviewSummaries.get(candidate.id)))
   };
 }
 
-async function applySkillCandidate(candidateId) {
+async function applySkillCandidate(candidateId, options = {}) {
   const state = await readSkillCandidatesState();
   const candidate = state.candidates.find((item) => item.id === String(candidateId));
   if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
@@ -3839,6 +4344,11 @@ async function applySkillCandidate(candidateId) {
     candidate.status = "approved";
     candidate.appliedAt = new Date().toISOString();
     candidate.updatedAt = candidate.appliedAt;
+    candidate.reviewStatus = options.reviewStatus || candidate.reviewStatus || "approved";
+    candidate.reviewNote = options.reviewNote || candidate.reviewNote || "";
+    candidate.reviewedAt = options.reviewedAt || candidate.reviewedAt || candidate.appliedAt;
+    candidate.reviewCount = Math.max(Number(candidate.reviewCount || 0), Number(options.reviewCount || 0));
+    candidate.reviewDiffCount = Math.max(Number(candidate.reviewDiffCount || 0), Number(options.reviewDiffCount || 0));
     await writeSkillCandidatesState(state);
     return { ok: true, candidate, profile: { ok: true, profile: applied.profile } };
   }
@@ -3868,7 +4378,9 @@ async function applySkillCandidate(candidateId) {
     sourceType: candidate.sourceType,
     sourceJobIds: candidate.sourceJobIds || [],
     sourceRelPaths: candidate.sourceRelPaths || [],
-    uses: Number(candidate.uses || 1)
+    uses: Number(candidate.uses || 1),
+    reuseCount: Number(config.tools[toolId]?.reuseCount || 0),
+    lastUsedAt: String(config.tools[toolId]?.lastUsedAt || "")
   };
   for (const agentId of candidate.agentIds) {
     const current = Array.isArray(config.agentSkills[agentId]) ? config.agentSkills[agentId].map(String) : [];
@@ -3881,6 +4393,11 @@ async function applySkillCandidate(candidateId) {
   candidate.toolId = toolId;
   candidate.appliedAt = new Date().toISOString();
   candidate.updatedAt = candidate.appliedAt;
+  candidate.reviewStatus = options.reviewStatus || candidate.reviewStatus || "approved";
+  candidate.reviewNote = options.reviewNote || candidate.reviewNote || "";
+  candidate.reviewedAt = options.reviewedAt || candidate.reviewedAt || candidate.appliedAt;
+  candidate.reviewCount = Math.max(Number(candidate.reviewCount || 0), Number(options.reviewCount || 0));
+  candidate.reviewDiffCount = Math.max(Number(candidate.reviewDiffCount || 0), Number(options.reviewDiffCount || 0));
   await writeSkillCandidatesState(state);
   return { ok: true, candidate, skills: await buildSkillsState() };
 }
@@ -3922,6 +4439,52 @@ async function updateSkillCandidate(input = {}) {
   }
   await writeSkillCandidatesState(state);
   return await buildSkillCandidatesState();
+}
+
+async function updateSkillCandidateReview(candidateId = "", input = {}) {
+  const id = String(candidateId || input.id || input.candidateId || "").trim();
+  if (!id) throw new Error("스킬 후보 ID가 필요합니다");
+  const state = await readSkillCandidatesState();
+  const candidate = state.candidates.find((item) => item.id === id);
+  if (!candidate) throw new Error("스킬 후보를 찾을 수 없습니다");
+  const action = String(input.action || input.status || "save_edit").trim().toLowerCase();
+  const status = skillCandidateReviewStatusFromAction(action);
+  const record = normalizeSkillCandidateReviewRecord({
+    ...input,
+    action,
+    status,
+    candidateId: id,
+    targetTitle: input.targetTitle || candidate.title
+  });
+  const logState = await readSkillCandidateReviewLogState();
+  logState.records.unshift(record);
+  await writeSkillCandidateReviewLogState(logState);
+  const reviewState = await buildSkillCandidateReviewState(id);
+  const reviewMeta = {
+    reviewStatus: record.status,
+    reviewNote: record.reason || "",
+    reviewedAt: record.createdAt,
+    reviewCount: reviewState.summary.total,
+    reviewDiffCount: reviewState.summary.edited
+  };
+  if (record.status === "approved") {
+    const applied = await applySkillCandidate(id, reviewMeta);
+    return {
+      ...applied,
+      review: reviewState,
+      candidates: await buildSkillCandidatesState()
+    };
+  }
+  candidate.status = skillCandidateStatusFromReviewStatus(record.status);
+  candidate.updatedAt = record.createdAt;
+  Object.assign(candidate, reviewMeta);
+  await writeSkillCandidatesState(state);
+  return {
+    ok: true,
+    candidate: publicSkillCandidate(candidate, new Map(), reviewState.summary),
+    review: reviewState,
+    candidates: await buildSkillCandidatesState()
+  };
 }
 
 async function recordConversationTurn({ message, result, sessionId = "" }) {
@@ -4025,7 +4588,7 @@ async function runEngineText(engineId, prompt, label) {
 
 async function runCodexWorkflowStep({ task, workflowName, step, agent, previousSteps = [], reworkNotes = "" }) {
   const previous = previousSteps.map((item, index) => `### 이전 단계 ${index + 1}: ${item.label} · ${item.agentName}\n${item.content}`).join("\n\n") || "이전 단계 없음";
-  const context = await buildPersonalContext(`${task} ${workflowName} ${step.label || ""} ${agent?.role || ""}`, { limit: 4 });
+  const context = await buildPersonalContext(`${task} ${workflowName} ${step.label || ""} ${agent?.role || ""}`, { limit: 4, recordSkillUse: true });
   const prompt = [
     "너는 YOMI Office / 요미오피스의 직원 에이전트다.",
     "아래 역할에 맞춰 실제 산출물을 한국어 Markdown으로 작성한다.",
@@ -6824,7 +7387,7 @@ async function runOrchestrationJob(job) {
   job.startedAt = new Date().toISOString();
   job.updatedAt = job.startedAt;
   const contextQuery = job.capsule?.materialBrief?.ragQuery || `${job.capsule?.normalizedTask || job.message || ""} ${job.capsule?.workType || ""}`;
-  job.context = job.context || await buildPersonalContext(contextQuery, { limit: 5 });
+  job.context = job.context || await buildPersonalContext(contextQuery, { limit: 5, recordSkillUse: true });
   const contextUse = attachContextToOrchestrationJob(job, job.context, contextQuery);
   appendJobLog(job, `자동 Vault 참조 ${contextUse.sourceCount}개와 톤 프로필을 적용했습니다.`, "archivist");
   appendJobLog(job, "직원 병렬 실행을 시작했습니다.", "ceo");
@@ -7009,7 +7572,7 @@ function answerOrchestrationQuestion(input = {}) {
 }
 
 async function generateCodexConversation(message) {
-  const context = await buildPersonalContext(message, { limit: 4 });
+  const context = await buildPersonalContext(message, { limit: 4, recordSkillUse: true });
   const prompt = [
     "너는 YOMI Office의 총괄 매니저 요미다.",
     "사용자의 질문에 한국어로 직접 답한다.",
@@ -7026,7 +7589,7 @@ async function generateCodexConversation(message) {
 }
 
 async function generateClaudeConversation(message) {
-  const context = await buildPersonalContext(message, { limit: 4 });
+  const context = await buildPersonalContext(message, { limit: 4, recordSkillUse: true });
   const prompt = [
     "너는 YOMI Office / 요미오피스에서 사용자가 명시적으로 호출한 Claude Code CLI다.",
     "사용자가 /cc 또는 /claude 명령을 썼을 때만 이 호출이 실행된다.",
@@ -7132,7 +7695,7 @@ async function runChatMessageCore({ message }) {
     }
     const orchestration = createYomiOrchestration(message, route);
     const contextQuery = orchestration.capsule?.materialBrief?.ragQuery || `${route.task || message} ${orchestration.capsule?.workType || ""}`;
-    const context = await buildPersonalContext(contextQuery, { limit: 5 });
+    const context = await buildPersonalContext(contextQuery, { limit: 5, recordSkillUse: true });
     const contextUse = buildContextUsePlan(context, contextQuery);
     orchestration.capsule = {
       ...orchestration.capsule,
@@ -7462,6 +8025,7 @@ function normalizeAutomationTrigger(input = {}, index = 0) {
     title,
     type,
     enabled: input.enabled === true,
+    sendToChannel: input.sendToChannel === true,
     message: String(input.message || "").trim(),
     schedule: {
       kind: String(schedule.kind || input.scheduleKind || "daily") === "interval" ? "interval" : (type === "schedule" ? "daily" : "manual"),
@@ -7814,6 +8378,7 @@ async function executeAutomationTrigger(trigger, context = {}) {
       ranAt: trigger.lastRunAt
     };
     appendAutomationTriggerHistory(trigger, trigger.lastResult);
+    trigger.lastResult.channel = await sendAutomationChannelUpdate(trigger, trigger.lastResult);
     return trigger.lastResult;
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
@@ -7837,6 +8402,7 @@ async function executeAutomationTrigger(trigger, context = {}) {
       ranAt: trigger.lastRunAt
     };
     appendAutomationTriggerHistory(trigger, trigger.lastResult);
+    trigger.lastResult.channel = await sendAutomationChannelUpdate(trigger, trigger.lastResult);
     recordWorkflowError("자동화 트리거", `${trigger.title}: ${messageText}${retryScheduledAt ? ` · 재시도 예약 ${retryScheduledAt}` : ""}`);
     return trigger.lastResult;
   } finally {
@@ -8128,7 +8694,8 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/context-profile") {
       const limit = Math.max(1, Math.min(8, Number(url.searchParams.get("limit") || 4)));
-      const context = await buildPersonalContext(String(url.searchParams.get("q") || ""), { limit });
+      const recordSkillUse = /^(1|true|yes)$/i.test(String(url.searchParams.get("recordUse") || ""));
+      const context = await buildPersonalContext(String(url.searchParams.get("q") || ""), { limit, recordSkillUse });
       return sendJson(response, 200, { ok: true, context: publicContextSummary(context) });
     }
     if (request.method === "GET" && url.pathname === "/api/profile") return sendJson(response, 200, await buildProfileState());
@@ -8167,6 +8734,7 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (request.method === "GET" && url.pathname === "/api/skills") return sendJson(response, 200, await buildActiveSkillsState());
     if (request.method === "GET" && url.pathname === "/api/skills-state") return sendJson(response, 200, await buildSkillsState());
     if (request.method === "POST" && url.pathname === "/api/skills-state") {
       const body = await readJsonBody(request);
@@ -8176,6 +8744,18 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    {
+      const skillReviewMatch = url.pathname.match(/^\/api\/skill-candidates\/([^/]+)\/review$/);
+      if (skillReviewMatch && request.method === "GET") return sendJson(response, 200, await buildSkillCandidateReviewState(decodeURIComponent(skillReviewMatch[1])));
+      if (skillReviewMatch && request.method === "POST") {
+        const body = await readJsonBody(request);
+        try {
+          return sendJson(response, 200, await updateSkillCandidateReview(decodeURIComponent(skillReviewMatch[1]), body));
+        } catch (error) {
+          return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
     if (request.method === "GET" && url.pathname === "/api/skill-candidates") return sendJson(response, 200, await buildSkillCandidatesState());
     if (request.method === "POST" && url.pathname === "/api/skill-candidates") {
       const body = await readJsonBody(request);
@@ -8183,6 +8763,27 @@ const server = createServer(async (request, response) => {
         return sendJson(response, 200, await updateSkillCandidate(body));
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/quarantine") return sendJson(response, 200, await buildQuarantineState(Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 30)))));
+    if (request.method === "POST" && url.pathname === "/api/quarantine") {
+      const body = await readJsonBody(request);
+      try {
+        return sendJson(response, 200, await updateQuarantineState(body));
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/api/channels") return sendJson(response, 200, await buildChannelsState());
+    {
+      const channelSendMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/send$/);
+      if (channelSendMatch && request.method === "POST") {
+        const body = await readJsonBody(request);
+        try {
+          return sendJson(response, 200, await sendChannelMessage(decodeURIComponent(channelSendMatch[1]), body));
+        } catch (error) {
+          return sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
     }
     if (request.method === "GET" && url.pathname === "/api/connections") return sendJson(response, 200, await buildConnectionsState());
